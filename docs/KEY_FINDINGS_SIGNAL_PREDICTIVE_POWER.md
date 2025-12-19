@@ -80,26 +80,26 @@ Several signals are highly correlated and provide similar information:
 ### Group A: Primary Features (Use These)
 | Signal | Reason |
 |--------|--------|
-| `true_ofi` | Best linear predictor, theoretically grounded |
-| `depth_asymmetry` | Contrarian signal, provides independent information |
-| `fragility_score` | Book structure, low correlation with OFI signals |
+| `true_ofi` | Best linear predictor (r=+0.045), theoretically grounded |
+| `depth_asymmetry` | **Contrarian** signal (r=-0.027), provides independent information |
 
-### Group B: Moderate Value (Consider)
+### Group B: Moderate Value (Consider Carefully)
 | Signal | Reason |
 |--------|--------|
-| `executed_pressure` | Trade-based, but correlated with OFI |
+| `fragility_score` | Book structure, low correlation with OFI |
 | `cancel_asymmetry` | Order flow signal, moderate predictive power |
 
-### Group C: Redundant (Avoid)
-| Signal | Reason |
-|--------|--------|
-| `depth_norm_ofi` | 65% correlated with `true_ofi` |
-| `trade_asymmetry` | 54% correlated with `true_ofi` |
+### Group C: Redundant with true_ofi (Avoid in Same Model)
+| Signal | Correlation with true_ofi | Reason |
+|--------|---------------------------|--------|
+| `depth_norm_ofi` | r=+0.655 | Same base signal, redundant |
+| `executed_pressure` | r=+0.553 | Trade-based, overlaps with OFI |
+| `trade_asymmetry` | r=+0.536 | Overlaps with OFI |
 
 ### Group D: Low Value (Skip)
 | Signal | Reason |
 |--------|--------|
-| `signed_mp_delta_bps` | Near-zero correlation, wrong sign |
+| `signed_mp_delta_bps` | Near-zero correlation (r=-0.001) |
 
 ---
 
