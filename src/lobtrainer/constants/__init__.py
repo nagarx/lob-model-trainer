@@ -13,6 +13,12 @@ from lobtrainer.constants.feature_index import (
     MBO_FEATURE_COUNT,
     SIGNAL_FEATURE_COUNT,
     SCHEMA_VERSION,
+    # Label encoding
+    LABEL_DOWN,
+    LABEL_STABLE,
+    LABEL_UP,
+    NUM_CLASSES,
+    LABEL_NAMES,
     # Slices for feature groups
     LOB_BID_PRICES,
     LOB_ASK_PRICES,
@@ -42,6 +48,13 @@ __all__ = [
     "MBO_FEATURE_COUNT",
     "SIGNAL_FEATURE_COUNT",
     "SCHEMA_VERSION",
+    # Label encoding
+    "LABEL_DOWN",
+    "LABEL_STABLE",
+    "LABEL_UP",
+    "NUM_CLASSES",
+    "LABEL_NAMES",
+    # Feature slices
     "LOB_BID_PRICES",
     "LOB_ASK_PRICES",
     "LOB_BID_SIZES",

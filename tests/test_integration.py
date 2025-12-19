@@ -48,16 +48,16 @@ class TestRealDataLoading:
             assert day.features.shape[1] == FEATURE_COUNT == 98
     
     def test_label_values_valid(self):
-        """Labels should be in expected range."""
+        """Labels should be in expected range: {-1=Down, 0=Stable, 1=Up}."""
         from lobtrainer.data import load_split_data
         
         days = load_split_data(DATA_DIR, "train", validate=False)
         
         for day in days:
             unique_labels = np.unique(day.labels)
-            # Note: Labels may include -1 for invalid/unclear samples
-            # Valid classes are: -1 (invalid), 0 (Down), 1 (Stable), 2 (Up)
-            valid_labels = {-1, 0, 1, 2}
+            # Label encoding: -1 = Down, 0 = Stable, 1 = Up
+            # This follows sign convention: negative=bearish, positive=bullish
+            valid_labels = {-1, 0, 1}
             assert all(l in valid_labels for l in unique_labels), (
                 f"Invalid labels: {unique_labels}. Expected subset of {valid_labels}"
             )
@@ -75,8 +75,8 @@ class TestRealDataLoading:
                 "BOOK_VALID should be binary (0 or 1)"
             )
     
-    def test_time_regime_present(self):
-        """Time regime feature should be present."""
+    def test_time_regime_categorical(self):
+        """Time regime should be categorical 0-4 (NOT normalized)."""
         from lobtrainer.data import load_split_data
         from lobtrainer.constants import FeatureIndex
         
@@ -84,10 +84,13 @@ class TestRealDataLoading:
         
         for day in days:
             time_regime = day.features[:, FeatureIndex.TIME_REGIME]
-            # Note: In the current export, TIME_REGIME may be normalized
-            # or have continuous values. Check it's finite.
-            assert np.isfinite(time_regime).all(), (
-                "TIME_REGIME should have finite values"
+            unique_regimes = np.unique(time_regime)
+            
+            # TIME_REGIME should be categorical: 0=Open, 1=Early, 2=Midday, 3=Close, 4=Closed
+            # These are NOT normalized (excluded from Z-score normalization)
+            valid_regimes = {0.0, 1.0, 2.0, 3.0, 4.0}
+            assert all(r in valid_regimes for r in unique_regimes), (
+                f"TIME_REGIME should be categorical 0-4, got {unique_regimes}"
             )
 
 
@@ -184,8 +187,8 @@ class TestSignalValues:
                     f"OFI should be finite for valid samples in {day.date}"
                 )
     
-    def test_asymmetry_signals_in_range(self):
-        """Asymmetry signals should be in [-1, 1]."""
+    def test_asymmetry_signals_normalized(self):
+        """Asymmetry signals should be Z-score normalized (mean≈0, std≈1)."""
         from lobtrainer.data import load_split_data
         from lobtrainer.constants import FeatureIndex
         
@@ -203,28 +206,40 @@ class TestSignalValues:
                 (day.features[:, FeatureIndex.MBO_READY] > 0.5)
             )
             
-            if valid_mask.sum() > 0:
+            if valid_mask.sum() > 100:  # Need enough samples for stable stats
                 for idx in asymmetry_indices:
                     values = day.features[valid_mask, idx]
                     finite_values = values[np.isfinite(values)]
-                    if len(finite_values) > 0:
-                        assert finite_values.min() >= -1.01, (
-                            f"Feature {idx} min {finite_values.min()} < -1"
+                    if len(finite_values) > 100:
+                        # Z-score normalized: mean ≈ 0, std ≈ 1
+                        # Note: Per-day validation may not be exactly 0,1 since
+                        # normalization was done on the whole day's data
+                        assert np.isfinite(finite_values).all(), (
+                            f"Feature {idx} has non-finite values"
                         )
-                        assert finite_values.max() <= 1.01, (
-                            f"Feature {idx} max {finite_values.max()} > 1"
+                        # Values should be roughly normal distributed
+                        assert np.abs(finite_values.mean()) < 0.5, (
+                            f"Feature {idx} mean {finite_values.mean():.3f} not near 0"
+                        )
+                        assert 0.5 < finite_values.std() < 2.0, (
+                            f"Feature {idx} std {finite_values.std():.3f} not near 1"
                         )
     
-    def test_schema_version_column_exists(self):
-        """Schema version column should exist at index 97."""
+    def test_schema_version_is_2(self):
+        """Schema version should be 2.0 for all samples (NOT normalized)."""
         from lobtrainer.data import load_split_data
-        from lobtrainer.constants import FeatureIndex
+        from lobtrainer.constants import FeatureIndex, SCHEMA_VERSION
         
         days = load_split_data(DATA_DIR, "train", validate=False)
         
         for day in days:
-            # Just verify the column exists and has finite values
-            # Note: Exported data may have schema_version=0 if using older export
             schema_col = day.features[:, FeatureIndex.SCHEMA_VERSION_FEATURE]
-            assert np.isfinite(schema_col).all(), "Schema version column should be finite"
+            # SCHEMA_VERSION is excluded from normalization, should be exactly 2.0
+            unique_versions = np.unique(schema_col)
+            assert len(unique_versions) == 1, (
+                f"Schema version should be constant, got {unique_versions}"
+            )
+            assert unique_versions[0] == SCHEMA_VERSION, (
+                f"Schema version should be {SCHEMA_VERSION}, got {unique_versions[0]}"
+            )
 

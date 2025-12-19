@@ -34,6 +34,29 @@ SCHEMA_VERSION: Final[int] = 2
 """Schema version for feature export format. Must match Rust pipeline."""
 
 # =============================================================================
+# Label Encoding
+# =============================================================================
+
+LABEL_DOWN: Final[int] = -1
+"""Price moved down (bearish)."""
+
+LABEL_STABLE: Final[int] = 0
+"""Price stayed within threshold (neutral)."""
+
+LABEL_UP: Final[int] = 1
+"""Price moved up (bullish)."""
+
+NUM_CLASSES: Final[int] = 3
+"""Number of label classes for classification."""
+
+LABEL_NAMES: Final[dict] = {
+    LABEL_DOWN: "Down",
+    LABEL_STABLE: "Stable",
+    LABEL_UP: "Up",
+}
+"""Human-readable label names."""
+
+# =============================================================================
 # Feature Counts
 # =============================================================================
 
