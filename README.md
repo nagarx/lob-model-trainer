@@ -1,5 +1,19 @@
 # LOB Model Trainer
 
+## Quick Start
+
+```bash
+# Install using uv (recommended)
+uv venv && uv pip install -e ".[dev]"
+
+# Or using pip
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Run signal analysis
+python scripts/run_signal_analysis.py
+```
+
 Machine learning experimentation for limit order book price prediction.
 
 ## Overview
