@@ -54,8 +54,8 @@ mlartifacts/
 # W&B
 wandb/
 
-# Data (symlinked from parent)
-data/
+# Data exports (symlinked from parent, not source code)
+/data/
 
 # OS
 .DS_Store
