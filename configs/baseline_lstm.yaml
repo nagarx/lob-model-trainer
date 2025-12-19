@@ -1,0 +1,68 @@
+# Baseline LSTM Configuration for NVDA 98-Feature Dataset
+#
+# This configuration trains an LSTM model on the full 98-feature set
+# exported from the Rust pipeline.
+#
+# Usage:
+#   python -m lobtrainer.train --config configs/baseline_lstm.yaml
+
+name: baseline_lstm_nvda
+description: |
+  Baseline LSTM model for NVDA price direction prediction.
+  Uses all 98 features with per-day Z-score normalization.
+  
+tags:
+  - baseline
+  - lstm
+  - nvda
+  - 98-features
+
+# Data Configuration
+data:
+  # Path relative to lob-model-trainer directory
+  data_dir: "../data/exports/nvda_98feat"
+  feature_count: 98
+  
+  sequence:
+    window_size: 100  # Must match Rust export config
+    stride: 10
+  
+  normalization:
+    strategy: zscore_per_day
+    eps: 1.0e-8
+    clip_value: 10.0
+    exclude_features:
+      - 93  # TIME_REGIME (categorical)
+  
+  label_encoding: categorical
+  num_classes: 3
+  cache_in_memory: true
+
+# Model Configuration
+model:
+  model_type: lstm
+  input_size: 98
+  hidden_size: 64
+  num_layers: 2
+  dropout: 0.2
+  num_classes: 3
+  lstm_bidirectional: false
+
+# Training Configuration
+train:
+  batch_size: 64
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  epochs: 100
+  early_stopping_patience: 10
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 4
+  pin_memory: true
+  seed: 42
+  mixed_precision: false
+
+# Output
+output_dir: outputs/baseline_lstm
+log_level: INFO
+

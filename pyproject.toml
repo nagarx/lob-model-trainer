@@ -1,0 +1,83 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lobtrainer"
+version = "0.1.0"
+description = "LOB Model Trainer: ML experimentation for limit order book price prediction"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Knight" }
+]
+keywords = ["hft", "lob", "limit-order-book", "machine-learning", "trading"]
+
+dependencies = [
+    # Core ML
+    "torch>=2.0",
+    "numpy>=1.24",  # Compatible with installed version
+    
+    # Data handling
+    "pandas>=2.0",
+    
+    # Classical ML
+    "scikit-learn>=1.3",
+    "xgboost>=2.0",
+    
+    # Experiment tracking
+    "mlflow>=2.8",
+    
+    # Configuration
+    "pyyaml>=6.0",
+    "dacite>=1.8",  # Dataclass from dict
+    
+    # Visualization
+    "matplotlib>=3.7",
+    "seaborn>=0.12",
+    
+    # Utilities
+    "tqdm>=4.65",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.1",
+    "mypy>=1.0",
+]
+shap = [
+    "shap>=0.42",  # Feature importance
+]
+wandb = [
+    "wandb>=0.16",  # W&B experiment tracking
+]
+
+[project.scripts]
+lobtrainer = "lobtrainer.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lobtrainer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]  # Line length handled separately
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+
