@@ -1,4 +1,9 @@
 {
+  "symbol": "NVDA",
+  "data_dir": "../data/exports/nvda_98feat",
+  "n_samples": 1053600,
+  "n_labels": 105623,
+  "n_days": 11,
   "distributions": [
     {
       "index": 84,
@@ -103,6 +108,106 @@
       "kurtosis": 3.086979106390012,
       "pct_outliers": 1.2455391040242978,
       "p_normal": 1.4652700398569752e-64
+    }
+  ],
+  "stationarity": [
+    {
+      "signal": "true_ofi",
+      "adf_statistic": -27.713515440910196,
+      "p_value": 0.0,
+      "is_stationary": true
+    },
+    {
+      "signal": "depth_norm_ofi",
+      "adf_statistic": -26.77078604085636,
+      "p_value": 0.0,
+      "is_stationary": true
+    },
+    {
+      "signal": "executed_pressure",
+      "adf_statistic": -39.28300920933388,
+      "p_value": 0.0,
+      "is_stationary": true
+    },
+    {
+      "signal": "signed_mp_delta_bps",
+      "adf_statistic": -19.091405933967525,
+      "p_value": 0.0,
+      "is_stationary": true
+    },
+    {
+      "signal": "trade_asymmetry",
+      "adf_statistic": -27.903839130996467,
+      "p_value": 0.0,
+      "is_stationary": true
+    },
+    {
+      "signal": "cancel_asymmetry",
+      "adf_statistic": -26.700303572363488,
+      "p_value": 0.0,
+      "is_stationary": true
+    },
+    {
+      "signal": "fragility_score",
+      "adf_statistic": -18.972316932943517,
+      "p_value": 0.0,
+      "is_stationary": true
+    },
+    {
+      "signal": "depth_asymmetry",
+      "adf_statistic": -25.318557262759914,
+      "p_value": 0.0,
+      "is_stationary": true
+    }
+  ],
+  "rolling_stability": [
+    {
+      "signal": "true_ofi",
+      "mean_drift": 0.18117266170774288,
+      "is_mean_stable": "True",
+      "is_std_stable": "False"
+    },
+    {
+      "signal": "depth_norm_ofi",
+      "mean_drift": 0.15404382826206756,
+      "is_mean_stable": "True",
+      "is_std_stable": "False"
+    },
+    {
+      "signal": "executed_pressure",
+      "mean_drift": -0.09072122961319565,
+      "is_mean_stable": "True",
+      "is_std_stable": "False"
+    },
+    {
+      "signal": "signed_mp_delta_bps",
+      "mean_drift": 0.26339000552695296,
+      "is_mean_stable": "True",
+      "is_std_stable": "False"
+    },
+    {
+      "signal": "trade_asymmetry",
+      "mean_drift": -0.0708514613407665,
+      "is_mean_stable": "True",
+      "is_std_stable": "True"
+    },
+    {
+      "signal": "cancel_asymmetry",
+      "mean_drift": -0.010666537422319385,
+      "is_mean_stable": "True",
+      "is_std_stable": "False"
+    },
+    {
+      "signal": "fragility_score",
+      "mean_drift": -1.1591546331979972,
+      "is_mean_stable": "False",
+      "is_std_stable": "False"
+    },
+    {
+      "signal": "depth_asymmetry",
+      "mean_drift": -0.07698388291994784,
+      "is_mean_stable": "True",
+      "is_std_stable": "False"
     }
   ],
   "correlation_matrix": [
@@ -217,6 +322,74 @@
       "signal_1": "true_ofi",
       "signal_2": "trade_asymmetry",
       "correlation": 0.5356968080701198
+    }
+  ],
+  "pca": {
+    "n_components_90": 6,
+    "n_components_95": 7,
+    "explained_variance": [
+      0.3369256416736761,
+      0.1484261374965632,
+      0.13366584562427547,
+      0.12374385446186476,
+      0.09209644370497135
+    ],
+    "dominant_signals": [
+      "true_ofi",
+      "signed_mp_delta_bps",
+      "cancel_asymmetry",
+      "fragility_score",
+      "depth_asymmetry"
+    ]
+  },
+  "vif": [
+    {
+      "signal": "true_ofi",
+      "vif": 2.273343820527073,
+      "is_problematic": "False",
+      "is_severe": "False"
+    },
+    {
+      "signal": "depth_norm_ofi",
+      "vif": 2.3078013515083233,
+      "is_problematic": "False",
+      "is_severe": "False"
+    },
+    {
+      "signal": "executed_pressure",
+      "vif": 1.627148889205902,
+      "is_problematic": "False",
+      "is_severe": "False"
+    },
+    {
+      "signal": "signed_mp_delta_bps",
+      "vif": 1.0636056357798467,
+      "is_problematic": "False",
+      "is_severe": "False"
+    },
+    {
+      "signal": "trade_asymmetry",
+      "vif": 1.9255337860591244,
+      "is_problematic": "False",
+      "is_severe": "False"
+    },
+    {
+      "signal": "cancel_asymmetry",
+      "vif": 1.0451788071014583,
+      "is_problematic": "False",
+      "is_severe": "False"
+    },
+    {
+      "signal": "fragility_score",
+      "vif": 1.010749337547849,
+      "is_problematic": "False",
+      "is_severe": "False"
+    },
+    {
+      "signal": "depth_asymmetry",
+      "vif": 1.123755781904077,
+      "is_problematic": "False",
+      "is_severe": "False"
     }
   ],
   "predictive_metrics": [

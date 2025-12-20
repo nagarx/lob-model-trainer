@@ -26,6 +26,10 @@ dependencies = [
     "scikit-learn>=1.3",
     "xgboost>=2.0",
     
+    # Statistical analysis
+    "scipy>=1.10",  # Stats tests, correlations
+    "statsmodels>=0.14",  # ADF stationarity test
+    
     # Experiment tracking
     "mlflow>=2.8",
     
