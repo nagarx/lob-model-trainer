@@ -1,0 +1,81 @@
+================================================================================
+COMPREHENSIVE ANALYSIS: NVDA 98-Feature Full Dataset
+Dataset: /Users/knight/code_local/HFT-pipeline-v2/data/exports/nvda_98feat_full
+Started: 2025-12-20T06:07:59.133434
+================================================================================
+
+================================================================================
+1. DATA OVERVIEW ANALYSIS
+================================================================================
+
+Symbol: NVDA
+Date range: 20250203 to 20250929
+Total days: 165
+Total samples: 16,996,000
+Total labels: 1,703,657
+Feature count: 98
+Data quality: ✅ Clean (no NaN/Inf)
+
+Label Distribution:
+  Down:   476,822 (28.0%)
+  Stable: 744,587 (43.7%)
+  Up:     482,248 (28.3%)
+  Balance: ⚠️ Imbalanced (ratio 1.56)
+
+================================================================================
+2. LABEL ANALYSIS
+================================================================================
+
+Loaded train data:
+  Features shape: (12446500, 98)
+  Labels shape: (1247497,)
+  Date range: 20250203 to 20250718
+
+Running label analysis...
+
+Label Distribution:
+  Down:   373,906 (30.0%)
+  Stable: 496,230 (39.8%)
+  Up:     377,361 (30.2%)
+
+Autocorrelation:
+  Lag-1 ACF: +0.9720
+  Lag-5 ACF: +0.8689
+  Lag-10 ACF: +0.7478
+  Interpretation: Strong positive autocorrelation: Labels cluster (trends persist)
+
+Transition Matrix (P(To | From)):
+             Down   Stable       Up
+     Down:   0.972    0.028    0.000
+   Stable:   0.021    0.958    0.021
+       Up:   0.000    0.028    0.972
+
+Persistence (staying in same state):
+  Down: 97.2%
+  Stable: 95.8%
+  Up: 97.2%
+
+Top Signal-Label Correlations:
+  1. executed_pressure: r = +0.0060 ✅
+  2. signed_mp_delta_bps: r = -0.0045 ✅
+  3. true_ofi: r = +0.0025 ✅
+  4. depth_norm_ofi: r = -0.0010 ❌
+  5. cancel_asymmetry: r = +0.0010 ❌
+
+================================================================================
+3. SIGNAL ANALYSIS
+================================================================================
+
+❌ ERROR: cannot import name 'SIGNAL_NAMES' from 'lobtrainer.constants' (/Users/knight/code_local/HFT-pipeline-v2/lob-model-trainer/src/lobtrainer/constants/__init__.py)
+Traceback (most recent call last):
+  File "/Users/knight/code_local/HFT-pipeline-v2/lob-model-trainer/scripts/run_full_analysis.py", line 459, in main
+    run_signal_analysis()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/knight/code_local/HFT-pipeline-v2/lob-model-trainer/scripts/run_full_analysis.py", line 178, in run_signal_analysis
+    from lobtrainer.constants import (
+    ...<3 lines>...
+    )
+ImportError: cannot import name 'SIGNAL_NAMES' from 'lobtrainer.constants' (/Users/knight/code_local/HFT-pipeline-v2/lob-model-trainer/src/lobtrainer/constants/__init__.py)
+
+
+Output saved to: /Users/knight/code_local/HFT-pipeline-v2/lob-model-trainer/docs/nvda_full_analysis_output.txt

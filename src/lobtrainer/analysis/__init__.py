@@ -12,6 +12,12 @@ Modules:
 - predictive_power: Signal-label relationships (AUC, MI, correlations)
 - temporal_dynamics: Signal autocorrelation, lead-lag, predictive decay
 - generalization: Day-to-day variance, walk-forward validation
+- streaming: Memory-efficient streaming analysis (for large datasets)
+
+Memory Efficiency:
+- For large datasets (>100 days), use the streaming module
+- Streaming functions use O(1) memory regardless of dataset size
+- Example: compute_streaming_overview() instead of generate_dataset_summary()
 """
 
 from .data_loading import (
@@ -117,6 +123,23 @@ from .generalization import (
     GeneralizationSummary,
 )
 
+# Memory-efficient streaming analysis (for large datasets)
+from .streaming import (
+    iter_days,
+    count_days,
+    get_dates,
+    compute_streaming_overview,
+    compute_streaming_label_analysis,
+    compute_streaming_signal_stats,
+    estimate_memory_usage,
+    get_memory_efficient_config,
+    DayData,
+    RunningStats,
+    StreamingColumnStats,
+    StreamingLabelCounter,
+    StreamingDataQuality,
+)
+
 __all__ = [
     # Data loading
     'load_split',
@@ -205,5 +228,19 @@ __all__ = [
     'SignalDayStats',
     'WalkForwardResult',
     'GeneralizationSummary',
+    # Streaming (memory-efficient for large datasets)
+    'iter_days',
+    'count_days',
+    'get_dates',
+    'compute_streaming_overview',
+    'compute_streaming_label_analysis',
+    'compute_streaming_signal_stats',
+    'estimate_memory_usage',
+    'get_memory_efficient_config',
+    'DayData',
+    'RunningStats',
+    'StreamingColumnStats',
+    'StreamingLabelCounter',
+    'StreamingDataQuality',
 ]
 
