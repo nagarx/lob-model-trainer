@@ -125,6 +125,143 @@ def get_dates(data_dir: Path, split: str) -> List[str]:
 
 
 # ============================================================================
+# ALIGNED DATA ITERATORS
+# ============================================================================
+
+# Import alignment constants (avoid circular import by importing at module level)
+WINDOW_SIZE = 100  # Must match data_loading.py
+STRIDE = 10        # Must match data_loading.py
+
+
+@dataclass
+class AlignedDayData:
+    """
+    Container for a single day's ALIGNED data.
+    
+    Features are already aligned with labels (1:1 correspondence).
+    This is the correct data structure for signal-label correlation analysis.
+    """
+    date: str
+    features: np.ndarray  # (N_labels, 98) - aligned with labels
+    labels: np.ndarray    # (N_labels,)
+    n_pairs: int          # Number of aligned feature-label pairs
+    
+    @property
+    def memory_bytes(self) -> int:
+        """Approximate memory usage in bytes."""
+        return self.features.nbytes + self.labels.nbytes
+
+
+def align_features_for_day(
+    features: np.ndarray,
+    n_labels: int,
+    window_size: int = WINDOW_SIZE,
+    stride: int = STRIDE,
+) -> np.ndarray:
+    """
+    Align features with labels for a SINGLE day.
+    
+    This is the streaming-module equivalent of data_loading.align_features_with_labels(),
+    kept here to avoid circular imports and for self-containment.
+    
+    Formula:
+        For label[i], the corresponding feature is at:
+        feat_idx = i * stride + window_size - 1
+        
+        This is the LAST feature in the sequence window for that label.
+    
+    Args:
+        features: (N_samples, N_features) array from a single day
+        n_labels: Number of labels for this day
+        window_size: Samples per sequence window
+        stride: Samples between sequence starts
+    
+    Returns:
+        aligned_features: (n_labels, N_features) array
+    """
+    n_features = features.shape[1]
+    aligned = np.zeros((n_labels, n_features), dtype=features.dtype)
+    
+    for i in range(n_labels):
+        feat_idx = i * stride + window_size - 1
+        if feat_idx >= features.shape[0]:
+            feat_idx = features.shape[0] - 1
+        aligned[i] = features[feat_idx]
+    
+    return aligned
+
+
+def iter_days_aligned(
+    data_dir: Path,
+    split: str,
+    window_size: int = WINDOW_SIZE,
+    stride: int = STRIDE,
+    dtype: np.dtype = np.float32,
+) -> Generator[AlignedDayData, None, None]:
+    """
+    Iterate over days, yielding ALIGNED feature-label pairs.
+    
+    This is the memory-efficient equivalent of load_split_aligned() from data_loading.
+    Use this for any analysis that needs signal-label correlation.
+    
+    CRITICAL: This function performs correct per-day alignment, avoiding the
+    day-boundary drift that occurs with global alignment on concatenated data.
+    
+    Args:
+        data_dir: Path to dataset root
+        split: One of 'train', 'val', 'test'
+        window_size: Samples per sequence window (default: 100)
+        stride: Samples between sequence starts (default: 10)
+        dtype: Data type for features (default: float32)
+    
+    Yields:
+        AlignedDayData for each day in chronological order
+    
+    Example:
+        for day in iter_days_aligned(data_dir, 'train'):
+            # day.features[i] corresponds to day.labels[i]
+            corr = np.corrcoef(day.features[:, 84], day.labels)[0, 1]
+            
+    Memory Usage:
+        ~40MB per day (float32) - same as iter_days() but with aligned features
+    """
+    split_dir = Path(data_dir) / split
+    if not split_dir.exists():
+        raise FileNotFoundError(f"Split directory not found: {split_dir}")
+    
+    feature_files = sorted(split_dir.glob('*_features.npy'))
+    
+    for feat_file in feature_files:
+        date = feat_file.stem.replace('_features', '')
+        label_file = feat_file.parent / f"{date}_labels.npy"
+        
+        if not label_file.exists():
+            warnings.warn(f"Label file not found for {date}, skipping")
+            continue
+        
+        # Load raw data
+        features = np.load(feat_file).astype(dtype, copy=False)
+        labels = np.load(label_file)
+        n_labels = len(labels)
+        
+        # Align features with labels (per-day, correct method)
+        aligned_features = align_features_for_day(
+            features, n_labels, window_size, stride
+        )
+        
+        yield AlignedDayData(
+            date=date,
+            features=aligned_features,
+            labels=labels,
+            n_pairs=n_labels,
+        )
+        
+        # Explicit cleanup
+        del features, aligned_features, labels
+        gc.collect()
+
+
+# ============================================================================
 # INCREMENTAL STATISTICS (Online Algorithms)
 # ============================================================================
 

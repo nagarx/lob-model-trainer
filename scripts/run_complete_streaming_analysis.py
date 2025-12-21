@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from lobtrainer.analysis.streaming import (
     iter_days,
+    iter_days_aligned,  # Use for correct signal-label alignment
     compute_streaming_overview,
     compute_streaming_label_analysis,
     RunningStats,
@@ -54,63 +55,94 @@ SIGNAL_INDICES = {
 def compute_signal_label_correlations(
     data_dir: Path,
     split: str = 'train',
-    sample_rate: int = 100,  # Sample every Nth point
+    sample_rate: int = 10,  # Sample every Nth aligned pair (for memory)
     max_samples: int = 500000,
 ) -> Dict[str, Any]:
     """
-    Compute signal-label correlations with memory-efficient sampling.
+    Compute signal-label correlations with CORRECT alignment.
     
-    Uses reservoir sampling to get representative samples without loading all data.
+    Uses iter_days_aligned() to ensure features[i] corresponds to labels[i]
+    for each day. Then samples from the aligned pairs for memory efficiency.
+    
+    CRITICAL FIX: Previous version used crude subsampling that broke alignment.
+    This version uses proper per-day alignment, then subsamples the aligned pairs.
+    
+    Args:
+        data_dir: Path to dataset root
+        split: One of 'train', 'val', 'test'
+        sample_rate: Sample every Nth aligned pair (for memory, not alignment)
+        max_samples: Maximum total samples to collect
+    
+    Returns:
+        Dict with signal correlations and metadata
     """
-    print("  Computing signal-label correlations (sampled)...")
+    print("  Computing signal-label correlations (CORRECTLY ALIGNED)...")
     
-    # Collect samples
+    # Collect samples using aligned iterator
     signal_samples = {name: [] for name in SIGNAL_INDICES}
     label_samples = []
     
-    total_samples = 0
-    for day in iter_days(data_dir, split, dtype=np.float32):
-        # Sample from this day
-        step = max(1, day.n_samples // (max_samples // 165))  # Aim for even distribution
+    total_pairs = 0
+    days_processed = 0
+    
+    for day in iter_days_aligned(data_dir, split):
+        # Sample from aligned pairs (features[i] corresponds to labels[i])
+        # This is subsampling for memory, NOT alignment correction
+        sample_indices = np.arange(0, day.n_pairs, sample_rate)
         
         for name, idx in SIGNAL_INDICES.items():
-            signal_samples[name].extend(day.features[::step, idx].tolist())
+            signal_samples[name].extend(day.features[sample_indices, idx].tolist())
         
-        # Subsample labels to align (labels are fewer than features)
-        label_step = max(1, day.n_labels // (len(day.features[::step]) // 10))
-        label_samples.extend(day.labels[::label_step].tolist())
+        label_samples.extend(day.labels[sample_indices].tolist())
         
-        total_samples += len(day.features[::step])
+        total_pairs += len(sample_indices)
+        days_processed += 1
         
-        if total_samples > max_samples:
+        if total_pairs >= max_samples:
+            print(f"    Reached {total_pairs} samples from {days_processed} days, stopping")
             break
+        
+        # Progress update
+        if days_processed % 20 == 0:
+            print(f"    Processed {days_processed} days, {total_pairs} aligned pairs")
     
-    # Align lengths
-    min_len = min(len(label_samples), min(len(v) for v in signal_samples.values()))
-    label_arr = np.array(label_samples[:min_len])
+    print(f"    Total: {total_pairs} aligned pairs from {days_processed} days")
+    
+    # Convert to arrays (already aligned by iter_days_aligned)
+    label_arr = np.array(label_samples)
     
     results = {}
     for name, samples in signal_samples.items():
-        signal_arr = np.array(samples[:min_len])
+        signal_arr = np.array(samples)
+        
+        # Sanity check: should be same length (they came from aligned pairs)
+        if len(signal_arr) != len(label_arr):
+            raise ValueError(
+                f"Alignment error: {name} has {len(signal_arr)} samples but "
+                f"labels has {len(label_arr)}. This indicates a bug in iter_days_aligned."
+            )
         
         # Handle NaN/Inf
         mask = np.isfinite(signal_arr) & np.isfinite(label_arr)
-        if mask.sum() < 100:
+        n = mask.sum()
+        
+        if n < 100:
             results[name] = {'correlation': 0.0, 'n_samples': 0, 'is_significant': False}
             continue
         
         corr = np.corrcoef(signal_arr[mask], label_arr[mask])[0, 1]
         
-        # Significance test (approximate)
-        n = mask.sum()
+        # Significance test (t-test for correlation coefficient)
+        # Formula: t = r * sqrt((n-2)/(1-r^2))
+        # Ref: Fisher, R.A. (1921) - standard correlation significance test
         t_stat = corr * np.sqrt((n - 2) / (1 - corr**2 + 1e-10))
-        # For n > 100, t > 2.58 is p < 0.01
+        # For n > 100, |t| > 2.58 is p < 0.01 (two-tailed)
         is_significant = abs(t_stat) > 2.58
         
         results[name] = {
             'correlation': float(corr) if np.isfinite(corr) else 0.0,
             'n_samples': int(n),
-            'is_significant': is_significant,
+            'is_significant': bool(is_significant),
             't_statistic': float(t_stat) if np.isfinite(t_stat) else 0.0,
         }
     
@@ -122,7 +154,12 @@ def compute_signal_label_correlations(
     ))
     
     gc.collect()
-    return {'signal_correlations': sorted_results, 'total_samples_used': min_len}
+    return {
+        'signal_correlations': sorted_results, 
+        'total_aligned_pairs': total_pairs,
+        'days_processed': days_processed,
+        'sample_rate': sample_rate,
+    }
 
 
 def compute_signal_autocorrelations(
@@ -214,61 +251,98 @@ def compute_predictive_decay(
 ) -> Dict[str, Any]:
     """
     Compute how signal-label correlation decays with prediction horizon.
+    
+    Uses CORRECTLY ALIGNED data from iter_days_aligned().
+    
+    For aligned data (features[i] ↔ labels[i]):
+    - horizon=0: corr(features[i], labels[i]) - base case
+    - horizon=h: corr(features[i], labels[i+h]) - how current signal predicts future
+    
+    This measures how "stale" a signal becomes over time. A signal with rapid
+    decay is only useful for very short-term prediction.
+    
+    CRITICAL FIX: Previous version used crude subsampling that broke alignment.
     """
-    print("  Computing predictive decay (sampled)...")
+    print("  Computing predictive decay (CORRECTLY ALIGNED)...")
     
-    # Get sample of days
-    dates = []
-    for day in iter_days(data_dir, split, dtype=np.float32):
-        dates.append(day.date)
+    from lobtrainer.analysis.streaming import get_dates
     
+    # Get sample of days to reduce memory
+    dates = get_dates(data_dir, split)
     if len(dates) > sample_days:
         step = len(dates) // sample_days
         sample_dates = set(dates[::step])
     else:
         sample_dates = set(dates)
     
-    # Collect aligned signal and label data
+    print(f"    Using {len(sample_dates)} days out of {len(dates)}")
+    
+    # Collect ALIGNED signal and label data per day
+    # Process each day separately to avoid memory issues
     all_signals = {name: [] for name in SIGNAL_INDICES}
     all_labels = []
     
-    for day in iter_days(data_dir, split, dtype=np.float32):
+    for day in iter_days_aligned(data_dir, split):
         if day.date not in sample_dates:
             continue
         
-        # Subsample features to roughly align with labels
-        step = max(1, day.n_samples // day.n_labels)
+        # Features are already aligned with labels from iter_days_aligned
         for name, idx in SIGNAL_INDICES.items():
-            all_signals[name].extend(day.features[::step, idx][:day.n_labels].tolist())
+            all_signals[name].extend(day.features[:, idx].tolist())
         all_labels.extend(day.labels.tolist())
+    
+    print(f"    Collected {len(all_labels)} aligned pairs")
     
     # Compute correlations at different horizons
     results = {}
-    labels = np.array(all_labels)
+    labels = np.array(all_labels, dtype=np.float32)
     
     for name, signal_list in all_signals.items():
-        signal = np.array(signal_list[:len(labels)])
+        signal = np.array(signal_list, dtype=np.float32)
+        
+        # Sanity check
+        if len(signal) != len(labels):
+            raise ValueError(
+                f"Alignment error in predictive_decay: {name} has {len(signal)} "
+                f"but labels has {len(labels)}"
+            )
         
         decay_results = {}
+        
+        # Horizon 0 = base case (signal[t] vs label[t])
+        mask_0 = np.isfinite(signal) & np.isfinite(labels)
+        if mask_0.sum() >= 100:
+            corr_0 = np.corrcoef(signal[mask_0], labels[mask_0])[0, 1]
+            decay_results['horizon_0'] = float(corr_0) if np.isfinite(corr_0) else 0.0
+        
+        # Non-zero horizons
         for horizon in horizons:
-            if horizon >= len(signal) - 1:
+            if horizon >= len(signal) - 100:  # Need enough samples
                 continue
             
             # Correlation between signal[t] and label[t+horizon]
             sig = signal[:-horizon]
             lab = labels[horizon:]
             
-            mask = np.isfinite(sig)
+            mask = np.isfinite(sig) & np.isfinite(lab)
             if mask.sum() < 100:
                 continue
             
             corr = np.corrcoef(sig[mask], lab[mask])[0, 1]
             decay_results[f'horizon_{horizon}'] = float(corr) if np.isfinite(corr) else 0.0
         
+        # Compute decay rate (how quickly correlation drops)
+        if 'horizon_0' in decay_results and 'horizon_10' in decay_results:
+            corr_0 = abs(decay_results['horizon_0'])
+            corr_10 = abs(decay_results.get('horizon_10', 0))
+            if corr_0 > 0.01:
+                decay_ratio = corr_10 / corr_0
+                decay_results['decay_ratio_at_10'] = float(decay_ratio)
+        
         results[name] = decay_results
     
     gc.collect()
-    return {'predictive_decay': results}
+    return {'predictive_decay': results, 'sample_days_used': len(sample_dates)}
 
 
 def compute_walk_forward_validation(
@@ -278,22 +352,23 @@ def compute_walk_forward_validation(
 ) -> Dict[str, Any]:
     """
     Walk-forward validation: train on N days, test on day N+1.
-    """
-    print("  Computing walk-forward validation...")
     
-    # Collect per-day statistics
+    Uses CORRECTLY ALIGNED data from iter_days_aligned().
+    
+    CRITICAL FIX: Previous version used crude subsampling that broke alignment.
+    """
+    print("  Computing walk-forward validation (CORRECTLY ALIGNED)...")
+    
+    # Collect per-day statistics using aligned iterator
     day_stats = []
     
-    for day in iter_days(data_dir, split, dtype=np.float32):
-        # Compute signal-label correlations for this day
+    for day in iter_days_aligned(data_dir, split):
+        # Features are already aligned with labels from iter_days_aligned
+        # day.features[i] corresponds to day.labels[i]
         day_corrs = {}
         
-        # Align features with labels
-        step = max(1, day.n_samples // day.n_labels)
-        aligned_features = day.features[::step][:day.n_labels]
-        
         for name, idx in SIGNAL_INDICES.items():
-            signal = aligned_features[:, idx]
+            signal = day.features[:, idx]
             mask = np.isfinite(signal)
             if mask.sum() > 50:
                 corr = np.corrcoef(signal[mask], day.labels[mask])[0, 1]
@@ -303,7 +378,7 @@ def compute_walk_forward_validation(
         
         day_stats.append({
             'date': day.date,
-            'n_labels': day.n_labels,
+            'n_labels': day.n_pairs,  # Note: n_pairs, not n_labels (aligned data)
             'up_pct': float((day.labels == 1).mean() * 100),
             'down_pct': float((day.labels == -1).mean() * 100),
             'stable_pct': float((day.labels == 0).mean() * 100),

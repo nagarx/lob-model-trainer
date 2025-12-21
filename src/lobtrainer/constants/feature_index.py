@@ -317,6 +317,7 @@ class FeatureIndex(IntEnum):
         1 = EARLY (9:45-10:30): Settling period
         2 = MIDDAY (10:30-15:30): Most stable
         3 = CLOSE (15:30-16:00): Position squaring
+        4 = CLOSED (after hours): Pre-market/after-hours, ~6% of samples
     Cont et al. (2014) §3.3: "Price impact is 5× higher at open vs close."
     """
     

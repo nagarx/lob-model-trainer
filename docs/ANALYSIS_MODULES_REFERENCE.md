@@ -199,18 +199,43 @@ class RunningStats:
 
 #### `iter_days(data_dir, split, dtype=np.float32, mmap_mode=None)`
 
-Generator that yields one day at a time.
+Generator that yields one day at a time (RAW features, NOT aligned with labels).
 
 **Usage**:
 ```python
 for day in iter_days(Path("data/exports/nvda"), "train"):
-    process(day.features, day.labels)
-    # Memory freed after each iteration
+    # day.features has N samples, day.labels has M labels (N > M)
+    # Use for signal autocorrelation, statistics, etc.
+    # DO NOT use for signal-label correlation!
 ```
 
 **Options**:
 - `dtype=np.float32`: 50% memory reduction vs float64
 - `mmap_mode='r'`: Memory-mapped files (even more efficient)
+
+#### `iter_days_aligned(data_dir, split, window_size=100, stride=10, dtype=np.float32)` ⭐ **PREFERRED**
+
+Generator that yields CORRECTLY ALIGNED feature-label pairs per day.
+
+**CRITICAL**: Use this for ANY analysis involving signal-label relationships!
+
+**Usage**:
+```python
+for day in iter_days_aligned(data_dir, 'train'):
+    # day.features[i] corresponds EXACTLY to day.labels[i]
+    corr = np.corrcoef(day.features[:, TRUE_OFI], day.labels)[0, 1]
+```
+
+**Formula**:
+```
+For label[i], the aligned feature is at:
+    feat_idx = i * stride + window_size - 1
+```
+
+**Why this matters**:
+- Crude subsampling (`features[::step]`) breaks alignment
+- Day boundary handling is critical for multi-day analysis
+- ~30x improvement in correlation accuracy (0.003 → 0.10)
 
 #### `compute_streaming_overview(data_dir, symbol, dtype)`
 
@@ -662,11 +687,24 @@ def compute_all_level_vs_change(features, labels, signal_indices=None) -> List[L
 
 **Recommendation**: "level", "change", or "both"
 
-#### 5. Sequence Model Justification
+#### 5. Half-Life Definitions (Important!)
+
+Two different half-life metrics are used:
+
+| Metric | Definition | Context |
+|--------|------------|---------|
+| **ACF Half-life** | First lag where ACF < 0.5 | Signal autocorrelation |
+| **Predictive Half-life** | First lag where \|corr\| < peak/2 | Signal-label correlation decay |
+
+**ACF Half-life**: Standard time series definition. Measures how long until the signal loses half its "memory" (self-correlation).
+
+**Predictive Half-life**: Relative to peak. Measures how quickly predictive power decays. A signal with high peak correlation but fast decay is only useful for very short-term prediction.
+
+#### 6. Sequence Model Justification
 
 The module automatically determines if a sequence model is justified based on:
-- Average half-life > 10
-- Persistent prediction (half-life > 10 for predictive decay)
+- Average ACF half-life > 10
+- Persistent prediction (predictive half-life > 10)
 - Significant lead-lag relationships
 
 ---

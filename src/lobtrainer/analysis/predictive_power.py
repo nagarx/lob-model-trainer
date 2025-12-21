@@ -259,6 +259,7 @@ def print_predictive_summary(
             print(f"    - {row['name']}: expected {row['expected_sign']}, got r = {row['pearson_r']:+.4f}")
     
     # Redundant pairs (if provided)
+    redundant_pairs = []
     if corr_matrix is not None and signal_names is not None:
         print(f"\n  • REDUNDANT PAIRS (|r| > 0.5):")
         for i in range(len(signal_names)):
@@ -266,31 +267,93 @@ def print_predictive_summary(
                 r = corr_matrix[i, j]
                 if abs(r) > 0.5:
                     print(f"    - {signal_names[i]} ↔ {signal_names[j]}: r = {r:+.3f}")
+                    redundant_pairs.append((signal_names[i], signal_names[j], r))
     
-    # Recommendations
+    # Dynamic Recommendations based on actual data
     print("\n" + "=" * 80)
-    print("3. RECOMMENDATIONS")
+    print("3. RECOMMENDATIONS (DATA-DRIVEN)")
     print("=" * 80)
     
-    print("""
-  GROUP A - PRIMARY FEATURES:
-    • true_ofi: Best linear predictor
-    • depth_asymmetry: CONTRARIAN - use as separate feature
-
-  GROUP B - MODERATE VALUE:
-    • executed_pressure: Trade-based, moderate power
-    • cancel_asymmetry: Order flow signal
-    • fragility_score: Book structure
-
-  GROUP C - REDUNDANT (avoid in same model):
-    • depth_norm_ofi: r=0.66 with true_ofi
-    • trade_asymmetry: r=0.54 with true_ofi
-
-  GROUP D - LOW PRIORITY:
-    • signed_mp_delta_bps: Near-zero predictive power
-""")
+    # Sort by absolute correlation for grouping
+    df_sorted = df_metrics.sort_values('pearson_r', key=abs, ascending=False)
     
-    print("=" * 80)
+    # Group A: Primary features (|r| > 0.05, consistent sign, not redundant with better)
+    primary = []
+    contrarian_signals = []
+    moderate = []
+    redundant = []
+    low_priority = []
+    
+    # Get the best predictor name for redundancy check
+    best_name = df_sorted.iloc[0]['name'] if len(df_sorted) > 0 else None
+    
+    # Build set of signals that are redundant with better signals
+    redundant_with_better = set()
+    if len(redundant_pairs) > 0:
+        for sig1, sig2, r in redundant_pairs:
+            # Find which signal has higher predictive power
+            r1 = df_metrics[df_metrics['name'] == sig1]['pearson_r'].abs().values
+            r2 = df_metrics[df_metrics['name'] == sig2]['pearson_r'].abs().values
+            if len(r1) > 0 and len(r2) > 0:
+                if r1[0] > r2[0]:
+                    redundant_with_better.add(sig2)
+                else:
+                    redundant_with_better.add(sig1)
+    
+    for _, row in df_sorted.iterrows():
+        name = row['name']
+        r = row['pearson_r']
+        sign_ok = row['sign_consistent']
+        
+        if name in redundant_with_better:
+            redundant.append((name, r))
+        elif abs(r) < 0.01:
+            low_priority.append((name, r))
+        elif sign_ok == False:
+            contrarian_signals.append((name, r))
+        elif abs(r) >= 0.05:
+            primary.append((name, r))
+        else:
+            moderate.append((name, r))
+    
+    # Print recommendations
+    if primary:
+        print(f"\n  GROUP A - PRIMARY FEATURES (|r| ≥ 0.05, consistent sign):")
+        for name, r in primary:
+            print(f"    • {name}: r = {r:+.4f}")
+    
+    if contrarian_signals:
+        print(f"\n  GROUP B - CONTRARIAN (opposite sign, use carefully):")
+        for name, r in contrarian_signals:
+            print(f"    • {name}: r = {r:+.4f} (inverted sign)")
+    
+    if moderate:
+        print(f"\n  GROUP C - MODERATE VALUE (|r| < 0.05 but > 0.01):")
+        for name, r in moderate:
+            print(f"    • {name}: r = {r:+.4f}")
+    
+    if redundant:
+        print(f"\n  GROUP D - REDUNDANT (correlated with better predictor):")
+        for name, r in redundant:
+            print(f"    • {name}: r = {r:+.4f}")
+    
+    if low_priority:
+        print(f"\n  GROUP E - LOW PRIORITY (|r| < 0.01):")
+        for name, r in low_priority:
+            print(f"    • {name}: r = {r:+.4f}")
+    
+    # Model recommendation
+    print("\n  MODEL RECOMMENDATION:")
+    n_primary = len(primary)
+    n_contrarian = len(contrarian_signals)
+    if n_primary >= 2:
+        print(f"    → Use {n_primary} primary features as base predictors")
+    if n_contrarian > 0:
+        print(f"    → Consider {n_contrarian} contrarian feature(s) as separate input(s)")
+    if len(redundant) > 0:
+        print(f"    → Avoid {len(redundant)} redundant feature(s) to reduce multicollinearity")
+    
+    print("\n" + "=" * 80)
     print("✅ SIGNAL PREDICTIVE POWER ANALYSIS COMPLETE")
     print("=" * 80)
 

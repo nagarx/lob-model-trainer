@@ -30,12 +30,19 @@ from .data_loading import get_signal_info, CORE_SIGNAL_INDICES
 
 @dataclass
 class SignalAutocorrelation:
-    """Autocorrelation analysis for a single signal."""
+    """
+    Autocorrelation analysis for a single signal.
+    
+    Half-life definition (ACF):
+        First lag k where ACF(k) < 0.5
+        This is the standard time series definition: how long until
+        the signal loses half its "memory" (correlation with itself).
+    """
     signal_name: str
     signal_index: int
     acf_values: List[float]  # ACF at each lag
     lags: List[int]
-    half_life: int  # Lag at which ACF drops below 0.5
+    half_life: int  # Lag where ACF drops below 0.5 (absolute threshold)
     decay_rate: float  # Exponential decay rate (higher = faster decay)
     persistence_interpretation: str
 
@@ -54,12 +61,19 @@ class LeadLagRelation:
 
 @dataclass
 class PredictiveDecay:
-    """How signal-label correlation decays with lag."""
+    """
+    How signal-label correlation decays with lag.
+    
+    Half-life definition (Predictive):
+        First lag k where |correlation(k)| < |max_correlation| / 2
+        This measures how quickly the signal's predictive power decays.
+        Unlike ACF half-life, this is relative to the peak correlation.
+    """
     signal_name: str
     signal_index: int
     lags: List[int]
     correlations: List[float]
-    half_life: int  # Lag at which correlation halves
+    half_life: int  # Lag where |corr| drops to half of peak (relative threshold)
     optimal_lag: int  # Lag with maximum |correlation|
     max_correlation: float
 
@@ -122,6 +136,13 @@ def compute_autocorrelation(
         ACF(k) = Cov(X_t, X_{t+k}) / Var(X)
     """
     n = len(signal)
+    
+    # Handle empty or very short signals
+    if n == 0:
+        return np.array([]), 0, 0.0
+    if n == 1:
+        return np.array([1.0]), 0, 0.0
+    
     if n < max_lag + 1:
         max_lag = n - 1
     
@@ -339,6 +360,8 @@ def compute_predictive_decay(
     signal: np.ndarray,
     labels: np.ndarray,
     lags: List[int] = None,
+    window_size: int = 100,
+    stride: int = 10,
 ) -> Tuple[List[float], int, int, float]:
     """
     Compute how signal-label correlation decays with lag.
@@ -349,12 +372,18 @@ def compute_predictive_decay(
         signal: (N,) signal values (sample-level)
         labels: (M,) label values (may be shorter due to alignment)
         lags: List of lags to test
+        window_size: Samples per sequence window (must match data export)
+        stride: Samples between sequence starts (must match data export)
     
     Returns:
         correlations: Correlation at each lag
         half_life: Lag at which correlation halves
         optimal_lag: Lag with maximum |correlation|
         max_corr: Maximum correlation
+    
+    Formula:
+        label[i] corresponds to signal at (i * stride + window_size - 1)
+        With lag, we use signal at (i * stride + window_size - 1 - lag)
     """
     if lags is None:
         lags = [0, 1, 2, 5, 10, 20, 50, 100]
@@ -366,11 +395,6 @@ def compute_predictive_decay(
     
     for lag in lags:
         # For each lag, correlate lagged signal with labels
-        # Note: Need to handle alignment between sample-level signal and sequence-level labels
-        # Assuming labels are spaced by stride=10 samples
-        stride = 10
-        window_size = 100
-        
         # Align: label[i] corresponds to signal at (i*stride + window_size - 1)
         # With lag, we use signal at (i*stride + window_size - 1 - lag)
         
@@ -419,6 +443,8 @@ def compute_all_predictive_decays(
     labels: np.ndarray,
     signal_indices: List[int] = None,
     lags: List[int] = None,
+    window_size: int = 100,
+    stride: int = 10,
 ) -> List[PredictiveDecay]:
     """
     Compute predictive decay for all signals.
@@ -428,6 +454,8 @@ def compute_all_predictive_decays(
         labels: (M,) label array
         signal_indices: Which signals to analyze
         lags: Lags to test
+        window_size: Samples per sequence window (must match data export)
+        stride: Samples between sequence starts (must match data export)
     
     Returns:
         List of PredictiveDecay for each signal
@@ -446,7 +474,7 @@ def compute_all_predictive_decays(
         signal = features[:, idx]
         
         corrs, half_life, optimal_lag, max_corr = compute_predictive_decay(
-            signal, labels, lags
+            signal, labels, lags, window_size, stride
         )
         
         results.append(PredictiveDecay(
@@ -621,7 +649,8 @@ def run_temporal_dynamics_analysis(
     
     # 3. Predictive decay
     predictive_decays = compute_all_predictive_decays(
-        features, labels, signal_indices
+        features, labels, signal_indices, 
+        lags=None, window_size=window_size, stride=stride
     )
     
     # 4. Level vs change

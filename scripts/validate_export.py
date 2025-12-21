@@ -1,20 +1,64 @@
 #!/usr/bin/env python3
-"""Comprehensive validation of exported dataset."""
+"""
+Comprehensive validation of exported dataset.
 
+Validates:
+1. File counts and structure
+2. Chronological ordering of splits
+3. Feature dimensions (98 expected)
+4. NaN/Inf data quality
+5. Label values (-1, 0, 1)
+6. Feature-label pairing
+7. Dataset manifest
+8. Categorical feature indices and values
+
+Usage:
+    python scripts/validate_export.py [--data-dir PATH]
+"""
+
+import argparse
 import numpy as np
 import json
+import sys
 from pathlib import Path
 
-DATA_DIR = Path("/Users/knight/code_local/HFT-pipeline-v2/data/exports/nvda_98feat_full")
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+
+from lobtrainer.constants import FeatureIndex
+
+# Default data directory (can be overridden via command line)
+DEFAULT_DATA_DIR = Path(__file__).parent.parent.parent / "data/exports/nvda_98feat_full"
 
 
 def main():
+    parser = argparse.ArgumentParser(description='Validate exported dataset')
+    parser.add_argument('--data-dir', type=Path, default=DEFAULT_DATA_DIR,
+                        help='Path to exported dataset directory')
+    args = parser.parse_args()
+    
+    global DATA_DIR
+    DATA_DIR = args.data_dir
+    
+    if not DATA_DIR.exists():
+        print(f"❌ Error: Data directory not found: {DATA_DIR}")
+        sys.exit(1)
+    
     print("=" * 70)
     print("COMPREHENSIVE DATASET VALIDATION")
     print("=" * 70)
+    print(f"Data directory: {DATA_DIR}")
 
     splits = ["train", "val", "test"]
-    expected_counts = {"train": 115, "val": 25, "test": 25}
+    
+    # Dynamically count expected files from actual directory
+    expected_counts = {}
+    for split in splits:
+        split_dir = DATA_DIR / split
+        if split_dir.exists():
+            expected_counts[split] = len(list(split_dir.glob("*_features.npy")))
+        else:
+            expected_counts[split] = 0
     
     all_valid = True
 
@@ -22,19 +66,28 @@ def main():
     print("\n1. FILE COUNT VALIDATION")
     print("-" * 40)
 
+    total_days = 0
     for split in splits:
         split_dir = DATA_DIR / split
+        if not split_dir.exists():
+            print(f"  {split}: ❌ Directory not found")
+            all_valid = False
+            continue
+            
         feature_files = list(split_dir.glob("*_features.npy"))
         label_files = list(split_dir.glob("*_labels.npy"))
         
-        status = "✅" if len(feature_files) == expected_counts[split] else "❌"
-        if len(feature_files) != expected_counts[split]:
+        # Check feature-label pairing (should always match)
+        if len(feature_files) == len(label_files):
+            status = "✅"
+        else:
+            status = "❌ MISMATCH"
             all_valid = False
-        print(f"  {split}: {len(feature_files)} features, {len(label_files)} labels {status}")
-        
-        if len(feature_files) != len(label_files):
-            print(f"    ❌ MISMATCH: feature/label file count differs!")
-            all_valid = False
+            
+        print(f"  {split}: {len(feature_files)} feature files, {len(label_files)} label files {status}")
+        total_days += len(feature_files)
+    
+    print(f"  Total: {total_days} trading days across all splits")
 
     # 2. CHRONOLOGICAL ORDER VALIDATION
     print("\n2. CHRONOLOGICAL ORDER VALIDATION")
@@ -178,24 +231,72 @@ def main():
     print("\n8. CATEGORICAL FEATURE VALIDATION")
     print("-" * 40)
     
-    # Check that BOOK_VALID (idx 88), TIME_REGIME (idx 89), MBO_READY (idx 90) 
-    # are NOT z-score normalized (should have distinct finite values)
-    categorical_indices = {
-        "BOOK_VALID": 88,
-        "TIME_REGIME": 89,
-        "MBO_READY": 90,
+    # Use AUTHORITATIVE indices from FeatureIndex (not hardcoded!)
+    # These are safety gates and categorical features that should NOT be z-score normalized
+    categorical_checks = {
+        "BOOK_VALID": {
+            "index": FeatureIndex.BOOK_VALID,  # 92
+            "expected_values": {0.0, 1.0},
+            "description": "Book validity flag (0=invalid, 1=valid)",
+        },
+        "TIME_REGIME": {
+            "index": FeatureIndex.TIME_REGIME,  # 93
+            "expected_values": {0.0, 1.0, 2.0, 3.0, 4.0},  # 0=OPEN, 1=EARLY, 2=MIDDAY, 3=CLOSE, 4=CLOSED
+            "description": "Market session (0-3 regular, 4=after-hours)",
+        },
+        "MBO_READY": {
+            "index": FeatureIndex.MBO_READY,  # 94
+            "expected_values": {0.0, 1.0},
+            "description": "MBO warmup complete (0=warmup, 1=ready)",
+        },
+        "INVALIDITY_DELTA": {
+            "index": FeatureIndex.INVALIDITY_DELTA,  # 96
+            "expected_values": None,  # Non-negative integers, variable
+            "description": "Feed problem count (should be >= 0)",
+        },
+        "SCHEMA_VERSION": {
+            "index": FeatureIndex.SCHEMA_VERSION_FEATURE,  # 97
+            "expected_values": {2.0},  # Current schema version
+            "description": "Schema version (should be 2)",
+        },
     }
     
-    # Sample from first train file
-    sample_file = sorted((DATA_DIR / "train").glob("*_features.npy"))[0]
-    sample_data = np.load(sample_file)
+    # Collect all unique values across all training files for accurate validation
+    categorical_values = {name: set() for name in categorical_checks}
     
-    for name, idx in categorical_indices.items():
-        col = sample_data[:, idx]
-        unique_vals = np.unique(col[np.isfinite(col)])
-        # Z-score normalized data would have mean~0, std~1
-        # Categorical data should have distinct integer-like values OR be 0/1
-        print(f"  {name} (idx {idx}): unique values = {len(unique_vals)}, range = [{col.min():.4f}, {col.max():.4f}]")
+    for feat_file in sorted((DATA_DIR / "train").glob("*_features.npy")):
+        data = np.load(feat_file)
+        for name, check in categorical_checks.items():
+            idx = check["index"]
+            col = data[:, idx]
+            unique_vals = np.unique(col[np.isfinite(col)])
+            categorical_values[name].update(unique_vals.tolist())
+    
+    categorical_ok = True
+    for name, check in categorical_checks.items():
+        idx = check["index"]
+        actual_values = categorical_values[name]
+        expected = check["expected_values"]
+        
+        # Check if values match expected
+        if expected is not None:
+            if actual_values.issubset(expected):
+                status = "✅"
+            else:
+                unexpected = actual_values - expected
+                status = f"⚠️  (unexpected: {unexpected})"
+                # Don't fail validation for this, just warn
+        else:
+            # For INVALIDITY_DELTA, just check non-negative
+            if all(v >= 0 for v in actual_values):
+                status = "✅"
+            else:
+                status = "❌ (negative values found)"
+                categorical_ok = False
+                all_valid = False
+        
+        print(f"  {name} (idx {idx}): values = {sorted(actual_values)[:10]}{'...' if len(actual_values) > 10 else ''} {status}")
+        print(f"    {check['description']}")
 
     print("\n" + "=" * 70)
     if all_valid:

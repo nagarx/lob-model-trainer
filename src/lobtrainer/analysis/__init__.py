@@ -22,6 +22,7 @@ Memory Efficiency:
 
 from .data_loading import (
     load_split,
+    load_split_aligned,  # Use this for multi-day signal-label analysis
     load_all_splits,
     align_features_with_labels,
     WINDOW_SIZE,
@@ -126,14 +127,17 @@ from .generalization import (
 # Memory-efficient streaming analysis (for large datasets)
 from .streaming import (
     iter_days,
+    iter_days_aligned,  # Use this for signal-label correlation (correct alignment)
     count_days,
     get_dates,
+    align_features_for_day,
     compute_streaming_overview,
     compute_streaming_label_analysis,
     compute_streaming_signal_stats,
     estimate_memory_usage,
     get_memory_efficient_config,
     DayData,
+    AlignedDayData,
     RunningStats,
     StreamingColumnStats,
     StreamingLabelCounter,
@@ -143,6 +147,7 @@ from .streaming import (
 __all__ = [
     # Data loading
     'load_split',
+    'load_split_aligned',  # PREFERRED for multi-day signal-label analysis
     'load_all_splits', 
     'align_features_with_labels',
     'WINDOW_SIZE',
@@ -230,14 +235,17 @@ __all__ = [
     'GeneralizationSummary',
     # Streaming (memory-efficient for large datasets)
     'iter_days',
+    'iter_days_aligned',  # PREFERRED for signal-label analysis
     'count_days',
     'get_dates',
+    'align_features_for_day',
     'compute_streaming_overview',
     'compute_streaming_label_analysis',
     'compute_streaming_signal_stats',
     'estimate_memory_usage',
     'get_memory_efficient_config',
     'DayData',
+    'AlignedDayData',
     'RunningStats',
     'StreamingColumnStats',
     'StreamingLabelCounter',
