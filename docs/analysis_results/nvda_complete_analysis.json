@@ -1,7 +1,7 @@
 {
   "symbol": "NVDA",
   "data_dir": "../data/exports/nvda_98feat_full",
-  "analysis_timestamp": "2025-12-21T01:50:12.401948",
+  "analysis_timestamp": "2025-12-21T02:38:35.402583",
   "overview": {
     "total_days": 165,
     "total_samples": 16996000,
@@ -647,5 +647,86 @@
         }
       }
     ]
+  },
+  "stationarity": {
+    "true_ofi": {
+      "adf_statistic": -88.83181420997786,
+      "p_value": 0.0,
+      "is_stationary": true,
+      "n_samples": 100000
+    },
+    "depth_norm_ofi": {
+      "adf_statistic": -80.97260119809334,
+      "p_value": 0.0,
+      "is_stationary": true,
+      "n_samples": 100000
+    },
+    "executed_pressure": {
+      "adf_statistic": -323.30942864675103,
+      "p_value": 0.0,
+      "is_stationary": true,
+      "n_samples": 100000
+    },
+    "signed_mp_delta_bps": {
+      "adf_statistic": -39.227649880921525,
+      "p_value": 0.0,
+      "is_stationary": true,
+      "n_samples": 100000
+    },
+    "trade_asymmetry": {
+      "adf_statistic": -40.933185048136984,
+      "p_value": 0.0,
+      "is_stationary": true,
+      "n_samples": 100000
+    },
+    "cancel_asymmetry": {
+      "adf_statistic": -59.884778096927505,
+      "p_value": 0.0,
+      "is_stationary": true,
+      "n_samples": 100000
+    },
+    "fragility_score": {
+      "adf_statistic": -30.734019189172024,
+      "p_value": 0.0,
+      "is_stationary": true,
+      "n_samples": 100000
+    },
+    "depth_asymmetry": {
+      "adf_statistic": -65.67297845499776,
+      "p_value": 0.0,
+      "is_stationary": true,
+      "n_samples": 100000
+    }
+  },
+  "dimensionality": {
+    "pca": {
+      "n_components_90": 6,
+      "n_components_95": 7,
+      "explained_variance_ratio": [
+        0.3315635919570923,
+        0.14736299216747284,
+        0.1324518322944641,
+        0.12385857850313187,
+        0.09626411646604538
+      ],
+      "dominant_signals": [
+        "true_ofi",
+        "signed_mp_delta_bps",
+        "cancel_asymmetry",
+        "fragility_score",
+        "depth_asymmetry"
+      ]
+    },
+    "vif": {
+      "true_ofi": 2.3022637433181945,
+      "depth_norm_ofi": 2.432244380534799,
+      "executed_pressure": 1.5577552311489327,
+      "signed_mp_delta_bps": 1.0491003451327185,
+      "trade_asymmetry": 1.8794073009205183,
+      "cancel_asymmetry": 1.0334534089568534,
+      "fragility_score": 1.0015137412524506,
+      "depth_asymmetry": 1.084045303773797
+    },
+    "n_samples_used": 50000
   }
 }

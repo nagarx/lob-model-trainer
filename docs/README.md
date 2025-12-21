@@ -25,17 +25,26 @@
 
 ## Analysis Scripts
 
-All analysis is performed via reusable Python scripts in `scripts/`:
+All analysis is performed via a single comprehensive script in `scripts/`:
 
 | Script | Purpose | Memory |
 |--------|---------|--------|
-| **`run_complete_streaming_analysis.py`** | **Complete analysis** (recommended) | **< 1 GB** |
+| **`run_complete_streaming_analysis.py`** | **All analyses in one** | **< 1 GB** |
 | `validate_alignment_bugs.py` | Validate alignment correctness | < 1 GB |
-| `run_data_overview.py` | Data validation, quality checks | ~2 GB |
-| `run_label_analysis.py` | Label distribution, autocorrelation | ~2 GB |
-| `run_signal_analysis.py` | Signal stats, stationarity, PCA/VIF | ~2 GB |
-| `run_temporal_dynamics.py` | Autocorrelation, predictive decay | ~2 GB |
-| `run_generalization.py` | Day-to-day variance, walk-forward | ~2 GB |
+| `validate_export.py` | Validate exported dataset | < 1 GB |
+
+### Analyses Included
+
+The complete streaming analysis includes 8 analyses:
+
+1. **Data Overview** - Quality, shape, NaN/Inf checks
+2. **Label Analysis** - Distribution, autocorrelation, transitions
+3. **Signal-Label Correlations** - With correct day-boundary alignment
+4. **Signal Autocorrelations** - Persistence, half-life
+5. **Predictive Decay** - Correlation at different horizons
+6. **Walk-Forward Validation** - Day-to-day stability
+7. **Stationarity Tests** - ADF test for each signal
+8. **PCA & VIF Analysis** - Dimensionality, multicollinearity
 
 ### Recommended Usage (Large Datasets)
 

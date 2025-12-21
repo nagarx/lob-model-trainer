@@ -36,6 +36,13 @@ from lobtrainer.analysis.streaming import (
     compute_streaming_label_analysis,
     RunningStats,
 )
+from lobtrainer.analysis.signal_stats import (
+    compute_stationarity_test,
+)
+from lobtrainer.analysis.signal_correlations import (
+    compute_pca_analysis,
+    compute_vif,
+)
 from lobtrainer.constants import FeatureIndex
 
 
@@ -431,6 +438,113 @@ def compute_walk_forward_validation(
     }
 
 
+def compute_stationarity_sampled(
+    data_dir: Path,
+    split: str = 'train',
+    max_samples: int = 100000,
+) -> Dict[str, Any]:
+    """
+    Compute stationarity tests using sampled data for memory efficiency.
+    
+    Uses ADF test to determine if signals are stationary.
+    """
+    print("  Loading sampled data for stationarity tests...")
+    
+    # Collect sampled signal data
+    signal_data = {name: [] for name in SIGNAL_INDICES}
+    total_collected = 0
+    
+    for day in iter_days(data_dir, split, dtype=np.float32):
+        step = max(1, day.n_samples // 1000)  # Sample ~1000 per day
+        for name, idx in SIGNAL_INDICES.items():
+            signal_data[name].extend(day.features[::step, idx].tolist())
+        total_collected += len(day.features[::step])
+        
+        if total_collected > max_samples:
+            break
+    
+    results = {}
+    for name, data in signal_data.items():
+        signal = np.array(data[:max_samples])
+        
+        try:
+            adf_stat, p_value, critical_values, is_stationary = compute_stationarity_test(signal)
+            results[name] = {
+                'adf_statistic': float(adf_stat) if np.isfinite(adf_stat) else None,
+                'p_value': float(p_value) if np.isfinite(p_value) else None,
+                'is_stationary': bool(is_stationary),
+                'n_samples': len(signal),
+            }
+        except Exception as e:
+            results[name] = {
+                'error': str(e),
+                'is_stationary': None,
+            }
+    
+    gc.collect()
+    return results
+
+
+def compute_pca_vif_sampled(
+    data_dir: Path,
+    split: str = 'train',
+    max_samples: int = 50000,
+) -> Dict[str, Any]:
+    """
+    Compute PCA and VIF using sampled data for memory efficiency.
+    """
+    print("  Loading sampled data for PCA/VIF...")
+    
+    signal_indices = list(SIGNAL_INDICES.values())
+    
+    # Collect sampled aligned features
+    features_list = []
+    total_collected = 0
+    
+    for day in iter_days_aligned(data_dir, split, dtype=np.float32):
+        n = len(day.features)
+        step = max(1, n // 500)
+        features_list.append(day.features[::step])
+        total_collected += len(day.features[::step])
+        
+        if total_collected > max_samples:
+            break
+    
+    if not features_list:
+        return {'error': 'No data available'}
+    
+    features = np.vstack(features_list)[:max_samples]
+    
+    # PCA
+    try:
+        pca_result = compute_pca_analysis(features, signal_indices)
+        pca_summary = {
+            'n_components_90': pca_result.n_components_90,
+            'n_components_95': pca_result.n_components_95,
+            'explained_variance_ratio': [float(v) for v in pca_result.explained_variance_ratio[:5]],
+            'dominant_signals': pca_result.dominant_signal_per_component[:5] if hasattr(pca_result, 'dominant_signal_per_component') else [],
+        }
+    except Exception as e:
+        pca_summary = {'error': str(e)}
+    
+    # VIF
+    try:
+        vif_results = compute_vif(features, signal_indices)
+        vif_summary = {
+            r.signal_name: float(r.vif) if np.isfinite(r.vif) else 100.0
+            for r in vif_results
+        }
+    except Exception as e:
+        vif_summary = {'error': str(e)}
+    
+    gc.collect()
+    return {
+        'pca': pca_summary,
+        'vif': vif_summary,
+        'n_samples_used': len(features),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description='Complete streaming analysis')
     parser.add_argument('--data-dir', type=Path, required=True)
@@ -463,7 +577,7 @@ def main():
     }
     
     # 1. Basic Overview (already have from streaming)
-    print("\n[1/6] Data Overview...")
+    print("\n[1/8] Data Overview...")
     try:
         overview = compute_streaming_overview(args.data_dir, symbol=args.symbol)
         all_results['overview'] = {
@@ -480,7 +594,7 @@ def main():
         traceback.print_exc()
     
     # 2. Label Analysis
-    print("\n[2/6] Label Analysis...")
+    print("\n[2/8] Label Analysis...")
     try:
         labels = compute_streaming_label_analysis(args.data_dir, split='train')
         all_results['labels'] = {
@@ -494,7 +608,7 @@ def main():
         traceback.print_exc()
     
     # 3. Signal-Label Correlations
-    print("\n[3/6] Signal-Label Correlations...")
+    print("\n[3/8] Signal-Label Correlations...")
     try:
         corr_results = compute_signal_label_correlations(args.data_dir, split='train')
         all_results['signal_correlations'] = corr_results
@@ -509,7 +623,7 @@ def main():
         traceback.print_exc()
     
     # 4. Signal Autocorrelations
-    print("\n[4/6] Signal Autocorrelations...")
+    print("\n[4/8] Signal Autocorrelations...")
     try:
         acf_results = compute_signal_autocorrelations(args.data_dir, split='train')
         all_results['signal_autocorrelations'] = acf_results
@@ -523,7 +637,7 @@ def main():
         traceback.print_exc()
     
     # 5. Predictive Decay
-    print("\n[5/6] Predictive Decay...")
+    print("\n[5/8] Predictive Decay...")
     try:
         decay_results = compute_predictive_decay(args.data_dir, split='train')
         all_results['predictive_decay'] = decay_results
@@ -537,7 +651,7 @@ def main():
         traceback.print_exc()
     
     # 6. Walk-Forward Validation
-    print("\n[6/6] Walk-Forward Validation...")
+    print("\n[6/8] Walk-Forward Validation...")
     try:
         wf_results = compute_walk_forward_validation(args.data_dir, split='train')
         all_results['generalization'] = {
@@ -554,6 +668,35 @@ def main():
         )
         for name, stats in sorted_stability[:3]:
             print(f"    {name}: ratio = {stats['stability_ratio']:.2f}")
+    except Exception as e:
+        print(f"  ❌ Error: {e}")
+        traceback.print_exc()
+    
+    # 7. Stationarity Tests (sampled for memory efficiency)
+    print("\n[7/8] Stationarity Tests...")
+    try:
+        stationarity_results = compute_stationarity_sampled(args.data_dir, split='train')
+        all_results['stationarity'] = stationarity_results
+        
+        print("  Stationarity results:")
+        for name, stats in stationarity_results.items():
+            status = "✅ stationary" if stats['is_stationary'] else "⚠️ non-stationary"
+            print(f"    {name}: p={stats['p_value']:.4f} {status}")
+    except Exception as e:
+        print(f"  ❌ Error: {e}")
+        traceback.print_exc()
+    
+    # 8. PCA & VIF Analysis (sampled for memory efficiency)
+    print("\n[8/8] PCA & VIF Analysis...")
+    try:
+        pca_vif_results = compute_pca_vif_sampled(args.data_dir, split='train')
+        all_results['dimensionality'] = pca_vif_results
+        
+        print(f"  PCA: {pca_vif_results['pca']['n_components_90']} components for 90% variance")
+        print("  VIF (multicollinearity):")
+        for name, vif in list(pca_vif_results['vif'].items())[:3]:
+            status = "⚠️ HIGH" if vif > 5 else "✅ OK"
+            print(f"    {name}: VIF={vif:.1f} {status}")
     except Exception as e:
         print(f"  ❌ Error: {e}")
         traceback.print_exc()
