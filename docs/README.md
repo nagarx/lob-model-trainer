@@ -7,13 +7,19 @@
 
 ---
 
-## Documentation Files
+## Output Files
+
+| File | Purpose |
+|------|---------|
+| **`analysis_results/nvda_complete_analysis.json`** | **Complete validated analysis** (post-alignment fix) |
+| `nvda_alignment_validation.json` | Alignment bug validation proof |
+
+## Documentation
 
 | Document | Purpose |
 |----------|---------|
-| **[ANALYSIS_MODULES_REFERENCE.md](ANALYSIS_MODULES_REFERENCE.md)** | **Comprehensive reference** for all analysis modules, functions, formulas, and interpretation |
-| `nvda_complete_analysis.json` | Full analysis results (streaming) |
-| `signal_predictive_metrics.csv` | Signal ranking by predictive power |
+| **[ANALYSIS_MODULES_REFERENCE.md](ANALYSIS_MODULES_REFERENCE.md)** | Comprehensive reference for all analysis modules, functions, formulas, and interpretation |
+| **[README.md](README.md)** | This file - analysis overview and usage |
 
 ---
 
@@ -21,15 +27,15 @@
 
 All analysis is performed via reusable Python scripts in `scripts/`:
 
-| Script | Purpose | Output | Memory |
-|--------|---------|--------|--------|
-| `run_data_overview.py` | Data validation, quality checks | `nvda_data_overview.json` | ~2 GB |
-| `run_label_analysis.py` | Label distribution, autocorrelation, transitions | `nvda_label_analysis.json` | ~2 GB |
-| `run_signal_analysis.py` | Signal stats, stationarity, correlation, PCA/VIF | `signal_analysis_results.json` | ~2 GB |
-| `run_temporal_dynamics.py` | Autocorrelation, lead-lag, predictive decay | `nvda_temporal_dynamics.json` | ~2 GB |
-| `run_generalization.py` | Day-to-day variance, walk-forward validation | `nvda_generalization.json` | ~2 GB |
-| **`run_streaming_analysis.py`** | Memory-efficient streaming analysis | `nvda_streaming_*.json` | **< 1 GB** |
-| **`run_complete_streaming_analysis.py`** | **ALL analyses** via streaming | `nvda_complete_analysis.json` | **< 1 GB** |
+| Script | Purpose | Memory |
+|--------|---------|--------|
+| **`run_complete_streaming_analysis.py`** | **Complete analysis** (recommended) | **< 1 GB** |
+| `validate_alignment_bugs.py` | Validate alignment correctness | < 1 GB |
+| `run_data_overview.py` | Data validation, quality checks | ~2 GB |
+| `run_label_analysis.py` | Label distribution, autocorrelation | ~2 GB |
+| `run_signal_analysis.py` | Signal stats, stationarity, PCA/VIF | ~2 GB |
+| `run_temporal_dynamics.py` | Autocorrelation, predictive decay | ~2 GB |
+| `run_generalization.py` | Day-to-day variance, walk-forward | ~2 GB |
 
 ### Recommended Usage (Large Datasets)
 
