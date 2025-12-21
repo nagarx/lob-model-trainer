@@ -124,6 +124,24 @@ from .generalization import (
     GeneralizationSummary,
 )
 
+# Intraday seasonality analysis (regime-stratified correlations)
+from .intraday_seasonality import (
+    compute_regime_stats as compute_regime_stats_intraday,
+    compute_signal_regime_correlation,
+    compute_all_regime_correlations,
+    compute_signal_seasonality,
+    compute_regime_importance,
+    run_intraday_seasonality_analysis,
+    to_dict as intraday_to_dict,
+    RegimeStats as IntradayRegimeStats,
+    SignalRegimeCorrelation,
+    SignalSeasonality,
+    IntradaySeasonalitySummary,
+    REGIME_NAMES as INTRADAY_REGIME_NAMES,
+    CORE_SIGNAL_INDICES as INTRADAY_SIGNAL_INDICES,
+    EXPECTED_SIGNS,
+)
+
 # Memory-efficient streaming analysis (for large datasets)
 from .streaming import (
     iter_days,
@@ -250,5 +268,20 @@ __all__ = [
     'StreamingColumnStats',
     'StreamingLabelCounter',
     'StreamingDataQuality',
+    # Intraday seasonality (regime-stratified analysis)
+    'compute_regime_stats_intraday',
+    'compute_signal_regime_correlation',
+    'compute_all_regime_correlations',
+    'compute_signal_seasonality',
+    'compute_regime_importance',
+    'run_intraday_seasonality_analysis',
+    'intraday_to_dict',
+    'IntradayRegimeStats',
+    'SignalRegimeCorrelation',
+    'SignalSeasonality',
+    'IntradaySeasonalitySummary',
+    'INTRADAY_REGIME_NAMES',
+    'INTRADAY_SIGNAL_INDICES',
+    'EXPECTED_SIGNS',
 ]
 

@@ -35,7 +35,7 @@ All analysis is performed via a single comprehensive script in `scripts/`:
 
 ### Analyses Included
 
-The complete streaming analysis includes 8 analyses:
+The complete streaming analysis includes 9 analyses:
 
 1. **Data Overview** - Quality, shape, NaN/Inf checks
 2. **Label Analysis** - Distribution, autocorrelation, transitions
@@ -45,6 +45,7 @@ The complete streaming analysis includes 8 analyses:
 6. **Walk-Forward Validation** - Day-to-day stability
 7. **Stationarity Tests** - ADF test for each signal
 8. **PCA & VIF Analysis** - Dimensionality, multicollinearity
+9. **Intraday Seasonality** - Regime-stratified correlations (Cont et al. 2014 §3.3)
 
 ### Recommended Usage (Large Datasets)
 

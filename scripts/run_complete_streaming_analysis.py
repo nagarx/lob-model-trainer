@@ -5,10 +5,13 @@ Complete memory-efficient streaming analysis for large datasets.
 Runs ALL analysis types with streaming/sampling to stay under 1GB memory:
 1. Data Overview (streaming)
 2. Label Analysis (streaming) 
-3. Signal Statistics (streaming)
-4. Signal-Label Correlations (sampled)
-5. Temporal Dynamics (sampled)
-6. Generalization / Walk-Forward (per-day)
+3. Signal-Label Correlations (sampled, correctly aligned)
+4. Signal Autocorrelations (sampled)
+5. Predictive Decay (sampled, correctly aligned)
+6. Walk-Forward Validation (per-day)
+7. Stationarity Tests (sampled)
+8. PCA & VIF (sampled)
+9. Intraday Seasonality (sampled, regime-stratified correlations)
 
 Usage:
     python scripts/run_complete_streaming_analysis.py \
@@ -42,6 +45,11 @@ from lobtrainer.analysis.signal_stats import (
 from lobtrainer.analysis.signal_correlations import (
     compute_pca_analysis,
     compute_vif,
+)
+from lobtrainer.analysis.intraday_seasonality import (
+    run_intraday_seasonality_analysis,
+    to_dict as intraday_to_dict,
+    CORE_SIGNAL_INDICES as INTRADAY_SIGNAL_INDICES,
 )
 from lobtrainer.constants import FeatureIndex
 
@@ -545,6 +553,65 @@ def compute_pca_vif_sampled(
     }
 
 
+def compute_intraday_seasonality_streaming(
+    data_dir: Path,
+    split: str = 'train',
+    max_samples: int = 100000,
+) -> Dict[str, Any]:
+    """
+    Compute intraday seasonality analysis using sampled data.
+    
+    This analysis answers: Do signal-label correlations differ by time of day?
+    
+    Reference: Cont et al. (2014) §3.3: "Price impact is five times higher at 
+    the market open compared to the market close."
+    
+    Args:
+        data_dir: Path to dataset root
+        split: One of 'train', 'val', 'test'
+        max_samples: Maximum samples to collect
+    
+    Returns:
+        Dict with regime-stratified correlations and seasonality analysis
+    """
+    print("  Loading sampled data for intraday seasonality analysis...")
+    
+    # Collect sampled aligned features and labels
+    features_list = []
+    labels_list = []
+    total_collected = 0
+    
+    for day in iter_days_aligned(data_dir, split, dtype=np.float32):
+        n = len(day.features)
+        step = max(1, n // 500)  # ~500 samples per day
+        features_list.append(day.features[::step])
+        labels_list.append(day.labels[::step])
+        total_collected += len(day.features[::step])
+        
+        if total_collected > max_samples:
+            break
+    
+    if not features_list:
+        return {'error': 'No data available'}
+    
+    features = np.vstack(features_list)[:max_samples]
+    labels = np.concatenate(labels_list)[:max_samples]
+    
+    # Run full intraday seasonality analysis
+    try:
+        summary = run_intraday_seasonality_analysis(
+            features, labels,
+            signal_indices=INTRADAY_SIGNAL_INDICES,
+        )
+        result = intraday_to_dict(summary)
+        result['n_samples_used'] = len(features)
+    except Exception as e:
+        result = {'error': str(e)}
+    
+    gc.collect()
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description='Complete streaming analysis')
     parser.add_argument('--data-dir', type=Path, required=True)
@@ -577,7 +644,7 @@ def main():
     }
     
     # 1. Basic Overview (already have from streaming)
-    print("\n[1/8] Data Overview...")
+    print("\n[1/9] Data Overview...")
     try:
         overview = compute_streaming_overview(args.data_dir, symbol=args.symbol)
         all_results['overview'] = {
@@ -594,7 +661,7 @@ def main():
         traceback.print_exc()
     
     # 2. Label Analysis
-    print("\n[2/8] Label Analysis...")
+    print("\n[2/9] Label Analysis...")
     try:
         labels = compute_streaming_label_analysis(args.data_dir, split='train')
         all_results['labels'] = {
@@ -608,7 +675,7 @@ def main():
         traceback.print_exc()
     
     # 3. Signal-Label Correlations
-    print("\n[3/8] Signal-Label Correlations...")
+    print("\n[3/9] Signal-Label Correlations...")
     try:
         corr_results = compute_signal_label_correlations(args.data_dir, split='train')
         all_results['signal_correlations'] = corr_results
@@ -623,7 +690,7 @@ def main():
         traceback.print_exc()
     
     # 4. Signal Autocorrelations
-    print("\n[4/8] Signal Autocorrelations...")
+    print("\n[4/9] Signal Autocorrelations...")
     try:
         acf_results = compute_signal_autocorrelations(args.data_dir, split='train')
         all_results['signal_autocorrelations'] = acf_results
@@ -637,7 +704,7 @@ def main():
         traceback.print_exc()
     
     # 5. Predictive Decay
-    print("\n[5/8] Predictive Decay...")
+    print("\n[5/9] Predictive Decay...")
     try:
         decay_results = compute_predictive_decay(args.data_dir, split='train')
         all_results['predictive_decay'] = decay_results
@@ -651,7 +718,7 @@ def main():
         traceback.print_exc()
     
     # 6. Walk-Forward Validation
-    print("\n[6/8] Walk-Forward Validation...")
+    print("\n[6/9] Walk-Forward Validation...")
     try:
         wf_results = compute_walk_forward_validation(args.data_dir, split='train')
         all_results['generalization'] = {
@@ -673,7 +740,7 @@ def main():
         traceback.print_exc()
     
     # 7. Stationarity Tests (sampled for memory efficiency)
-    print("\n[7/8] Stationarity Tests...")
+    print("\n[7/9] Stationarity Tests...")
     try:
         stationarity_results = compute_stationarity_sampled(args.data_dir, split='train')
         all_results['stationarity'] = stationarity_results
@@ -687,7 +754,7 @@ def main():
         traceback.print_exc()
     
     # 8. PCA & VIF Analysis (sampled for memory efficiency)
-    print("\n[8/8] PCA & VIF Analysis...")
+    print("\n[8/9] PCA & VIF Analysis...")
     try:
         pca_vif_results = compute_pca_vif_sampled(args.data_dir, split='train')
         all_results['dimensionality'] = pca_vif_results
@@ -697,6 +764,27 @@ def main():
         for name, vif in list(pca_vif_results['vif'].items())[:3]:
             status = "⚠️ HIGH" if vif > 5 else "✅ OK"
             print(f"    {name}: VIF={vif:.1f} {status}")
+    except Exception as e:
+        print(f"  ❌ Error: {e}")
+        traceback.print_exc()
+    
+    # 9. Intraday Seasonality (regime-stratified correlations)
+    print("\n[9/9] Intraday Seasonality...")
+    try:
+        seasonality_results = compute_intraday_seasonality_streaming(args.data_dir, split='train')
+        all_results['intraday_seasonality'] = seasonality_results
+        
+        if 'error' not in seasonality_results:
+            print("  Regime importance (avg |correlation|):")
+            for item in seasonality_results.get('regime_importance_ranking', [])[:4]:
+                print(f"    {item['regime_name']}: {item['avg_abs_correlation']:.4f}")
+            
+            if seasonality_results.get('recommendations'):
+                print("  Recommendations:")
+                for rec in seasonality_results['recommendations'][:2]:
+                    print(f"    • {rec[:80]}...")
+        else:
+            print(f"  ⚠️ {seasonality_results['error']}")
     except Exception as e:
         print(f"  ❌ Error: {e}")
         traceback.print_exc()

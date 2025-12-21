@@ -1,7 +1,7 @@
 {
   "symbol": "NVDA",
   "data_dir": "../data/exports/nvda_98feat_full",
-  "analysis_timestamp": "2025-12-21T02:38:35.402583",
+  "analysis_timestamp": "2025-12-21T03:04:59.460811",
   "overview": {
     "total_days": 165,
     "total_samples": 16996000,
@@ -728,5 +728,689 @@
       "depth_asymmetry": 1.084045303773797
     },
     "n_samples_used": 50000
+  },
+  "intraday_seasonality": {
+    "regime_stats": [
+      {
+        "regime": 0,
+        "regime_name": "OPEN",
+        "n_samples": 5198,
+        "label_mean": 0.018083878414774913,
+        "label_std": 0.7841617198093477,
+        "label_distribution": {
+          "-1": 29.857637552904965,
+          "0": 38.47633705271258,
+          "1": 31.66602539438245
+        }
+      },
+      {
+        "regime": 1,
+        "regime_name": "EARLY",
+        "n_samples": 10529,
+        "label_mean": -0.003799031247032007,
+        "label_std": 0.7842504231787613,
+        "label_distribution": {
+          "-1": 30.943109507075693,
+          "0": 38.493684110551804,
+          "1": 30.563206382372492
+        }
+      },
+      {
+        "regime": 2,
+        "regime_name": "MIDDAY",
+        "n_samples": 34842,
+        "label_mean": 0.009213018770449458,
+        "label_std": 0.7499123156552518,
+        "label_distribution": {
+          "-1": 27.662017105791858,
+          "0": 43.75466391137133,
+          "1": 28.583318982836808
+        }
+      },
+      {
+        "regime": 3,
+        "regime_name": "CLOSE",
+        "n_samples": 5124,
+        "label_mean": 0.015807962529274005,
+        "label_std": 0.6995760335129528,
+        "label_distribution": {
+          "-1": 23.692427790788447,
+          "0": 51.0343481654957,
+          "1": 25.273224043715846
+        }
+      },
+      {
+        "regime": 4,
+        "regime_name": "CLOSED",
+        "n_samples": 3526,
+        "label_mean": 0.012195121951219513,
+        "label_std": 0.6536419220549988,
+        "label_distribution": {
+          "-1": 20.76006806579694,
+          "0": 57.26035167328417,
+          "1": 21.979580260918887
+        }
+      }
+    ],
+    "signal_regime_correlations": [
+      {
+        "signal_name": "true_ofi",
+        "regime": 0,
+        "regime_name": "OPEN",
+        "n_samples": 5198,
+        "correlation": 0.09229596704244614,
+        "p_value": 2.6124005547203796e-11,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "true_ofi",
+        "regime": 1,
+        "regime_name": "EARLY",
+        "n_samples": 10529,
+        "correlation": 0.08722160756587982,
+        "p_value": 3.077057891570308e-19,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "true_ofi",
+        "regime": 2,
+        "regime_name": "MIDDAY",
+        "n_samples": 34842,
+        "correlation": 0.07266613841056824,
+        "p_value": 5.166858358328214e-42,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "true_ofi",
+        "regime": 3,
+        "regime_name": "CLOSE",
+        "n_samples": 5124,
+        "correlation": 0.06660790741443634,
+        "p_value": 1.823374686036015e-06,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "true_ofi",
+        "regime": 4,
+        "regime_name": "CLOSED",
+        "n_samples": 3526,
+        "correlation": 0.06241583824157715,
+        "p_value": 0.0002084390918630121,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "depth_norm_ofi",
+        "regime": 0,
+        "regime_name": "OPEN",
+        "n_samples": 5198,
+        "correlation": 0.039414145052433014,
+        "p_value": 0.004482161173399813,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "depth_norm_ofi",
+        "regime": 1,
+        "regime_name": "EARLY",
+        "n_samples": 10529,
+        "correlation": 0.04769343137741089,
+        "p_value": 9.77683433114447e-07,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "depth_norm_ofi",
+        "regime": 2,
+        "regime_name": "MIDDAY",
+        "n_samples": 34842,
+        "correlation": 0.041910868138074875,
+        "p_value": 5.0264151630240685e-15,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "depth_norm_ofi",
+        "regime": 3,
+        "regime_name": "CLOSE",
+        "n_samples": 5124,
+        "correlation": 0.0570313036441803,
+        "p_value": 4.412463985064207e-05,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "depth_norm_ofi",
+        "regime": 4,
+        "regime_name": "CLOSED",
+        "n_samples": 3526,
+        "correlation": 0.12399472296237946,
+        "p_value": 1.4822621883638454e-13,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "executed_pressure",
+        "regime": 0,
+        "regime_name": "OPEN",
+        "n_samples": 5198,
+        "correlation": 0.08647605776786804,
+        "p_value": 4.2412205551622174e-10,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "executed_pressure",
+        "regime": 1,
+        "regime_name": "EARLY",
+        "n_samples": 10529,
+        "correlation": 0.07912395149469376,
+        "p_value": 4.265763955458557e-16,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "executed_pressure",
+        "regime": 2,
+        "regime_name": "MIDDAY",
+        "n_samples": 34842,
+        "correlation": 0.06379956007003784,
+        "p_value": 9.248241049187229e-33,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "executed_pressure",
+        "regime": 3,
+        "regime_name": "CLOSE",
+        "n_samples": 5124,
+        "correlation": 0.0707470029592514,
+        "p_value": 3.9920051437485373e-07,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "executed_pressure",
+        "regime": 4,
+        "regime_name": "CLOSED",
+        "n_samples": 3526,
+        "correlation": 0.05611083656549454,
+        "p_value": 0.0008581773644213838,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "signed_mp_delta_bps",
+        "regime": 0,
+        "regime_name": "OPEN",
+        "n_samples": 5198,
+        "correlation": 0.002480768831446767,
+        "p_value": 0.8580853668187529,
+        "is_significant": false,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "signed_mp_delta_bps",
+        "regime": 1,
+        "regime_name": "EARLY",
+        "n_samples": 10529,
+        "correlation": -0.017492929473519325,
+        "p_value": 0.07267191119187803,
+        "is_significant": false,
+        "expected_sign": "+",
+        "sign_consistent": false
+      },
+      {
+        "signal_name": "signed_mp_delta_bps",
+        "regime": 2,
+        "regime_name": "MIDDAY",
+        "n_samples": 34842,
+        "correlation": -0.004327218979597092,
+        "p_value": 0.41927115586111385,
+        "is_significant": false,
+        "expected_sign": "+",
+        "sign_consistent": false
+      },
+      {
+        "signal_name": "signed_mp_delta_bps",
+        "regime": 3,
+        "regime_name": "CLOSE",
+        "n_samples": 5124,
+        "correlation": -0.011507785879075527,
+        "p_value": 0.4101808533713183,
+        "is_significant": false,
+        "expected_sign": "+",
+        "sign_consistent": false
+      },
+      {
+        "signal_name": "signed_mp_delta_bps",
+        "regime": 4,
+        "regime_name": "CLOSED",
+        "n_samples": 3526,
+        "correlation": 0.006878390908241272,
+        "p_value": 0.6830542604691212,
+        "is_significant": false,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "trade_asymmetry",
+        "regime": 0,
+        "regime_name": "OPEN",
+        "n_samples": 5198,
+        "correlation": 0.055745430290699005,
+        "p_value": 5.788984781794983e-05,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "trade_asymmetry",
+        "regime": 1,
+        "regime_name": "EARLY",
+        "n_samples": 10529,
+        "correlation": 0.041862428188323975,
+        "p_value": 1.731863036450231e-05,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "trade_asymmetry",
+        "regime": 2,
+        "regime_name": "MIDDAY",
+        "n_samples": 34842,
+        "correlation": 0.03251470997929573,
+        "p_value": 1.2744642998445495e-09,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "trade_asymmetry",
+        "regime": 3,
+        "regime_name": "CLOSE",
+        "n_samples": 5124,
+        "correlation": 0.056670159101486206,
+        "p_value": 4.9316148045270054e-05,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "trade_asymmetry",
+        "regime": 4,
+        "regime_name": "CLOSED",
+        "n_samples": 3526,
+        "correlation": 0.07615910470485687,
+        "p_value": 5.973893592714846e-06,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "cancel_asymmetry",
+        "regime": 0,
+        "regime_name": "OPEN",
+        "n_samples": 5198,
+        "correlation": 0.010029089637100697,
+        "p_value": 0.4697337955848086,
+        "is_significant": false,
+        "expected_sign": "+",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "cancel_asymmetry",
+        "regime": 1,
+        "regime_name": "EARLY",
+        "n_samples": 10529,
+        "correlation": -0.007457533851265907,
+        "p_value": 0.44418809417141586,
+        "is_significant": false,
+        "expected_sign": "+",
+        "sign_consistent": false
+      },
+      {
+        "signal_name": "cancel_asymmetry",
+        "regime": 2,
+        "regime_name": "MIDDAY",
+        "n_samples": 34842,
+        "correlation": -0.01086384616792202,
+        "p_value": 0.042576173755347606,
+        "is_significant": false,
+        "expected_sign": "+",
+        "sign_consistent": false
+      },
+      {
+        "signal_name": "cancel_asymmetry",
+        "regime": 3,
+        "regime_name": "CLOSE",
+        "n_samples": 5124,
+        "correlation": -0.02366042137145996,
+        "p_value": 0.09036281206860462,
+        "is_significant": false,
+        "expected_sign": "+",
+        "sign_consistent": false
+      },
+      {
+        "signal_name": "cancel_asymmetry",
+        "regime": 4,
+        "regime_name": "CLOSED",
+        "n_samples": 3526,
+        "correlation": -0.007811475079506636,
+        "p_value": 0.6428726013132194,
+        "is_significant": false,
+        "expected_sign": "+",
+        "sign_consistent": false
+      },
+      {
+        "signal_name": "fragility_score",
+        "regime": 0,
+        "regime_name": "OPEN",
+        "n_samples": 5198,
+        "correlation": 0.033360809087753296,
+        "p_value": 0.016158635467802746,
+        "is_significant": false,
+        "expected_sign": "?",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "fragility_score",
+        "regime": 1,
+        "regime_name": "EARLY",
+        "n_samples": 10529,
+        "correlation": -0.002713295165449381,
+        "p_value": 0.7807176177767817,
+        "is_significant": false,
+        "expected_sign": "?",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "fragility_score",
+        "regime": 2,
+        "regime_name": "MIDDAY",
+        "n_samples": 34842,
+        "correlation": 0.019648302346467972,
+        "p_value": 0.00024466652202918647,
+        "is_significant": true,
+        "expected_sign": "?",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "fragility_score",
+        "regime": 3,
+        "regime_name": "CLOSE",
+        "n_samples": 5124,
+        "correlation": 0.027522128075361252,
+        "p_value": 0.04884045196681833,
+        "is_significant": false,
+        "expected_sign": "?",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "fragility_score",
+        "regime": 4,
+        "regime_name": "CLOSED",
+        "n_samples": 3526,
+        "correlation": -0.004212774336338043,
+        "p_value": 0.8025368541319496,
+        "is_significant": false,
+        "expected_sign": "?",
+        "sign_consistent": true
+      },
+      {
+        "signal_name": "depth_asymmetry",
+        "regime": 0,
+        "regime_name": "OPEN",
+        "n_samples": 5198,
+        "correlation": -0.04630992189049721,
+        "p_value": 0.0008383742426330791,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": false
+      },
+      {
+        "signal_name": "depth_asymmetry",
+        "regime": 1,
+        "regime_name": "EARLY",
+        "n_samples": 10529,
+        "correlation": -0.06266561150550842,
+        "p_value": 1.228773918059371e-10,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": false
+      },
+      {
+        "signal_name": "depth_asymmetry",
+        "regime": 2,
+        "regime_name": "MIDDAY",
+        "n_samples": 34842,
+        "correlation": -0.07179228961467743,
+        "p_value": 4.770167379902646e-41,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": false
+      },
+      {
+        "signal_name": "depth_asymmetry",
+        "regime": 3,
+        "regime_name": "CLOSE",
+        "n_samples": 5124,
+        "correlation": -0.07560961693525314,
+        "p_value": 6.002386825004122e-08,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": false
+      },
+      {
+        "signal_name": "depth_asymmetry",
+        "regime": 4,
+        "regime_name": "CLOSED",
+        "n_samples": 3526,
+        "correlation": 0.04555005580186844,
+        "p_value": 0.006825989409791276,
+        "is_significant": true,
+        "expected_sign": "+",
+        "sign_consistent": true
+      }
+    ],
+    "signal_seasonality": [
+      {
+        "signal_name": "true_ofi",
+        "regime_correlations": {
+          "0": 0.09229596704244614,
+          "1": 0.08722160756587982,
+          "2": 0.07266613841056824,
+          "3": 0.06660790741443634,
+          "4": 0.06241583824157715
+        },
+        "correlation_range": 0.029880128800868988,
+        "most_predictive_regime": 0,
+        "most_predictive_regime_name": "OPEN",
+        "least_predictive_regime": 4,
+        "least_predictive_regime_name": "CLOSED",
+        "is_regime_dependent": true,
+        "regime_impact_ratio": 1.4787267085193914
+      },
+      {
+        "signal_name": "depth_norm_ofi",
+        "regime_correlations": {
+          "0": 0.039414145052433014,
+          "1": 0.04769343137741089,
+          "2": 0.041910868138074875,
+          "3": 0.0570313036441803,
+          "4": 0.12399472296237946
+        },
+        "correlation_range": 0.08458057790994644,
+        "most_predictive_regime": 4,
+        "most_predictive_regime_name": "CLOSED",
+        "least_predictive_regime": 0,
+        "least_predictive_regime_name": "OPEN",
+        "is_regime_dependent": true,
+        "regime_impact_ratio": 3.145944756569706
+      },
+      {
+        "signal_name": "executed_pressure",
+        "regime_correlations": {
+          "0": 0.08647605776786804,
+          "1": 0.07912395149469376,
+          "2": 0.06379956007003784,
+          "3": 0.0707470029592514,
+          "4": 0.05611083656549454
+        },
+        "correlation_range": 0.030365221202373505,
+        "most_predictive_regime": 0,
+        "most_predictive_regime_name": "OPEN",
+        "least_predictive_regime": 4,
+        "least_predictive_regime_name": "CLOSED",
+        "is_regime_dependent": true,
+        "regime_impact_ratio": 1.5411650059241258
+      },
+      {
+        "signal_name": "signed_mp_delta_bps",
+        "regime_correlations": {
+          "0": 0.002480768831446767,
+          "1": -0.017492929473519325,
+          "2": -0.004327218979597092,
+          "3": -0.011507785879075527,
+          "4": 0.006878390908241272
+        },
+        "correlation_range": 0.015012160642072558,
+        "most_predictive_regime": 1,
+        "most_predictive_regime_name": "EARLY",
+        "least_predictive_regime": 0,
+        "least_predictive_regime_name": "OPEN",
+        "is_regime_dependent": true,
+        "regime_impact_ratio": 7.0514145662325065
+      },
+      {
+        "signal_name": "trade_asymmetry",
+        "regime_correlations": {
+          "0": 0.055745430290699005,
+          "1": 0.041862428188323975,
+          "2": 0.03251470997929573,
+          "3": 0.056670159101486206,
+          "4": 0.07615910470485687
+        },
+        "correlation_range": 0.04364439472556114,
+        "most_predictive_regime": 4,
+        "most_predictive_regime_name": "CLOSED",
+        "least_predictive_regime": 2,
+        "least_predictive_regime_name": "MIDDAY",
+        "is_regime_dependent": true,
+        "regime_impact_ratio": 2.3422969097172457
+      },
+      {
+        "signal_name": "cancel_asymmetry",
+        "regime_correlations": {
+          "0": 0.010029089637100697,
+          "1": -0.007457533851265907,
+          "2": -0.01086384616792202,
+          "3": -0.02366042137145996,
+          "4": -0.007811475079506636
+        },
+        "correlation_range": 0.016202887520194054,
+        "most_predictive_regime": 3,
+        "most_predictive_regime_name": "CLOSE",
+        "least_predictive_regime": 1,
+        "least_predictive_regime_name": "EARLY",
+        "is_regime_dependent": true,
+        "regime_impact_ratio": 3.172687089773469
+      },
+      {
+        "signal_name": "fragility_score",
+        "regime_correlations": {
+          "0": 0.033360809087753296,
+          "1": -0.002713295165449381,
+          "2": 0.019648302346467972,
+          "3": 0.027522128075361252,
+          "4": -0.004212774336338043
+        },
+        "correlation_range": 0.030647513922303915,
+        "most_predictive_regime": 0,
+        "most_predictive_regime_name": "OPEN",
+        "least_predictive_regime": 1,
+        "least_predictive_regime_name": "EARLY",
+        "is_regime_dependent": true,
+        "regime_impact_ratio": 12.295311439965662
+      },
+      {
+        "signal_name": "depth_asymmetry",
+        "regime_correlations": {
+          "0": -0.04630992189049721,
+          "1": -0.06266561150550842,
+          "2": -0.07179228961467743,
+          "3": -0.07560961693525314,
+          "4": 0.04555005580186844
+        },
+        "correlation_range": 0.030059561133384705,
+        "most_predictive_regime": 3,
+        "most_predictive_regime_name": "CLOSE",
+        "least_predictive_regime": 4,
+        "least_predictive_regime_name": "CLOSED",
+        "is_regime_dependent": true,
+        "regime_impact_ratio": 1.6599236950254554
+      }
+    ],
+    "overall_regime_importance": {
+      "0": 0.04576402370003052,
+      "1": 0.043278848577756435,
+      "2": 0.03969036671333015,
+      "3": 0.048669540672563016,
+      "4": 0.0478916498250328
+    },
+    "regime_importance_ranking": [
+      {
+        "regime": 3,
+        "regime_name": "CLOSE",
+        "avg_abs_correlation": 0.048669540672563016
+      },
+      {
+        "regime": 4,
+        "regime_name": "CLOSED",
+        "avg_abs_correlation": 0.0478916498250328
+      },
+      {
+        "regime": 0,
+        "regime_name": "OPEN",
+        "avg_abs_correlation": 0.04576402370003052
+      },
+      {
+        "regime": 1,
+        "regime_name": "EARLY",
+        "avg_abs_correlation": 0.043278848577756435
+      },
+      {
+        "regime": 2,
+        "regime_name": "MIDDAY",
+        "avg_abs_correlation": 0.03969036671333015
+      }
+    ],
+    "recommendations": [
+      "REGIME STABLE: Signal correlations are similar across regimes (ratio 1.2\u00d7). A single model may suffice.",
+      "REGIME-DEPENDENT SIGNALS: true_ofi, depth_norm_ofi, executed_pressure show significant variation across regimes. Consider regime-specific feature weighting.",
+      "FILTER RECOMMENDATION: Found 3526 samples in CLOSED regime (4). Consider filtering these for training (low liquidity, unreliable signals)."
+    ],
+    "n_samples_used": 59219
   }
 }
