@@ -1,7 +1,7 @@
 # Analysis Modules Reference
 
-**Version**: 1.0  
-**Last Updated**: 2025-12-20  
+**Version**: 1.1  
+**Last Updated**: 2025-12-23  
 **Location**: `lob-model-trainer/src/lobtrainer/analysis/`
 
 This document provides comprehensive documentation for all analysis modules in the LOB Model Trainer. Each module is designed to be reusable across different datasets and symbols, following the principles in `.cursor/rules/hft-rules/RULE.md`.
@@ -71,7 +71,7 @@ streaming                         ↑
 
 ## 2. Module: data_loading
 
-**File**: `data_loading.py` (220 lines)  
+**File**: `data_loading.py` (~250 lines)  
 **Purpose**: Load and align features with labels from exported NumPy files.
 
 ### Constants
@@ -92,9 +92,11 @@ Loads all data for a single split (train/val/test).
 ```python
 {
     'features': np.ndarray,  # (N_samples, 98)
-    'labels': np.ndarray,    # (N_labels,)
+    'labels': np.ndarray,    # (N_labels,) or (N_labels, num_horizons)
     'n_days': int,
     'dates': List[str],
+    'is_multi_horizon': bool,  # True if multi-horizon labels
+    'num_horizons': int,       # Number of horizons
 }
 ```
 
@@ -102,7 +104,24 @@ Loads all data for a single split (train/val/test).
 ```python
 data = load_split(Path("data/exports/nvda_98feat"), "train")
 features = data['features']  # Shape: (N, 98)
-labels = data['labels']      # Shape: (M,) where M < N
+labels = data['labels']      # Shape: (M,) or (M, H) for multi-horizon
+```
+
+#### `load_split_aligned(data_dir, split, horizon_idx=None) -> Dict`
+
+Load aligned features and labels with optional horizon selection.
+
+**Parameters**:
+- `horizon_idx`: For multi-horizon, select specific horizon (0-based). None returns all.
+
+**Returns**:
+```python
+{
+    'features': np.ndarray,    # (N_labels, 98) - aligned
+    'labels': np.ndarray,      # (N_labels,) or (N_labels, H)
+    'is_multi_horizon': bool,
+    'num_horizons': int,
+}
 ```
 
 #### `align_features_with_labels(features, n_labels, window_size, stride) -> np.ndarray`
@@ -155,14 +174,56 @@ Returns metadata for all 14 signal features (indices 84-97).
 @dataclass
 class DayData:
     date: str
-    features: np.ndarray  # (N, 98)
-    labels: np.ndarray    # (M,)
+    features: np.ndarray       # (N, 98)
+    labels: np.ndarray         # (M,) or (M, num_horizons) for multi-horizon
     n_samples: int
     n_labels: int
+    is_multi_horizon: bool     # True if labels are 2D
+    num_horizons: int          # Number of horizons (1 for single-horizon)
     
     @property
     def memory_bytes(self) -> int
+    
+    def get_labels(self, horizon_idx: Optional[int] = 0) -> np.ndarray:
+        """Get labels for specific horizon or all horizons.
+        
+        Args:
+            horizon_idx: Index of horizon (0-based). None returns all horizons.
+                         For single-horizon data, returns labels regardless of value.
+        
+        Returns:
+            1D array if horizon_idx specified, 2D array if None and multi-horizon.
+        """
 ```
+
+**Multi-Horizon Support**: As of v1.1, `DayData` automatically detects and handles
+multi-horizon labels from the Rust exporter. Use `get_labels(0)` for backward-compatible
+single-horizon access, or `get_labels(None)` for all horizons.
+
+#### `AlignedDayData`
+
+Used by `iter_days_aligned()` for aligned feature-label pairs.
+
+```python
+@dataclass
+class AlignedDayData:
+    date: str
+    features: np.ndarray       # (N_labels, 98) - aligned with labels
+    labels: np.ndarray         # (N_labels,) or (N_labels, num_horizons)
+    n_pairs: int               # Number of aligned pairs
+    is_multi_horizon: bool     # True if labels are 2D
+    num_horizons: int          # Number of horizons (1 for single-horizon)
+    
+    @property
+    def memory_bytes(self) -> int
+    
+    def get_labels(self, horizon_idx: Optional[int] = 0) -> np.ndarray:
+        """Same semantics as DayData.get_labels()"""
+```
+
+**Key Difference from `DayData`**: In `AlignedDayData`, `features[i]` corresponds
+exactly to `labels[i]` (or `labels[i, :]` for multi-horizon). This 1:1 alignment
+is critical for computing signal-label correlations.
 
 #### `RunningStats`
 
@@ -204,9 +265,18 @@ Generator that yields one day at a time (RAW features, NOT aligned with labels).
 **Usage**:
 ```python
 for day in iter_days(Path("data/exports/nvda"), "train"):
-    # day.features has N samples, day.labels has M labels (N > M)
+    # day.features has N samples, day.labels has M labels
+    # For multi-horizon: day.labels shape is (M, num_horizons)
+    # Use day.get_labels(0) for first horizon, day.get_labels(None) for all
     # Use for signal autocorrelation, statistics, etc.
     # DO NOT use for signal-label correlation!
+```
+
+**Multi-Horizon Support**:
+```python
+for day in iter_days(data_dir, 'train'):
+    print(f"Multi-horizon: {day.is_multi_horizon}, Horizons: {day.num_horizons}")
+    labels_h0 = day.get_labels(0)  # First horizon (works for both single/multi)
 ```
 
 **Options**:
@@ -222,8 +292,21 @@ Generator that yields CORRECTLY ALIGNED feature-label pairs per day.
 **Usage**:
 ```python
 for day in iter_days_aligned(data_dir, 'train'):
-    # day.features[i] corresponds EXACTLY to day.labels[i]
-    corr = np.corrcoef(day.features[:, TRUE_OFI], day.labels)[0, 1]
+    # day.features[i] corresponds EXACTLY to day.labels[i] (or day.labels[i, :] for multi-horizon)
+    # Use get_labels(0) for multi-horizon compatibility
+    labels = day.get_labels(0)  # First horizon
+    corr = np.corrcoef(day.features[:, TRUE_OFI], labels)[0, 1]
+```
+
+**Multi-Horizon Support**:
+```python
+for day in iter_days_aligned(data_dir, 'train'):
+    if day.is_multi_horizon:
+        for h_idx in range(day.num_horizons):
+            labels_h = day.get_labels(h_idx)
+            # Analyze each horizon separately
+    else:
+        labels = day.get_labels(0)  # Same as day.labels
 ```
 
 **Formula**:
@@ -865,27 +948,30 @@ Average: 33%
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/run_data_overview.py` | Generate DatasetSummary |
-| `scripts/run_label_analysis.py` | Generate LabelAnalysisSummary |
-| `scripts/run_signal_analysis.py` | Distribution + stationarity |
-| `scripts/run_temporal_dynamics.py` | Temporal analysis |
-| `scripts/run_generalization.py` | Walk-forward validation |
-| `scripts/run_streaming_analysis.py` | Memory-efficient (1 day at a time) |
-| `scripts/run_complete_streaming_analysis.py` | All analyses, streaming mode |
+| `scripts/run_complete_streaming_analysis.py` | **All analyses**, streaming mode (recommended) |
+
+> **Note**: Individual analysis scripts have been consolidated into `run_complete_streaming_analysis.py`
+> for efficiency and to ensure consistent alignment handling across all analyses.
 
 ### Example Usage
 
 ```bash
-# Full streaming analysis (recommended for large datasets)
+# Full streaming analysis (recommended for all dataset sizes)
 cd lob-model-trainer
 .venv/bin/python scripts/run_complete_streaming_analysis.py \
-    --data-dir ../data/exports/nvda_98feat_full \
+    --data-dir ../data/exports/nvda_multi_horizon \
     --symbol NVDA
 
-# Individual analysis
-.venv/bin/python scripts/run_label_analysis.py \
-    --data-dir ../data/exports/nvda_98feat_full \
-    --symbol NVDA \
-    --split train
+# Output is saved to: data/analysis_results_multi_horizon/nvda_complete_analysis.json
 ```
+
+### Multi-Horizon Dataset Analysis
+
+When analyzing multi-horizon exports, the analysis scripts automatically:
+1. Detect multi-horizon labels from metadata (`num_horizons > 1`)
+2. Use `get_labels(0)` for first horizon in signal-label correlations
+3. Report horizon information in the output JSON
+
+The analysis focuses on the **first horizon** for correlations to maintain backward
+compatibility while supporting multi-horizon exports.
 
