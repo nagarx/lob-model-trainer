@@ -88,7 +88,7 @@ src/lobtrainer/
 ├── models/
 │   ├── __init__.py                # Module exports, create_model factory
 │   ├── lstm.py                    # LSTMClassifier, GRUClassifier, LSTMConfig
-│   └── baselines.py               # NaiveClassPrior, LogisticRegressionBaseline
+│   └── baselines.py               # NaivePreviousLabel, NaiveClassPrior, LogisticBaseline
 │
 ├── training/
 │   ├── __init__.py                # Module exports
@@ -413,15 +413,35 @@ Container for one day's data loaded from NumPy files:
 ```python
 @dataclass
 class DayData:
-    """Container for a single day's data."""
-    date: str                          # e.g., "2025-02-03"
-    sequences: np.ndarray              # [N, 100, 98] sequences
-    labels: np.ndarray                 # [N] or [N, H] labels
-    metadata: Dict[str, Any]           # From metadata JSON
+    """
+    Data from a single trading day.
+    
+    For aligned format (*_sequences.npy):
+        - features: [N_seq, 98] - last timestep of each sequence (for flat models)
+        - sequences: [N_seq, 100, 98] - full 3D sequences (for sequence models)
+        - labels: [N_seq] or [N_seq, n_horizons] - 1:1 aligned with features/sequences
+    
+    For legacy format (*_features.npy):
+        - features: [N_samples, 98] - flat samples (NOT aligned with labels)
+        - sequences: None
+        - labels: [N_labels] - requires manual alignment
+    """
+    date: str                                    # e.g., "2025-02-03"
+    features: np.ndarray                         # [N, 98] - flat features
+    labels: np.ndarray                           # [N_seq] or [N_seq, n_horizons]
+    sequences: Optional[np.ndarray] = None       # [N_seq, 100, 98] - only aligned format
+    metadata: Optional[Dict] = None              # From metadata JSON
+    is_aligned: bool = False                     # True if features 1:1 with labels
+    
+    @property
+    def num_samples(self) -> int:
+        """Number of flat feature samples."""
+        return self.features.shape[0]
     
     @property
     def num_sequences(self) -> int:
-        return len(self.sequences)
+        """Number of sequences (same as num labels)."""
+        return self.labels.shape[0]
     
     @property
     def is_multi_horizon(self) -> bool:
@@ -430,6 +450,18 @@ class DayData:
     @property
     def num_horizons(self) -> int:
         return self.labels.shape[1] if self.is_multi_horizon else 1
+    
+    @property
+    def horizons(self) -> Optional[List[int]]:
+        """Get horizon values from metadata (if available)."""
+        if self.metadata:
+            # New format: horizons at top level
+            if 'horizons' in self.metadata:
+                return self.metadata['horizons']
+            # Legacy format: in label_config
+            if 'label_config' in self.metadata:
+                return self.metadata['label_config'].get('horizons')
+        return None
     
     def get_labels(self, horizon_idx: Optional[int] = 0) -> np.ndarray:
         """Get labels for specific horizon or all horizons."""
@@ -1001,6 +1033,26 @@ class MetricLogger(Callback):
     ): ...
 ```
 
+### ProgressCallback
+
+```python
+class ProgressCallback(Callback):
+    """
+    Display training progress with tqdm progress bars.
+    
+    Shows:
+    - Epoch progress (outer loop)
+    - Batch progress within each epoch (inner loop)
+    - Current metrics (loss, accuracy)
+    """
+    
+    def __init__(
+        self,
+        show_batch_progress: bool = True,
+        show_epoch_progress: bool = True,
+    ): ...
+```
+
 ### CallbackList
 
 ```python
@@ -1277,21 +1329,21 @@ class NaivePreviousLabel(BaseModel):
         return np.concatenate([[0], X[:-1].flatten()])
 ```
 
-### LogisticRegressionBaseline
+### LogisticBaseline
 
 ```python
-class LogisticRegressionBaseline(BaseModel):
+class LogisticBaseline(BaseModel):
     """
-    Logistic regression baseline on flattened features.
+    Logistic regression baseline for LOB price prediction.
     
-    Uses last timestep or mean across sequence.
+    Uses flattened features (last timestep, mean, or full flatten).
     """
     
     def __init__(
         self,
-        flatten_mode: str = "last",  # "last", "mean", "flatten"
-        max_iter: int = 1000,
-        class_weight: str = "balanced",
+        config: LogisticBaselineConfig = None,  # C, max_iter, solver, class_weight
+        flatten_mode: str = "last",             # "last", "mean", "flatten"
+        feature_indices: Optional[List[int]] = None,
     ): ...
 ```
 
@@ -1323,6 +1375,11 @@ class DayData:
     n_labels: int
     is_multi_horizon: bool = False
     num_horizons: int = 1
+    
+    @property
+    def memory_bytes(self) -> int:
+        """Approximate memory usage in bytes."""
+        return self.features.nbytes + self.labels.nbytes
     
     def get_labels(self, horizon_idx: Optional[int] = 0) -> np.ndarray:
         """Get labels for a specific horizon."""
