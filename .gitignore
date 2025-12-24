@@ -71,3 +71,19 @@ checkpoints/
 logs/
 *.log
 
+# Training outputs (checkpoints, runtime logs)
+# NOTE: Experiment configurations are tracked in configs/
+#       Analysis results are tracked in docs/analysis_results/
+#       To compare experiments, copy relevant metrics there
+outputs/
+
+# Runtime analysis logs
+analysis_log.txt
+
+# Stale documentation copies (canonical versions are elsewhere)
+full-data-pipeline.md
+
+# AI assistant working files
+CLAUDE.md
+RULE.md
+
