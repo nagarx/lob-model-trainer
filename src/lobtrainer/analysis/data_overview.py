@@ -137,11 +137,19 @@ def discover_files(data_dir: Path, split: str) -> FileInventory:
     """
     split_dir = data_dir / split
     
-    feature_files = sorted(split_dir.glob('*_features.npy'))
+    # Detect format: try new format first
+    seq_files = sorted(split_dir.glob('*_sequences.npy'))
+    if seq_files:
+        # NEW format: *_sequences.npy
+        feature_files = seq_files
+        dates = [f.stem.replace('_sequences', '') for f in seq_files]
+    else:
+        # LEGACY format: *_features.npy
+        feature_files = sorted(split_dir.glob('*_features.npy'))
+        dates = [f.stem.replace('_features', '') for f in feature_files]
+    
     label_files = sorted(split_dir.glob('*_labels.npy'))
     metadata_files = sorted(split_dir.glob('*_metadata.json'))
-    
-    dates = [f.stem.replace('_features', '') for f in feature_files]
     
     return FileInventory(
         split=split,

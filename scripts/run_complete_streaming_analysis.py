@@ -24,6 +24,10 @@ import json
 import sys
 import gc
 import traceback
+import functools
+
+# Force unbuffered output for real-time progress display
+print = functools.partial(print, flush=True)
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Any, Optional
@@ -108,7 +112,9 @@ def compute_signal_label_correlations(
         for name, idx in SIGNAL_INDICES.items():
             signal_samples[name].extend(day.features[sample_indices, idx].tolist())
         
-        label_samples.extend(day.labels[sample_indices].tolist())
+        # Use get_labels(0) for multi-horizon compatibility
+        day_labels = day.get_labels(0)
+        label_samples.extend(day_labels[sample_indices].tolist())
         
         total_pairs += len(sample_indices)
         days_processed += 1
@@ -304,7 +310,8 @@ def compute_predictive_decay(
         # Features are already aligned with labels from iter_days_aligned
         for name, idx in SIGNAL_INDICES.items():
             all_signals[name].extend(day.features[:, idx].tolist())
-        all_labels.extend(day.labels.tolist())
+        # Use get_labels(0) for multi-horizon compatibility
+        all_labels.extend(day.get_labels(0).tolist())
     
     print(f"    Collected {len(all_labels)} aligned pairs")
     
@@ -379,14 +386,16 @@ def compute_walk_forward_validation(
     
     for day in iter_days_aligned(data_dir, split):
         # Features are already aligned with labels from iter_days_aligned
-        # day.features[i] corresponds to day.labels[i]
+        # day.features[i] corresponds to day.get_labels(0)[i]
+        # Use get_labels(0) for multi-horizon compatibility
+        day_labels = day.get_labels(0)
         day_corrs = {}
         
         for name, idx in SIGNAL_INDICES.items():
             signal = day.features[:, idx]
             mask = np.isfinite(signal)
             if mask.sum() > 50:
-                corr = np.corrcoef(signal[mask], day.labels[mask])[0, 1]
+                corr = np.corrcoef(signal[mask], day_labels[mask])[0, 1]
                 day_corrs[name] = float(corr) if np.isfinite(corr) else 0.0
             else:
                 day_corrs[name] = 0.0
@@ -394,9 +403,9 @@ def compute_walk_forward_validation(
         day_stats.append({
             'date': day.date,
             'n_labels': day.n_pairs,  # Note: n_pairs, not n_labels (aligned data)
-            'up_pct': float((day.labels == 1).mean() * 100),
-            'down_pct': float((day.labels == -1).mean() * 100),
-            'stable_pct': float((day.labels == 0).mean() * 100),
+            'up_pct': float((day_labels == 1).mean() * 100),
+            'down_pct': float((day_labels == -1).mean() * 100),
+            'stable_pct': float((day_labels == 0).mean() * 100),
             'signal_correlations': day_corrs,
         })
     
@@ -585,7 +594,9 @@ def compute_intraday_seasonality_streaming(
         n = len(day.features)
         step = max(1, n // 500)  # ~500 samples per day
         features_list.append(day.features[::step])
-        labels_list.append(day.labels[::step])
+        # Use get_labels(0) for multi-horizon compatibility
+        day_labels = day.get_labels(0)
+        labels_list.append(day_labels[::step])
         total_collected += len(day.features[::step])
         
         if total_collected > max_samples:

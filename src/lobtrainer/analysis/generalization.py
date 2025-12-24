@@ -99,6 +99,10 @@ def load_day_data(data_dir: Path, split: str = 'train') -> List[Dict]:
     """
     Load data for each day separately.
     
+    Handles both export formats:
+    - NEW aligned: *_sequences.npy [N_seq, 100, 98] - extracts last timestep
+    - LEGACY: *_features.npy [N_samples, 98]
+    
     Args:
         data_dir: Path to dataset root
         split: 'train', 'val', or 'test'
@@ -110,16 +114,35 @@ def load_day_data(data_dir: Path, split: str = 'train') -> List[Dict]:
     if not split_dir.exists():
         raise FileNotFoundError(f"Split directory not found: {split_dir}")
     
+    # Detect format: try new format first
+    seq_files = list(split_dir.glob('*_sequences.npy'))
+    if seq_files:
+        # NEW format: *_sequences.npy
+        data_files = sorted(seq_files)
+        suffix = '_sequences'
+        is_3d = True
+    else:
+        # LEGACY format: *_features.npy
+        data_files = sorted(split_dir.glob('*_features.npy'))
+        suffix = '_features'
+        is_3d = False
+    
     days = []
-    for feat_file in sorted(split_dir.glob('*_features.npy')):
-        date = feat_file.stem.replace('_features', '')
+    for data_file in data_files:
+        date = data_file.stem.replace(suffix, '')
         label_file = split_dir / f"{date}_labels.npy"
         
         if not label_file.exists():
             continue
         
-        features = np.load(feat_file)
+        raw_data = np.load(data_file)
         labels = np.load(label_file)
+        
+        # Handle 3D sequences: extract last timestep
+        if is_3d and len(raw_data.shape) == 3:
+            features = raw_data[:, -1, :]  # [N_seq, n_features]
+        else:
+            features = raw_data
         
         days.append({
             'date': date,

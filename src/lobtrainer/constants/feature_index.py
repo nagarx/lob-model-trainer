@@ -1,5 +1,5 @@
 """
-Authoritative Feature Index Map (v2 — 98 Features).
+Authoritative Feature Index Map (v2.1 — 98 Features).
 
 This module defines the EXACT feature indices matching the Rust pipeline export.
 This is a DATA CONTRACT - any changes must be synchronized with:
@@ -17,10 +17,13 @@ Feature Layout Overview:
     | 84-97   | 14    | Trading Signals |
     | Total   | 98    |                 |
 
-WARNING: Feature index 56 (net_trade_flow) has OPPOSITE sign convention.
-         Use: -features[:, 56] to align with standard > 0 = BUY convention.
+Sign Convention (RULE.md §9):
+    - All directional signals follow: > 0 = BULLISH, < 0 = BEARISH
+    - Exception: PRICE_IMPACT (47) is unsigned - cannot determine direction
 
-WARNING: Feature index 47 (price_impact) is UNSIGNED - cannot determine direction.
+Schema Version History:
+    - v2.0: Initial signal layer implementation
+    - v2.1: Fixed sign convention for net_trade_flow (56) and net_cancel_flow (55)
 """
 
 from enum import IntEnum
@@ -30,8 +33,14 @@ from typing import Final
 # Schema Version
 # =============================================================================
 
-SCHEMA_VERSION: Final[int] = 2
-"""Schema version for feature export format. Must match Rust pipeline."""
+SCHEMA_VERSION: Final[float] = 2.1
+"""
+Schema version for feature export format. Must match Rust pipeline.
+
+Version History:
+    - 2.0: Initial signal layer
+    - 2.1: Fixed net_trade_flow (56) and net_cancel_flow (55) sign convention
+"""
 
 # =============================================================================
 # Label Encoding
@@ -54,7 +63,53 @@ LABEL_NAMES: Final[dict] = {
     LABEL_STABLE: "Stable",
     LABEL_UP: "Up",
 }
-"""Human-readable label names."""
+"""Human-readable label names (original encoding: {-1, 0, 1})."""
+
+# =============================================================================
+# Shifted Label Encoding (for PyTorch CrossEntropyLoss)
+# =============================================================================
+# PyTorch CrossEntropyLoss requires labels in {0, 1, ..., num_classes-1}.
+# We shift original labels {-1, 0, 1} to {0, 1, 2} during training.
+#
+# Mapping: original + 1 = shifted
+#   -1 (Down)   -> 0
+#    0 (Stable) -> 1
+#   +1 (Up)     -> 2
+
+SHIFTED_LABEL_DOWN: Final[int] = 0
+"""Down label after shift (original: -1)."""
+
+SHIFTED_LABEL_STABLE: Final[int] = 1
+"""Stable label after shift (original: 0)."""
+
+SHIFTED_LABEL_UP: Final[int] = 2
+"""Up label after shift (original: +1)."""
+
+SHIFTED_LABEL_NAMES: Final[dict] = {
+    SHIFTED_LABEL_DOWN: "Down",
+    SHIFTED_LABEL_STABLE: "Stable",
+    SHIFTED_LABEL_UP: "Up",
+}
+"""Human-readable label names (shifted encoding: {0, 1, 2})."""
+
+
+def get_label_name(label: int, shifted: bool = False) -> str:
+    """
+    Get human-readable name for a label value.
+    
+    Args:
+        label: Label value (-1/0/1 for original, 0/1/2 for shifted)
+        shifted: True if using shifted encoding (PyTorch), False for original
+    
+    Returns:
+        Label name: "Down", "Stable", or "Up"
+    
+    Example:
+        >>> get_label_name(-1, shifted=False)  # "Down"
+        >>> get_label_name(0, shifted=True)    # "Down"
+    """
+    mapping = SHIFTED_LABEL_NAMES if shifted else LABEL_NAMES
+    return mapping.get(label, str(label))
 
 # =============================================================================
 # Feature Counts
@@ -87,16 +142,18 @@ assert FEATURE_COUNT == 98, f"Feature count mismatch: expected 98, got {FEATURE_
 
 class FeatureIndex(IntEnum):
     """
-    Complete feature index mapping for 98-feature export.
+    Complete feature index mapping for 98-feature export (Schema v2.1).
     
     Usage:
         >>> features[:, FeatureIndex.TRUE_OFI]  # Access OFI signal
         >>> features[:, FeatureIndex.MID_PRICE]  # Access mid price
     
-    Sign Conventions:
-        - Most signals: > 0 = BUY pressure, < 0 = SELL pressure
-        - Exception: NET_TRADE_FLOW (56) has OPPOSITE sign - negate before use
+    Sign Conventions (RULE.md §9):
+        - All directional signals: > 0 = BULLISH, < 0 = BEARISH
         - Exception: PRICE_IMPACT (47) is unsigned - do not use for direction
+    
+    Note: As of v2.1, net_trade_flow (56) and net_cancel_flow (55) follow
+          the standard sign convention. No negation required.
     """
     
     # =========================================================================
@@ -198,9 +255,25 @@ class FeatureIndex(IntEnum):
     
     # Net flows (3)
     NET_ORDER_FLOW = 54
+    """
+    Net order flow: (add_bid - add_ask) / total.
+    > 0 = more bid adds (buy orders) = BULLISH.
+    """
+    
     NET_CANCEL_FLOW = 55
+    """
+    Net cancel flow: (cancel_ask - cancel_bid) / total.
+    > 0 = more ask cancels (sellers pulling) = BULLISH.
+    Fixed in v2.1 to follow standard sign convention.
+    """
+    
     NET_TRADE_FLOW = 56
-    """⚠️ OPPOSITE SIGN: Pipeline uses > 0 = SELL. Negate: -features[:, 56] for standard convention."""
+    """
+    Net trade flow: (trade_ask - trade_bid) / total.
+    In MBO: trade_ask = buyer hitting ask = BUY-initiated.
+    > 0 = more BUY-initiated trades = BULLISH.
+    Fixed in v2.1 to follow standard sign convention.
+    """
     
     # Conviction indicators (3)
     AGGRESSIVE_ORDER_RATIO = 57
@@ -341,7 +414,7 @@ class FeatureIndex(IntEnum):
     """
     
     SCHEMA_VERSION_FEATURE = 97
-    """Fixed value = 2. For forward compatibility checking."""
+    """Fixed value = 2.1 (after sign convention fix). For forward compatibility checking."""
 
 
 # =============================================================================
@@ -405,28 +478,16 @@ ASYMMETRY_SIGNALS = (
 
 
 # =============================================================================
-# Sign Convention Warnings
+# Sign Convention Notes
 # =============================================================================
-
-OPPOSITE_SIGN_FEATURES = frozenset({FeatureIndex.NET_TRADE_FLOW})
-"""Features with opposite sign convention. Negate before use."""
 
 UNSIGNED_FEATURES = frozenset({FeatureIndex.PRICE_IMPACT})
 """Unsigned features. Cannot be used for directional signals."""
 
-
-def get_corrected_net_trade_flow(features):
-    """
-    Get net_trade_flow with corrected sign convention.
-    
-    The pipeline exports net_trade_flow with > 0 = SELL.
-    This function returns it with standard convention: > 0 = BUY.
-    
-    Args:
-        features: Array of shape (..., 98)
-    
-    Returns:
-        Array with corrected net_trade_flow (negated)
-    """
-    return -features[..., FeatureIndex.NET_TRADE_FLOW]
+# NOTE: As of v2.1, all directional features follow standard convention:
+#       > 0 = BULLISH, < 0 = BEARISH
+#       The previous OPPOSITE_SIGN_FEATURES set has been removed as the
+#       Rust pipeline now correctly implements sign conventions for:
+#       - net_trade_flow (56)
+#       - net_cancel_flow (55)
 

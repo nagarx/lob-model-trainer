@@ -32,17 +32,60 @@ import warnings
 
 @dataclass
 class DayData:
-    """Container for a single day's data (minimal memory footprint)."""
+    """
+    Container for a single day's data (minimal memory footprint).
+    
+    Supports both single-horizon and multi-horizon labels:
+    - Single-horizon: labels shape is (M,)
+    - Multi-horizon: labels shape is (M, n_horizons)
+    """
     date: str
     features: np.ndarray  # (N, 98) - loaded on demand
-    labels: np.ndarray    # (M,) - loaded on demand
+    labels: np.ndarray    # (M,) or (M, n_horizons) - loaded on demand
     n_samples: int
     n_labels: int
+    is_multi_horizon: bool = False  # True if labels.ndim == 2
+    num_horizons: int = 1           # Number of prediction horizons
     
     @property
     def memory_bytes(self) -> int:
         """Approximate memory usage in bytes."""
         return self.features.nbytes + self.labels.nbytes
+    
+    def get_labels(self, horizon_idx: Optional[int] = 0) -> np.ndarray:
+        """
+        Get labels for a specific horizon.
+        
+        Args:
+            horizon_idx: Which horizon to return (0-based). 
+                         None returns all labels (full array).
+                         Default: 0 (first/only horizon)
+        
+        Returns:
+            Label array: (M,) for single horizon, (M, n_horizons) if horizon_idx=None
+        """
+        if horizon_idx is None:
+            return self.labels
+        
+        if not self.is_multi_horizon:
+            if horizon_idx != 0:
+                raise ValueError(f"Single-horizon data only has horizon_idx=0, got {horizon_idx}")
+            return self.labels
+        
+        if horizon_idx < 0 or horizon_idx >= self.num_horizons:
+            raise ValueError(f"horizon_idx {horizon_idx} out of range [0, {self.num_horizons})")
+        
+        return self.labels[:, horizon_idx]
+
+
+def _detect_format(split_dir: Path) -> str:
+    """Detect export format: 'aligned' (*_sequences.npy) or 'legacy' (*_features.npy)."""
+    if list(split_dir.glob('*_sequences.npy')):
+        return 'aligned'
+    elif list(split_dir.glob('*_features.npy')):
+        return 'legacy'
+    else:
+        raise ValueError(f"No data files found in {split_dir}")
 
 
 def iter_days(
@@ -53,6 +96,10 @@ def iter_days(
 ) -> Generator[DayData, None, None]:
     """
     Iterate over days in a split, yielding one day at a time.
+    
+    Automatically handles both export formats:
+    - NEW aligned: *_sequences.npy [N_seq, 100, 98] - extracts last timestep
+    - LEGACY: *_features.npy [N_samples, 98]
     
     This is the primary memory-efficient data access pattern.
     Each day is loaded, processed, then freed before the next.
@@ -68,18 +115,28 @@ def iter_days(
     
     Example:
         for day in iter_days(data_dir, 'train'):
-            process(day.features, day.labels)
+            # Use get_labels(0) for first horizon (works with both single/multi-horizon)
+            process(day.features, day.get_labels(0))
             # Memory freed after each iteration
     """
     split_dir = Path(data_dir) / split
     if not split_dir.exists():
         raise FileNotFoundError(f"Split directory not found: {split_dir}")
     
-    feature_files = sorted(split_dir.glob('*_features.npy'))
+    export_format = _detect_format(split_dir)
     
-    for feat_file in feature_files:
-        date = feat_file.stem.replace('_features', '')
-        label_file = feat_file.parent / f"{date}_labels.npy"
+    if export_format == 'aligned':
+        # NEW format: *_sequences.npy
+        data_files = sorted(split_dir.glob('*_sequences.npy'))
+        suffix = '_sequences'
+    else:
+        # LEGACY format: *_features.npy
+        data_files = sorted(split_dir.glob('*_features.npy'))
+        suffix = '_features'
+    
+    for data_file in data_files:
+        date = data_file.stem.replace(suffix, '')
+        label_file = data_file.parent / f"{date}_labels.npy"
         
         if not label_file.exists():
             warnings.warn(f"Label file not found for {date}, skipping")
@@ -87,23 +144,36 @@ def iter_days(
         
         # Load with specified dtype and mmap mode
         if mmap_mode:
-            features = np.load(feat_file, mmap_mode=mmap_mode)
+            raw_features = np.load(data_file, mmap_mode=mmap_mode)
             labels = np.load(label_file, mmap_mode=mmap_mode)
         else:
-            features = np.load(feat_file).astype(dtype, copy=False)
+            raw_features = np.load(data_file)
             labels = np.load(label_file)
+        
+        # Handle 3D sequences: extract last timestep
+        if len(raw_features.shape) == 3:
+            # [N_seq, window_size, n_features] -> [N_seq, n_features]
+            features = raw_features[:, -1, :].astype(dtype, copy=False)
+        else:
+            features = raw_features.astype(dtype, copy=False)
+        
+        # Detect multi-horizon labels
+        is_multi_horizon = labels.ndim == 2
+        num_horizons = labels.shape[1] if is_multi_horizon else 1
         
         yield DayData(
             date=date,
             features=features,
             labels=labels,
             n_samples=features.shape[0],
-            n_labels=len(labels),
+            n_labels=labels.shape[0],
+            is_multi_horizon=is_multi_horizon,
+            num_horizons=num_horizons,
         )
         
         # Explicit cleanup (important for memory)
         if not mmap_mode:
-            del features, labels
+            del features, labels, raw_features
             gc.collect()
 
 
@@ -112,6 +182,10 @@ def count_days(data_dir: Path, split: str) -> int:
     split_dir = Path(data_dir) / split
     if not split_dir.exists():
         return 0
+    # Try new format first, then legacy
+    seq_files = list(split_dir.glob('*_sequences.npy'))
+    if seq_files:
+        return len(seq_files)
     return len(list(split_dir.glob('*_features.npy')))
 
 
@@ -120,8 +194,13 @@ def get_dates(data_dir: Path, split: str) -> List[str]:
     split_dir = Path(data_dir) / split
     if not split_dir.exists():
         return []
-    files = sorted(split_dir.glob('*_features.npy'))
-    return [f.stem.replace('_features', '') for f in files]
+    # Try new format first
+    seq_files = sorted(split_dir.glob('*_sequences.npy'))
+    if seq_files:
+        return [f.stem.replace('_sequences', '') for f in seq_files]
+    # Fall back to legacy
+    feat_files = sorted(split_dir.glob('*_features.npy'))
+    return [f.stem.replace('_features', '') for f in feat_files]
 
 
 # ============================================================================
@@ -140,16 +219,47 @@ class AlignedDayData:
     
     Features are already aligned with labels (1:1 correspondence).
     This is the correct data structure for signal-label correlation analysis.
+    
+    Supports multi-horizon labels:
+    - Single-horizon: labels shape is (N_labels,)
+    - Multi-horizon: labels shape is (N_labels, n_horizons)
     """
     date: str
     features: np.ndarray  # (N_labels, 98) - aligned with labels
-    labels: np.ndarray    # (N_labels,)
+    labels: np.ndarray    # (N_labels,) or (N_labels, n_horizons)
     n_pairs: int          # Number of aligned feature-label pairs
+    is_multi_horizon: bool = False  # True if labels.ndim == 2
+    num_horizons: int = 1           # Number of prediction horizons
     
     @property
     def memory_bytes(self) -> int:
         """Approximate memory usage in bytes."""
         return self.features.nbytes + self.labels.nbytes
+    
+    def get_labels(self, horizon_idx: Optional[int] = 0) -> np.ndarray:
+        """
+        Get labels for a specific horizon.
+        
+        Args:
+            horizon_idx: Which horizon to return (0-based). 
+                         None returns all labels (full array).
+                         Default: 0 (first/only horizon)
+        
+        Returns:
+            Label array: (N,) for single horizon, (N, n_horizons) if horizon_idx=None
+        """
+        if horizon_idx is None:
+            return self.labels
+        
+        if not self.is_multi_horizon:
+            if horizon_idx != 0:
+                raise ValueError(f"Single-horizon data only has horizon_idx=0, got {horizon_idx}")
+            return self.labels
+        
+        if horizon_idx < 0 or horizon_idx >= self.num_horizons:
+            raise ValueError(f"horizon_idx {horizon_idx} out of range [0, {self.num_horizons})")
+        
+        return self.labels[:, horizon_idx]
 
 
 def align_features_for_day(
@@ -219,8 +329,10 @@ def iter_days_aligned(
     
     Example:
         for day in iter_days_aligned(data_dir, 'train'):
-            # day.features[i] corresponds to day.labels[i]
-            corr = np.corrcoef(day.features[:, 84], day.labels)[0, 1]
+            # day.features[i] corresponds to day.labels[i] (single-horizon)
+            # or day.labels[i, :] for all horizons (multi-horizon)
+            labels = day.labels if day.labels.ndim == 1 else day.labels[:, 0]
+            corr = np.corrcoef(day.features[:, 84], labels)[0, 1]
             
     Memory Usage:
         ~40MB per day (float32) - same as iter_days() but with aligned features
@@ -229,35 +341,59 @@ def iter_days_aligned(
     if not split_dir.exists():
         raise FileNotFoundError(f"Split directory not found: {split_dir}")
     
-    feature_files = sorted(split_dir.glob('*_features.npy'))
+    export_format = _detect_format(split_dir)
     
-    for feat_file in feature_files:
-        date = feat_file.stem.replace('_features', '')
-        label_file = feat_file.parent / f"{date}_labels.npy"
+    if export_format == 'aligned':
+        # NEW format: Already aligned! Just extract last timestep
+        data_files = sorted(split_dir.glob('*_sequences.npy'))
+        suffix = '_sequences'
+    else:
+        # LEGACY format: Need to apply alignment
+        data_files = sorted(split_dir.glob('*_features.npy'))
+        suffix = '_features'
+    
+    for data_file in data_files:
+        date = data_file.stem.replace(suffix, '')
+        label_file = data_file.parent / f"{date}_labels.npy"
         
         if not label_file.exists():
             warnings.warn(f"Label file not found for {date}, skipping")
             continue
         
         # Load raw data
-        features = np.load(feat_file).astype(dtype, copy=False)
+        raw_data = np.load(data_file)
         labels = np.load(label_file)
-        n_labels = len(labels)
+        n_labels = labels.shape[0]
         
-        # Align features with labels (per-day, correct method)
-        aligned_features = align_features_for_day(
-            features, n_labels, window_size, stride
-        )
+        # Detect multi-horizon labels
+        is_multi_horizon = labels.ndim == 2
+        num_horizons = labels.shape[1] if is_multi_horizon else 1
+        
+        if export_format == 'aligned':
+            # NEW format: 3D sequences [N_seq, 100, 98] - extract last timestep
+            if len(raw_data.shape) == 3:
+                aligned_features = raw_data[:, -1, :].astype(dtype, copy=False)
+            else:
+                aligned_features = raw_data.astype(dtype, copy=False)
+        else:
+            # LEGACY format: Need to align
+            features = raw_data.astype(dtype, copy=False)
+            aligned_features = align_features_for_day(
+                features, n_labels, window_size, stride
+            )
+            del features
         
         yield AlignedDayData(
             date=date,
             features=aligned_features,
             labels=labels,
             n_pairs=n_labels,
+            is_multi_horizon=is_multi_horizon,
+            num_horizons=num_horizons,
         )
         
         # Explicit cleanup
-        del features, aligned_features, labels
+        del raw_data, aligned_features, labels
         gc.collect()
 
 
@@ -482,7 +618,8 @@ def compute_streaming_overview(
         for day in iter_days(data_dir, split, dtype=dtype):
             # Update streaming statistics
             column_stats.update_batch(day.features)
-            label_counter.update(day.labels)
+            # Use first horizon for multi-horizon data (backward compatible)
+            label_counter.update(day.get_labels(0))
             data_quality.update(day.features)
             
             all_dates.append(day.date)
@@ -562,22 +699,24 @@ def compute_streaming_label_analysis(
     label_map = {-1: 0, 0: 1, 1: 2}
     
     for day in iter_days(data_dir, split, dtype=dtype):
-        all_labels.append(day.labels)
+        # Use first horizon for multi-horizon data (backward compatible)
+        day_labels = day.get_labels(0)
+        all_labels.append(day_labels)
         dates.append(day.date)
         
         # Per-day distribution
         day_stats.append({
             'date': day.date,
-            'n_labels': day.n_labels,
-            'up_pct': float(100 * (day.labels == 1).mean()),
-            'down_pct': float(100 * (day.labels == -1).mean()),
-            'stable_pct': float(100 * (day.labels == 0).mean()),
+            'n_labels': len(day_labels),
+            'up_pct': float(100 * (day_labels == 1).mean()),
+            'down_pct': float(100 * (day_labels == -1).mean()),
+            'stable_pct': float(100 * (day_labels == 0).mean()),
         })
         
         # Update transition counts
-        for i in range(len(day.labels) - 1):
-            from_idx = label_map.get(day.labels[i], 1)
-            to_idx = label_map.get(day.labels[i + 1], 1)
+        for i in range(len(day_labels) - 1):
+            from_idx = label_map.get(day_labels[i], 1)
+            to_idx = label_map.get(day_labels[i + 1], 1)
             transition_counts[from_idx, to_idx] += 1
     
     # Concatenate labels (small memory footprint)
@@ -727,6 +866,10 @@ def estimate_memory_usage(
     """
     Estimate memory usage without loading data.
     
+    Handles both export formats:
+    - NEW aligned: *_sequences.npy [N_seq, 100, 98]
+    - LEGACY: *_features.npy [N_samples, 98]
+    
     Args:
         data_dir: Path to dataset root
         dtype: Data type that would be used
@@ -745,14 +888,24 @@ def estimate_memory_usage(
         if not split_dir.exists():
             continue
         
-        # Count samples from file sizes
+        # Count samples from file sizes - try new format first
         split_samples = 0
-        for feat_file in split_dir.glob('*_features.npy'):
-            # Load header only to get shape
-            with open(feat_file, 'rb') as f:
-                np.lib.format.read_magic(f)
-                shape, _, _ = np.lib.format.read_array_header_1_0(f)
-                split_samples += shape[0]
+        seq_files = list(split_dir.glob('*_sequences.npy'))
+        
+        if seq_files:
+            # NEW format: shape is [N_seq, window_size, n_features]
+            for seq_file in seq_files:
+                with open(seq_file, 'rb') as f:
+                    np.lib.format.read_magic(f)
+                    shape, _, _ = np.lib.format.read_array_header_1_0(f)
+                    split_samples += shape[0]  # N_seq (number of sequences)
+        else:
+            # LEGACY format: shape is [N_samples, n_features]
+            for feat_file in split_dir.glob('*_features.npy'):
+                with open(feat_file, 'rb') as f:
+                    np.lib.format.read_magic(f)
+                    shape, _, _ = np.lib.format.read_array_header_1_0(f)
+                    split_samples += shape[0]
         
         bytes_needed = split_samples * n_features * bytes_per_element
         estimates[split] = {

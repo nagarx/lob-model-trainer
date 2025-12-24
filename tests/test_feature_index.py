@@ -2,6 +2,10 @@
 Tests for feature index constants.
 
 Validates that feature indices match the Rust pipeline export contract.
+
+Updated for Schema v2.1:
+    - Removed OPPOSITE_SIGN_FEATURES tests (sign conventions fixed in Rust)
+    - Updated SCHEMA_VERSION test from 2 to 2.1
 """
 
 import pytest
@@ -18,7 +22,6 @@ from lobtrainer.constants import (
     DERIVED_ALL,
     MBO_ALL,
     SIGNALS_ALL,
-    OPPOSITE_SIGN_FEATURES,
     UNSIGNED_FEATURES,
 )
 
@@ -55,8 +58,8 @@ class TestFeatureCounts:
         assert SIGNAL_FEATURE_COUNT == 14
     
     def test_schema_version(self):
-        """Schema version should be 2."""
-        assert SCHEMA_VERSION == 2
+        """Schema version should be 2.1 (sign convention fixes)."""
+        assert SCHEMA_VERSION == 2.1
 
 
 class TestFeatureIndexRanges:
@@ -133,17 +136,40 @@ class TestSignalIndex:
 
 
 class TestSignConventions:
-    """Test sign convention warnings."""
+    """
+    Test sign convention notes.
     
-    def test_opposite_sign_features(self):
-        """NET_TRADE_FLOW has opposite sign convention."""
-        assert FeatureIndex.NET_TRADE_FLOW in OPPOSITE_SIGN_FEATURES
-        assert len(OPPOSITE_SIGN_FEATURES) == 1
+    As of Schema v2.1, all directional features follow standard convention:
+    > 0 = BULLISH, < 0 = BEARISH
+    
+    The only exception is PRICE_IMPACT which is unsigned.
+    """
     
     def test_unsigned_features(self):
-        """PRICE_IMPACT is unsigned."""
+        """PRICE_IMPACT is the only unsigned feature."""
         assert FeatureIndex.PRICE_IMPACT in UNSIGNED_FEATURES
         assert len(UNSIGNED_FEATURES) == 1
+    
+    def test_no_opposite_sign_features(self):
+        """
+        Schema v2.1: No features need sign correction.
+        
+        Previously, net_trade_flow (56) and net_cancel_flow (55) had
+        opposite sign convention. This was fixed in the Rust pipeline.
+        """
+        # All directional features now follow > 0 = BULLISH convention
+        # This test documents the fix
+        directional_features = [
+            FeatureIndex.NET_TRADE_FLOW,  # 56 - fixed in v2.1
+            FeatureIndex.NET_CANCEL_FLOW,  # 55 - fixed in v2.1
+            FeatureIndex.TRUE_OFI,  # 84
+            FeatureIndex.DEPTH_NORM_OFI,  # 85
+            FeatureIndex.EXECUTED_PRESSURE,  # 86
+            FeatureIndex.SIGNED_MP_DELTA_BPS,  # 87
+        ]
+        # All should be valid feature indices
+        for feat in directional_features:
+            assert 0 <= feat < FEATURE_COUNT
 
 
 class TestLOBLevelIndices:

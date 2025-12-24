@@ -1,27 +1,36 @@
-# Baseline LSTM Configuration for NVDA 98-Feature Dataset
+# Baseline LSTM Configuration for NVDA 98-Feature Dataset (Multi-Horizon)
 #
 # This configuration trains an LSTM model on the full 98-feature set
-# exported from the Rust pipeline.
+# exported from the Rust pipeline with multi-horizon labels.
 #
 # Usage:
-#   python -m lobtrainer.train --config configs/baseline_lstm.yaml
+#   python scripts/train.py --config configs/baseline_lstm.yaml
+#
+# Data Contract:
+#   - Sequences: [N_seq, 100, 98] aligned with labels
+#   - Labels: [N_seq, 5] multi-horizon (horizons: 10, 20, 50, 100, 200)
+#   - For training, we use horizon_idx=0 (horizon=10) by default
 
-name: baseline_lstm_nvda
+name: baseline_lstm_nvda_h10
 description: |
   Baseline LSTM model for NVDA price direction prediction.
   Uses all 98 features with per-day Z-score normalization.
+  Trained on horizon=10 (first of 5 available horizons).
   
 tags:
   - baseline
   - lstm
   - nvda
   - 98-features
+  - horizon-10
 
 # Data Configuration
 data:
   # Path relative to lob-model-trainer directory
-  data_dir: "../data/exports/nvda_98feat"
+  # Using nvda_balanced dataset with quantile-based thresholds for balanced classes
+  data_dir: "../data/exports/nvda_balanced"
   feature_count: 98
+  horizon_idx: 0  # Use first horizon (10 steps ahead)
   
   sequence:
     window_size: 100  # Must match Rust export config
@@ -61,8 +70,10 @@ train:
   pin_memory: true
   seed: 42
   mixed_precision: false
+  # Class weights: Set to false with balanced dataset (quantile threshold)
+  # With 36% Down, 27% Stable, 36% Up - classes are already balanced
+  use_class_weights: false
 
 # Output
-output_dir: outputs/baseline_lstm
+output_dir: outputs/baseline_lstm_h10
 log_level: INFO
-

@@ -95,17 +95,30 @@ class TestRealDataLoading:
 
 
 class TestSequenceDataset:
-    """Test PyTorch Dataset with real data."""
+    """
+    Test PyTorch Dataset with real data.
+    
+    NOTE: As of Schema v2.1, LOBSequenceDataset requires aligned format
+    (*_sequences.npy). Tests skip if data is in legacy format.
+    """
     
     def test_sequence_dataset_creation(self):
-        """Create sequence dataset from real data."""
+        """Create sequence dataset from aligned data."""
         from lobtrainer.data import load_split_data, LOBSequenceDataset
         
         days = load_split_data(DATA_DIR, "train", validate=False)
-        dataset = LOBSequenceDataset(days, window_size=100, stride=10)
+        
+        # Check if aligned format (has sequences)
+        if not days or not days[0].is_aligned:
+            pytest.skip("Test requires aligned format data (*_sequences.npy)")
+        
+        dataset = LOBSequenceDataset(days)
         
         assert len(dataset) > 0
-        assert dataset.sequence_shape == (100, 98)
+        # Sequence shape depends on export config (typically 100x98)
+        seq, _ = dataset[0]
+        assert seq.dim() == 2
+        assert seq.shape[1] == 98
     
     def test_sequence_dataset_iteration(self):
         """Iterate through dataset samples."""
@@ -113,15 +126,21 @@ class TestSequenceDataset:
         from lobtrainer.data import load_split_data, LOBSequenceDataset
         
         days = load_split_data(DATA_DIR, "train", validate=False)[:1]  # First day only
-        dataset = LOBSequenceDataset(days, window_size=100, stride=10)
+        
+        # Check if aligned format (has sequences)
+        if not days or not days[0].is_aligned:
+            pytest.skip("Test requires aligned format data (*_sequences.npy)")
+        
+        dataset = LOBSequenceDataset(days)
         
         # Get first sample
         sequence, label = dataset[0]
         
         assert isinstance(sequence, torch.Tensor)
         assert isinstance(label, torch.Tensor)
-        assert sequence.shape == (100, 98)
-        assert label.shape == ()  # Scalar
+        assert sequence.dim() == 2  # (window_size, n_features)
+        assert sequence.shape[1] == 98
+        assert label.dim() == 0  # Scalar
         assert label.dtype == torch.long
 
 
@@ -225,8 +244,8 @@ class TestSignalValues:
                             f"Feature {idx} std {finite_values.std():.3f} not near 1"
                         )
     
-    def test_schema_version_is_2(self):
-        """Schema version should be 2.0 for all samples (NOT normalized)."""
+    def test_schema_version_is_valid(self):
+        """Schema version should be 2.0 or 2.1 for all samples (NOT normalized)."""
         from lobtrainer.data import load_split_data
         from lobtrainer.constants import FeatureIndex, SCHEMA_VERSION
         
@@ -234,12 +253,14 @@ class TestSignalValues:
         
         for day in days:
             schema_col = day.features[:, FeatureIndex.SCHEMA_VERSION_FEATURE]
-            # SCHEMA_VERSION is excluded from normalization, should be exactly 2.0
+            # SCHEMA_VERSION is excluded from normalization, should be constant
             unique_versions = np.unique(schema_col)
             assert len(unique_versions) == 1, (
                 f"Schema version should be constant, got {unique_versions}"
             )
-            assert unique_versions[0] == SCHEMA_VERSION, (
-                f"Schema version should be {SCHEMA_VERSION}, got {unique_versions[0]}"
+            # Accept both v2.0 (old data) and v2.1 (new data after sign fixes)
+            version = unique_versions[0]
+            assert version in (2.0, 2.1), (
+                f"Schema version should be 2.0 or 2.1, got {version}"
             )
 

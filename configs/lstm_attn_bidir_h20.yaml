@@ -1,0 +1,88 @@
+# LSTM with Attention + Bidirectional Configuration (H=20)
+#
+# Enhanced LSTM architecture with:
+#   - Bidirectional processing (captures both past and future context in sequence)
+#   - Self-attention mechanism (focuses on most relevant timesteps)
+#   - Prediction horizon: 20 samples ahead (~2 seconds for 10ms sampling)
+#
+# Architecture benefits:
+#   - Bidirectional: Model sees sequence from both directions, ~2× hidden state
+#   - Attention: Learns which timesteps are most predictive, reduces last-hidden-state bottleneck
+#
+# Usage:
+#   cd lob-model-trainer
+#   source .venv/bin/activate
+#   python scripts/train.py --config configs/lstm_attn_bidir_h20.yaml
+#
+# Reference:
+#   Zhang et al. (2019). DeepLOB: Deep Convolutional Neural Networks for Limit Order Books.
+#   - Uses CNN + Inception + LSTM architecture
+#   - LSTM captures temporal dependencies
+#   - We add attention mechanism per HLOB (Briola et al., 2024)
+
+name: lstm_attn_bidir_h20
+description: |
+  Bidirectional LSTM with self-attention on balanced dataset.
+  Prediction horizon: 20 samples ahead (~2 seconds).
+  Enhanced architecture for better temporal modeling.
+
+tags:
+  - lstm
+  - bidirectional
+  - attention
+  - nvda
+  - balanced-classes
+  - h20
+  - experiment
+
+# Data Configuration
+data:
+  data_dir: "../data/exports/nvda_balanced"
+  feature_count: 98
+  horizon_idx: 1  # Second horizon: 20 samples ahead (horizons=[10,20,50,100,200])
+  
+  sequence:
+    window_size: 100  # 100 timesteps of history
+    stride: 10        # Non-overlapping sequences for efficiency
+  
+  normalization:
+    strategy: zscore_per_day  # Per-day normalization to handle regime shifts
+    eps: 1.0e-8
+    clip_value: 10.0
+    exclude_features:
+      - 93  # TIME_REGIME is categorical
+  
+  label_encoding: categorical  # 3-class: Down=0, Stable=1, Up=2
+  num_classes: 3
+  cache_in_memory: true
+
+# Model Configuration
+model:
+  model_type: lstm
+  input_size: 98
+  hidden_size: 64         # Bidirectional will double this to 128 for classifier
+  num_layers: 2           # 2 stacked LSTM layers
+  dropout: 0.2            # Between LSTM layers
+  num_classes: 3
+  lstm_bidirectional: true   # Enable bidirectional processing
+  lstm_attention: true       # Enable self-attention over sequence
+
+# Training Configuration
+train:
+  batch_size: 128         # Good balance of speed and gradient noise
+  learning_rate: 1.0e-3   # Standard for Adam on small models
+  weight_decay: 1.0e-5    # L2 regularization
+  epochs: 50              # Extended training
+  early_stopping_patience: 10  # Stop if no improvement for 10 epochs
+  gradient_clip_norm: 1.0 # Prevent exploding gradients
+  scheduler: cosine       # Cosine annealing for smooth LR decay
+  num_workers: 0          # Single process (avoids pickling issues)
+  pin_memory: false
+  seed: 42                # Reproducibility
+  mixed_precision: false  # Keep FP32 for numerical stability
+  use_class_weights: true # Handle class imbalance
+
+# Output
+output_dir: outputs/lstm_attn_bidir_h20
+log_level: INFO
+

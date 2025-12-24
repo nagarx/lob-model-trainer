@@ -2,12 +2,12 @@
 Data loading utilities for Phase 2A analysis.
 
 Handles:
-- Loading train/val/test splits
-- Aligning features (sample-level) with labels (sequence-level)
+- Loading train/val/test splits from both formats:
+  - NEW (aligned): *_sequences.npy [N_seq, 100, 98] + *_labels.npy [N_seq]
+  - LEGACY: *_features.npy [N_samples, 98] + *_labels.npy [N_labels]
 
-CRITICAL: For multi-day datasets, always use load_split_aligned() to get
-correct feature-label alignment. The align_features_with_labels() function
-only works correctly for SINGLE-DAY data.
+For the NEW aligned format, sequences and labels are already 1:1 aligned.
+For analysis, we extract the LAST timestep (sequence endpoint) from 3D sequences.
 
 See: docs/nvda_alignment_validation.json for quantified alignment drift.
 """
@@ -25,48 +25,127 @@ WINDOW_SIZE = 100  # Samples per sequence
 STRIDE = 10        # Samples between sequence starts
 
 
-def load_split(data_dir: Path, split_name: str) -> Dict:
+def _detect_export_format(split_dir: Path) -> str:
+    """Detect whether directory contains new aligned format or legacy format."""
+    seq_files = list(split_dir.glob('*_sequences.npy'))
+    feat_files = list(split_dir.glob('*_features.npy'))
+    
+    if seq_files:
+        return 'aligned'
+    elif feat_files:
+        return 'legacy'
+    else:
+        raise ValueError(f"No data files found in {split_dir}")
+
+
+def load_split(data_dir: Path, split_name: str, horizon_idx: Optional[int] = 0) -> Dict:
     """
     Load all data for a single split (train/val/test).
     
+    Automatically detects and handles both export formats:
+    - NEW aligned: *_sequences.npy [N_seq, 100, 98] - extracts last timestep
+    - LEGACY: *_features.npy [N_samples, 98]
+    
+    Supports multi-horizon labels:
+    - Single-horizon: labels shape is (N,)
+    - Multi-horizon: labels shape is (N, n_horizons), use horizon_idx to select one
+    
     Args:
-        data_dir: Path to dataset root (e.g., data/exports/nvda_98feat)
+        data_dir: Path to dataset root (e.g., data/exports/nvda_98feat_full)
         split_name: One of 'train', 'val', 'test'
+        horizon_idx: Which horizon to use for multi-horizon labels (0-based).
+                     None returns all horizons. Default: 0 (first horizon).
     
     Returns:
         dict with:
-            - features: (N_samples, 98) array
-            - labels: (N_labels,) array
+            - features: (N, 98) array - aligned with labels
+            - labels: (N,) array or (N, n_horizons) if horizon_idx=None
             - n_days: number of trading days
             - dates: list of date strings
+            - format: 'aligned' or 'legacy'
+            - is_multi_horizon: bool
+            - num_horizons: int
     """
     split_dir = data_dir / split_name
     if not split_dir.exists():
         raise FileNotFoundError(f"Split directory not found: {split_dir}")
     
+    export_format = _detect_export_format(split_dir)
+    
     features_list = []
     labels_list = []
     dates = []
+    is_multi_horizon = False
+    num_horizons = 1
     
-    for feat_file in sorted(split_dir.glob('*_features.npy')):
-        date = feat_file.stem.replace('_features', '')
-        label_file = feat_file.parent / f"{date}_labels.npy"
-        
-        if not label_file.exists():
-            raise FileNotFoundError(f"Label file not found: {label_file}")
-        
-        features_list.append(np.load(feat_file))
-        labels_list.append(np.load(label_file))
-        dates.append(date)
+    if export_format == 'aligned':
+        # NEW format: *_sequences.npy [N_seq, window_size, n_features]
+        for seq_file in sorted(split_dir.glob('*_sequences.npy')):
+            date = seq_file.stem.replace('_sequences', '')
+            label_file = seq_file.parent / f"{date}_labels.npy"
+            
+            if not label_file.exists():
+                raise FileNotFoundError(f"Label file not found: {label_file}")
+            
+            # Load 3D sequences and extract LAST timestep (sequence endpoint)
+            sequences = np.load(seq_file)  # [N_seq, 100, 98]
+            if len(sequences.shape) == 3:
+                # Extract last timestep for 2D analysis compatibility
+                features = sequences[:, -1, :]  # [N_seq, 98]
+            else:
+                features = sequences  # Already 2D
+            
+            labels = np.load(label_file)
+            
+            # Detect multi-horizon
+            if labels.ndim == 2:
+                is_multi_horizon = True
+                num_horizons = labels.shape[1]
+                if horizon_idx is not None:
+                    labels = labels[:, horizon_idx]
+            
+            # Validate 1:1 alignment (new format guarantees this)
+            if len(features) != labels.shape[0]:
+                warnings.warn(
+                    f"Day {date}: Feature/label mismatch - {len(features)} features vs {labels.shape[0]} labels"
+                )
+            
+            features_list.append(features)
+            labels_list.append(labels)
+            dates.append(date)
+    else:
+        # LEGACY format: *_features.npy [N_samples, n_features]
+        for feat_file in sorted(split_dir.glob('*_features.npy')):
+            date = feat_file.stem.replace('_features', '')
+            label_file = feat_file.parent / f"{date}_labels.npy"
+            
+            if not label_file.exists():
+                raise FileNotFoundError(f"Label file not found: {label_file}")
+            
+            features_list.append(np.load(feat_file))
+            labels = np.load(label_file)
+            
+            # Detect multi-horizon
+            if labels.ndim == 2:
+                is_multi_horizon = True
+                num_horizons = labels.shape[1]
+                if horizon_idx is not None:
+                    labels = labels[:, horizon_idx]
+            
+            labels_list.append(labels)
+            dates.append(date)
     
     if not features_list:
         raise ValueError(f"No data files found in {split_dir}")
     
     return {
         'features': np.vstack(features_list),
-        'labels': np.concatenate(labels_list),
+        'labels': np.concatenate(labels_list, axis=0),
         'n_days': len(features_list),
         'dates': dates,
+        'format': export_format,
+        'is_multi_horizon': is_multi_horizon,
+        'num_horizons': num_horizons,
     }
 
 
@@ -95,44 +174,40 @@ def load_split_aligned(
     split_name: str,
     window_size: int = WINDOW_SIZE,
     stride: int = STRIDE,
+    horizon_idx: Optional[int] = 0,
 ) -> Dict:
     """
     Load split with CORRECT day-boundary-aware alignment.
     
-    This function aligns features with labels PER DAY before concatenating,
-    ensuring correct 1:1 correspondence between aligned features and labels.
+    Automatically handles both export formats:
+    - NEW aligned format (*_sequences.npy): Already 1:1 aligned, just extract last timestep
+    - LEGACY format (*_features.npy): Apply per-day alignment formula
     
-    CRITICAL: This is the ONLY correct way to load multi-day data for 
-    signal-label correlation analysis.
-    
-    The Bug This Fixes:
-        When days have different lengths, using a global alignment formula
-        causes cumulative drift. For 165 days of NVDA data, this drift 
-        reaches 28,200 samples (2,820 labels) - causing ~10x underestimation
-        of signal-label correlations.
+    Supports multi-horizon labels:
+    - Single-horizon: labels shape is (N,)
+    - Multi-horizon: labels shape is (N, n_horizons), use horizon_idx to select one
     
     Args:
-        data_dir: Path to dataset root (e.g., data/exports/nvda_98feat)
+        data_dir: Path to dataset root (e.g., data/exports/nvda_98feat_full)
         split_name: One of 'train', 'val', 'test'
         window_size: Samples per sequence window (default: 100)
         stride: Samples between sequence starts (default: 10)
+        horizon_idx: Which horizon to use for multi-horizon labels (0-based).
+                     None returns all horizons. Default: 0 (first horizon).
     
     Returns:
         dict with:
-            - features: (N_labels, 98) aligned features - 1:1 with labels
-            - labels: (N_labels,) label array
+            - features: (N, 98) aligned features - 1:1 with labels
+            - labels: (N,) label array or (N, n_horizons) if horizon_idx=None
             - n_days: number of trading days
             - dates: list of date strings
             - day_boundaries: list of (start_idx, end_idx) for each day
-    
-    Formula (per day):
-        For label[i] within a day, the corresponding feature is at:
-        feat_idx = i * stride + window_size - 1
-        
-        This is the LAST feature in the sequence window for that label.
+            - format: 'aligned' or 'legacy'
+            - is_multi_horizon: bool
+            - num_horizons: int
     
     Example:
-        >>> data = load_split_aligned(Path("data/exports/nvda_98feat"), "train")
+        >>> data = load_split_aligned(Path("data/exports/nvda_98feat_full"), "train")
         >>> features = data['features']  # Shape: (N, 98) - aligned
         >>> labels = data['labels']      # Shape: (N,) - same length!
         >>> assert len(features) == len(labels)  # Always true
@@ -143,59 +218,112 @@ def load_split_aligned(
     if not split_dir.exists():
         raise FileNotFoundError(f"Split directory not found: {split_dir}")
     
+    export_format = _detect_export_format(split_dir)
+    
     aligned_features_list = []
     labels_list = []
     dates = []
     day_boundaries = []
     current_idx = 0
+    is_multi_horizon = False
+    num_horizons = 1
     
-    feature_files = sorted(split_dir.glob('*_features.npy'))
-    
-    for feat_file in feature_files:
-        date = feat_file.stem.replace('_features', '')
-        label_file = feat_file.parent / f"{date}_labels.npy"
-        
-        if not label_file.exists():
-            raise FileNotFoundError(f"Label file not found: {label_file}")
-        
-        # Load day data
-        day_features = np.load(feat_file)
-        day_labels = np.load(label_file)
-        n_labels = len(day_labels)
-        
-        # Validate label count against expected formula
-        expected_labels = (day_features.shape[0] - window_size) // stride + 1
-        if n_labels != expected_labels:
-            warnings.warn(
-                f"Day {date}: Label count {n_labels} != expected {expected_labels} "
-                f"(features={day_features.shape[0]}, window={window_size}, stride={stride}). "
-                f"Using actual label count."
+    if export_format == 'aligned':
+        # NEW format: Already aligned! Just extract last timestep
+        for seq_file in sorted(split_dir.glob('*_sequences.npy')):
+            date = seq_file.stem.replace('_sequences', '')
+            label_file = seq_file.parent / f"{date}_labels.npy"
+            
+            if not label_file.exists():
+                raise FileNotFoundError(f"Label file not found: {label_file}")
+            
+            # Load 3D sequences and extract LAST timestep
+            sequences = np.load(seq_file)  # [N_seq, 100, 98]
+            if len(sequences.shape) == 3:
+                day_features = sequences[:, -1, :]  # [N_seq, 98]
+            else:
+                day_features = sequences
+            
+            day_labels = np.load(label_file)
+            
+            # Detect multi-horizon
+            if day_labels.ndim == 2:
+                is_multi_horizon = True
+                num_horizons = day_labels.shape[1]
+                n_labels = day_labels.shape[0]
+                if horizon_idx is not None:
+                    day_labels = day_labels[:, horizon_idx]
+            else:
+                n_labels = len(day_labels)
+            
+            # Track day boundaries
+            start_idx = current_idx
+            end_idx = current_idx + n_labels
+            day_boundaries.append((start_idx, end_idx))
+            current_idx = end_idx
+            
+            aligned_features_list.append(day_features)
+            labels_list.append(day_labels)
+            dates.append(date)
+    else:
+        # LEGACY format: Need to apply alignment per day
+        for feat_file in sorted(split_dir.glob('*_features.npy')):
+            date = feat_file.stem.replace('_features', '')
+            label_file = feat_file.parent / f"{date}_labels.npy"
+            
+            if not label_file.exists():
+                raise FileNotFoundError(f"Label file not found: {label_file}")
+            
+            # Load day data
+            day_features = np.load(feat_file)
+            day_labels = np.load(label_file)
+            
+            # Detect multi-horizon
+            if day_labels.ndim == 2:
+                is_multi_horizon = True
+                num_horizons = day_labels.shape[1]
+                n_labels = day_labels.shape[0]
+                if horizon_idx is not None:
+                    day_labels = day_labels[:, horizon_idx]
+            else:
+                n_labels = len(day_labels)
+            
+            # Validate label count against expected formula
+            expected_labels = (day_features.shape[0] - window_size) // stride + 1
+            if n_labels != expected_labels:
+                warnings.warn(
+                    f"Day {date}: Label count {n_labels} != expected {expected_labels} "
+                    f"(features={day_features.shape[0]}, window={window_size}, stride={stride}). "
+                    f"Using actual label count."
+                )
+            
+            # Align PER DAY (critical for legacy format)
+            day_aligned = align_features_with_labels(
+                day_features, n_labels, window_size, stride
             )
-        
-        # Align PER DAY (critical fix)
-        day_aligned = align_features_with_labels(
-            day_features, n_labels, window_size, stride
-        )
-        
-        # Track day boundaries
-        start_idx = current_idx
-        end_idx = current_idx + n_labels
-        day_boundaries.append((start_idx, end_idx))
-        current_idx = end_idx
-        
-        aligned_features_list.append(day_aligned)
-        labels_list.append(day_labels)
-        dates.append(date)
+            
+            # Track day boundaries
+            start_idx = current_idx
+            end_idx = current_idx + n_labels
+            day_boundaries.append((start_idx, end_idx))
+            current_idx = end_idx
+            
+            aligned_features_list.append(day_aligned)
+            labels_list.append(day_labels)
+            dates.append(date)
     
     if not aligned_features_list:
         raise ValueError(f"No data files found in {split_dir}")
     
     return {
         'features': np.vstack(aligned_features_list),
-        'labels': np.concatenate(labels_list),
+        'labels': np.concatenate(labels_list, axis=0),
         'n_days': len(aligned_features_list),
         'dates': dates,
         'day_boundaries': day_boundaries,
+        'format': export_format,
+        'is_multi_horizon': is_multi_horizon,
+        'num_horizons': num_horizons,
     }
 
 

@@ -190,10 +190,29 @@ class DataConfig:
     cache_in_memory: bool = True
     """Whether to cache all data in memory. Faster but uses more RAM."""
     
+    horizon_idx: int = 0
+    """
+    Which prediction horizon to use for multi-horizon datasets.
+    
+    Index into the horizons array from the export config. For example:
+        horizons = [10, 20, 50, 100, 200] in the Rust export config:
+        - horizon_idx=0 → 10 samples ahead (~1 second for 10ms sampling)
+        - horizon_idx=1 → 20 samples ahead (~2 seconds)
+        - horizon_idx=2 → 50 samples ahead (~5 seconds)
+        - horizon_idx=3 → 100 samples ahead (~10 seconds)
+        - horizon_idx=4 → 200 samples ahead (~20 seconds)
+    
+    Set to None to return all horizons (advanced: multi-task learning).
+    """
+    
     def __post_init__(self) -> None:
         if self.feature_count != 98:
             raise ValueError(
                 f"feature_count must be 98 for current schema, got {self.feature_count}"
+            )
+        if self.horizon_idx < 0:
+            raise ValueError(
+                f"horizon_idx must be >= 0, got {self.horizon_idx}"
             )
 
 
@@ -230,7 +249,10 @@ class ModelConfig:
     
     # Architecture-specific parameters
     lstm_bidirectional: bool = False
-    """Use bidirectional LSTM/GRU."""
+    """Use bidirectional LSTM/GRU. Doubles hidden dimension for classifier."""
+    
+    lstm_attention: bool = False
+    """Use self-attention over LSTM sequence outputs before classification."""
     
     transformer_num_heads: int = 4
     """Number of attention heads for Transformer."""
@@ -296,6 +318,16 @@ class TrainConfig:
     
     mixed_precision: bool = False
     """Use automatic mixed precision (AMP) for faster training."""
+    
+    use_class_weights: bool = True
+    """
+    Apply inverse-frequency class weighting to CrossEntropyLoss.
+    
+    Useful for imbalanced datasets where some classes are much more frequent.
+    Weights are computed as: weight[c] = total / (n_classes × count[c])
+    
+    Set to False if using a balanced dataset (e.g., quantile-based thresholds).
+    """
     
     def __post_init__(self) -> None:
         if self.batch_size < 1:
