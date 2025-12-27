@@ -423,24 +423,34 @@ class TestDatasetIntegration:
         assert total_samples == 100
     
     def test_feature_indices_selection(self, seed):
-        """Test using feature_indices to select LOB features."""
-        from lobtrainer.constants import LOB_BID_PRICES, LOB_ASK_PRICES, LOB_BID_SIZES, LOB_ASK_SIZES
+        """
+        Test using feature_indices to select LOB features.
+        
+        Layout (matches Rust pipeline):
+            [ask_prices(10), ask_sizes(10), bid_prices(10), bid_sizes(10)]
+            - LOB_ASK_PRICES: indices 0-9
+            - LOB_ASK_SIZES: indices 10-19
+            - LOB_BID_PRICES: indices 20-29
+            - LOB_BID_SIZES: indices 30-39
+        """
+        from lobtrainer.constants import LOB_ASK_PRICES, LOB_ASK_SIZES, LOB_BID_PRICES, LOB_BID_SIZES
         
         # Our 98-feature tensor
         x = torch.randn(8, 100, 98)
         
         # Select LOB features using slices
-        bid_prices = x[:, :, LOB_BID_PRICES]   # indices 0-9
-        ask_prices = x[:, :, LOB_ASK_PRICES]   # indices 10-19
-        bid_sizes = x[:, :, LOB_BID_SIZES]     # indices 20-29
-        ask_sizes = x[:, :, LOB_ASK_SIZES]     # indices 30-39
+        ask_prices = x[:, :, LOB_ASK_PRICES]   # indices 0-9
+        ask_sizes = x[:, :, LOB_ASK_SIZES]     # indices 10-19
+        bid_prices = x[:, :, LOB_BID_PRICES]   # indices 20-29
+        bid_sizes = x[:, :, LOB_BID_SIZES]     # indices 30-39
         
-        # Concatenate to create 40-feature LOB input
-        x_lob = torch.cat([bid_prices, ask_prices, bid_sizes, ask_sizes], dim=-1)
+        # Concatenate in GROUPED layout order to create 40-feature LOB input
+        # Order: [ask_p, ask_s, bid_p, bid_s] - matches Rust pipeline
+        x_lob = torch.cat([ask_prices, ask_sizes, bid_prices, bid_sizes], dim=-1)
         
         assert x_lob.shape == (8, 100, 40)
         
-        # Verify this equals simple slice
+        # Verify this equals simple slice (first 40 features are LOB features)
         x_lob_simple = x[:, :, :40]
         torch.testing.assert_close(x_lob, x_lob_simple)
 

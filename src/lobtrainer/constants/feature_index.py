@@ -116,7 +116,7 @@ def get_label_name(label: int, shifted: bool = False) -> str:
 # =============================================================================
 
 LOB_FEATURE_COUNT: Final[int] = 40
-"""Raw LOB features: 10 levels × 4 values (bid_price, ask_price, bid_size, ask_size)."""
+"""Raw LOB features: 10 levels × 4 values (ask_prices, ask_sizes, bid_prices, bid_sizes)."""
 
 DERIVED_FEATURE_COUNT: Final[int] = 8
 """Derived features: mid_price, spread, spread_bps, volumes, microprice, etc."""
@@ -152,6 +152,17 @@ class FeatureIndex(IntEnum):
         - All directional signals: > 0 = BULLISH, < 0 = BEARISH
         - Exception: PRICE_IMPACT (47) is unsigned - do not use for direction
     
+    LOB Feature Layout (matches Rust pipeline output):
+        - Indices 0-9:   Ask prices (level 0-9, best ask at index 0)
+        - Indices 10-19: Ask sizes (volume at each ask level)
+        - Indices 20-29: Bid prices (level 0-9, best bid at index 20)
+        - Indices 30-39: Bid sizes (volume at each bid level)
+    
+    This layout groups by SIDE first (ask, then bid), then by TYPE (prices, then sizes).
+    Consistent with FI-2010 convention where ask comes before bid.
+    
+    Spread Invariant: ASK_PRICE_L0 > BID_PRICE_L0 (when book is valid)
+    
     Note: As of v2.1, net_trade_flow (56) and net_cancel_flow (55) follow
           the standard sign convention. No negation required.
     """
@@ -159,55 +170,62 @@ class FeatureIndex(IntEnum):
     # =========================================================================
     # Raw LOB Features (40) — Indices 0-39
     # =========================================================================
-    # Layout: [bid_prices(10), ask_prices(10), bid_sizes(10), ask_sizes(10)]
+    # Layout: [ask_prices(10), ask_sizes(10), bid_prices(10), bid_sizes(10)]
+    # Source: feature-extractor-MBO-LOB/CODEBASE.md §4 "Feature Extraction System"
+    # 
+    # This layout matches Rust pipeline (lob_features.rs extract_raw_features):
+    #   1. Ask prices (levels 0 to L-1)
+    #   2. Ask sizes (levels 0 to L-1)
+    #   3. Bid prices (levels 0 to L-1)
+    #   4. Bid sizes (levels 0 to L-1)
     
-    # Bid prices (levels 0-9)
-    BID_PRICE_L0 = 0
-    BID_PRICE_L1 = 1
-    BID_PRICE_L2 = 2
-    BID_PRICE_L3 = 3
-    BID_PRICE_L4 = 4
-    BID_PRICE_L5 = 5
-    BID_PRICE_L6 = 6
-    BID_PRICE_L7 = 7
-    BID_PRICE_L8 = 8
-    BID_PRICE_L9 = 9
+    # Ask prices (levels 0-9) — Best ask at L0, deeper levels have higher prices
+    ASK_PRICE_L0 = 0
+    ASK_PRICE_L1 = 1
+    ASK_PRICE_L2 = 2
+    ASK_PRICE_L3 = 3
+    ASK_PRICE_L4 = 4
+    ASK_PRICE_L5 = 5
+    ASK_PRICE_L6 = 6
+    ASK_PRICE_L7 = 7
+    ASK_PRICE_L8 = 8
+    ASK_PRICE_L9 = 9
     
-    # Ask prices (levels 0-9)
-    ASK_PRICE_L0 = 10
-    ASK_PRICE_L1 = 11
-    ASK_PRICE_L2 = 12
-    ASK_PRICE_L3 = 13
-    ASK_PRICE_L4 = 14
-    ASK_PRICE_L5 = 15
-    ASK_PRICE_L6 = 16
-    ASK_PRICE_L7 = 17
-    ASK_PRICE_L8 = 18
-    ASK_PRICE_L9 = 19
+    # Ask sizes (levels 0-9) — Volume at each ask price level
+    ASK_SIZE_L0 = 10
+    ASK_SIZE_L1 = 11
+    ASK_SIZE_L2 = 12
+    ASK_SIZE_L3 = 13
+    ASK_SIZE_L4 = 14
+    ASK_SIZE_L5 = 15
+    ASK_SIZE_L6 = 16
+    ASK_SIZE_L7 = 17
+    ASK_SIZE_L8 = 18
+    ASK_SIZE_L9 = 19
     
-    # Bid sizes (levels 0-9)
-    BID_SIZE_L0 = 20
-    BID_SIZE_L1 = 21
-    BID_SIZE_L2 = 22
-    BID_SIZE_L3 = 23
-    BID_SIZE_L4 = 24
-    BID_SIZE_L5 = 25
-    BID_SIZE_L6 = 26
-    BID_SIZE_L7 = 27
-    BID_SIZE_L8 = 28
-    BID_SIZE_L9 = 29
+    # Bid prices (levels 0-9) — Best bid at L0, deeper levels have lower prices
+    BID_PRICE_L0 = 20
+    BID_PRICE_L1 = 21
+    BID_PRICE_L2 = 22
+    BID_PRICE_L3 = 23
+    BID_PRICE_L4 = 24
+    BID_PRICE_L5 = 25
+    BID_PRICE_L6 = 26
+    BID_PRICE_L7 = 27
+    BID_PRICE_L8 = 28
+    BID_PRICE_L9 = 29
     
-    # Ask sizes (levels 0-9)
-    ASK_SIZE_L0 = 30
-    ASK_SIZE_L1 = 31
-    ASK_SIZE_L2 = 32
-    ASK_SIZE_L3 = 33
-    ASK_SIZE_L4 = 34
-    ASK_SIZE_L5 = 35
-    ASK_SIZE_L6 = 36
-    ASK_SIZE_L7 = 37
-    ASK_SIZE_L8 = 38
-    ASK_SIZE_L9 = 39
+    # Bid sizes (levels 0-9) — Volume at each bid price level
+    BID_SIZE_L0 = 30
+    BID_SIZE_L1 = 31
+    BID_SIZE_L2 = 32
+    BID_SIZE_L3 = 33
+    BID_SIZE_L4 = 34
+    BID_SIZE_L5 = 35
+    BID_SIZE_L6 = 36
+    BID_SIZE_L7 = 37
+    BID_SIZE_L8 = 38
+    BID_SIZE_L9 = 39
     
     # =========================================================================
     # Derived Features (8) — Indices 40-47
@@ -450,11 +468,12 @@ class SignalIndex(IntEnum):
 # Feature Groups (for selective loading)
 # =============================================================================
 
-# LOB level slices
-LOB_BID_PRICES = slice(0, 10)
-LOB_ASK_PRICES = slice(10, 20)
-LOB_BID_SIZES = slice(20, 30)
-LOB_ASK_SIZES = slice(30, 40)
+# LOB level slices — match Rust pipeline output layout
+# Layout: [ask_prices(10), ask_sizes(10), bid_prices(10), bid_sizes(10)]
+LOB_ASK_PRICES = slice(0, 10)   # Indices 0-9
+LOB_ASK_SIZES = slice(10, 20)   # Indices 10-19
+LOB_BID_PRICES = slice(20, 30)  # Indices 20-29
+LOB_BID_SIZES = slice(30, 40)   # Indices 30-39
 LOB_ALL = slice(0, 40)
 
 # Category slices

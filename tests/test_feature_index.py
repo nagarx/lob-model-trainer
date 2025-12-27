@@ -19,6 +19,10 @@ from lobtrainer.constants import (
     SIGNAL_FEATURE_COUNT,
     SCHEMA_VERSION,
     LOB_ALL,
+    LOB_ASK_PRICES,
+    LOB_ASK_SIZES,
+    LOB_BID_PRICES,
+    LOB_BID_SIZES,
     DERIVED_ALL,
     MBO_ALL,
     SIGNALS_ALL,
@@ -68,8 +72,9 @@ class TestFeatureIndexRanges:
     def test_lob_range(self):
         """LOB features should be 0-39."""
         assert LOB_ALL == slice(0, 40)
-        assert FeatureIndex.BID_PRICE_L0 == 0
-        assert FeatureIndex.ASK_SIZE_L9 == 39
+        # Layout: [ask_p(10), ask_s(10), bid_p(10), bid_s(10)]
+        assert FeatureIndex.ASK_PRICE_L0 == 0
+        assert FeatureIndex.BID_SIZE_L9 == 39
     
     def test_derived_range(self):
         """Derived features should be 40-47."""
@@ -172,30 +177,91 @@ class TestSignConventions:
             assert 0 <= feat < FEATURE_COUNT
 
 
-class TestLOBLevelIndices:
-    """Test LOB level indexing."""
+class TestLOBSlices:
+    """
+    Test LOB feature slices match Rust pipeline layout.
     
-    def test_bid_price_levels(self):
-        """Bid prices at indices 0-9."""
-        for level in range(10):
-            idx = getattr(FeatureIndex, f"BID_PRICE_L{level}")
-            assert idx == level, f"BID_PRICE_L{level} should be {level}, got {idx}"
+    Layout: [ask_prices(10), ask_sizes(10), bid_prices(10), bid_sizes(10)]
+    """
+    
+    def test_ask_prices_slice(self):
+        """Ask prices slice is 0:10."""
+        assert LOB_ASK_PRICES == slice(0, 10)
+    
+    def test_ask_sizes_slice(self):
+        """Ask sizes slice is 10:20."""
+        assert LOB_ASK_SIZES == slice(10, 20)
+    
+    def test_bid_prices_slice(self):
+        """Bid prices slice is 20:30."""
+        assert LOB_BID_PRICES == slice(20, 30)
+    
+    def test_bid_sizes_slice(self):
+        """Bid sizes slice is 30:40."""
+        assert LOB_BID_SIZES == slice(30, 40)
+    
+    def test_slices_are_contiguous(self):
+        """Slices should cover indices 0-39 without gaps."""
+        covered = set()
+        for s in [LOB_ASK_PRICES, LOB_ASK_SIZES, LOB_BID_PRICES, LOB_BID_SIZES]:
+            for i in range(s.start, s.stop):
+                assert i not in covered, f"Index {i} covered by multiple slices"
+                covered.add(i)
+        
+        expected = set(range(40))
+        assert covered == expected, f"Missing indices: {expected - covered}"
+
+
+class TestLOBLevelIndices:
+    """
+    Test LOB level indexing.
+    
+    Layout matches Rust pipeline (feature-extractor-MBO-LOB/CODEBASE.md §4):
+        [ask_prices(10), ask_sizes(10), bid_prices(10), bid_sizes(10)]
+        
+    Index mapping:
+        - Ask prices: indices 0-9
+        - Ask sizes: indices 10-19
+        - Bid prices: indices 20-29
+        - Bid sizes: indices 30-39
+    """
     
     def test_ask_price_levels(self):
-        """Ask prices at indices 10-19."""
+        """Ask prices at indices 0-9."""
         for level in range(10):
             idx = getattr(FeatureIndex, f"ASK_PRICE_L{level}")
-            assert idx == 10 + level, f"ASK_PRICE_L{level} should be {10+level}, got {idx}"
-    
-    def test_bid_size_levels(self):
-        """Bid sizes at indices 20-29."""
-        for level in range(10):
-            idx = getattr(FeatureIndex, f"BID_SIZE_L{level}")
-            assert idx == 20 + level, f"BID_SIZE_L{level} should be {20+level}, got {idx}"
+            assert idx == level, f"ASK_PRICE_L{level} should be {level}, got {idx}"
     
     def test_ask_size_levels(self):
-        """Ask sizes at indices 30-39."""
+        """Ask sizes at indices 10-19."""
         for level in range(10):
             idx = getattr(FeatureIndex, f"ASK_SIZE_L{level}")
-            assert idx == 30 + level, f"ASK_SIZE_L{level} should be {30+level}, got {idx}"
+            assert idx == 10 + level, f"ASK_SIZE_L{level} should be {10+level}, got {idx}"
+    
+    def test_bid_price_levels(self):
+        """Bid prices at indices 20-29."""
+        for level in range(10):
+            idx = getattr(FeatureIndex, f"BID_PRICE_L{level}")
+            assert idx == 20 + level, f"BID_PRICE_L{level} should be {20+level}, got {idx}"
+    
+    def test_bid_size_levels(self):
+        """Bid sizes at indices 30-39."""
+        for level in range(10):
+            idx = getattr(FeatureIndex, f"BID_SIZE_L{level}")
+            assert idx == 30 + level, f"BID_SIZE_L{level} should be {30+level}, got {idx}"
+    
+    def test_spread_invariant_indices(self):
+        """
+        Verify spread invariant: ASK_PRICE_L0 > BID_PRICE_L0 when book is valid.
+        
+        This test documents the expected index relationship for spread calculation.
+        At index 0 (ASK_PRICE_L0) and index 20 (BID_PRICE_L0):
+            spread = features[0] - features[20] > 0
+        """
+        ask_price_idx = FeatureIndex.ASK_PRICE_L0
+        bid_price_idx = FeatureIndex.BID_PRICE_L0
+        
+        assert ask_price_idx == 0, "Ask price L0 should be at index 0"
+        assert bid_price_idx == 20, "Bid price L0 should be at index 20"
+        assert ask_price_idx < bid_price_idx, "Ask price index should be less than bid price index"
 
