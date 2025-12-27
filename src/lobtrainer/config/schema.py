@@ -221,6 +221,16 @@ class DataConfig:
 # =============================================================================
 
 
+class DeepLOBMode(str, Enum):
+    """DeepLOB operational mode."""
+    
+    BENCHMARK = "benchmark"
+    """Original paper architecture: 40 LOB features only."""
+    
+    EXTENDED = "extended"
+    """Extended architecture: All 98 features."""
+
+
 @dataclass
 class ModelConfig:
     """
@@ -260,6 +270,26 @@ class ModelConfig:
     transformer_dim_feedforward: int = 256
     """Feedforward dimension for Transformer."""
     
+    # DeepLOB-specific parameters (Zhang et al. 2019)
+    deeplob_mode: DeepLOBMode = DeepLOBMode.BENCHMARK
+    """
+    DeepLOB operational mode:
+    - benchmark: Original paper architecture, uses first 40 LOB features
+    - extended: Adapted for all 98 features (experimental)
+    """
+    
+    deeplob_conv_filters: int = 32
+    """Number of filters in DeepLOB convolutional blocks. Paper default: 32."""
+    
+    deeplob_inception_filters: int = 64
+    """Number of filters per Inception branch. Paper default: 64."""
+    
+    deeplob_lstm_hidden: int = 64
+    """LSTM hidden size in DeepLOB. Paper default: 64."""
+    
+    deeplob_num_levels: int = 10
+    """Number of LOB levels to use. Paper default: 10."""
+    
     def __post_init__(self) -> None:
         if self.dropout < 0 or self.dropout > 1:
             raise ValueError(f"dropout must be in [0, 1], got {self.dropout}")
@@ -267,6 +297,14 @@ class ModelConfig:
             raise ValueError(f"hidden_size must be >= 1, got {self.hidden_size}")
         if self.num_layers < 1:
             raise ValueError(f"num_layers must be >= 1, got {self.num_layers}")
+        if self.deeplob_conv_filters < 1:
+            raise ValueError(f"deeplob_conv_filters must be >= 1, got {self.deeplob_conv_filters}")
+        if self.deeplob_inception_filters < 1:
+            raise ValueError(f"deeplob_inception_filters must be >= 1, got {self.deeplob_inception_filters}")
+        if self.deeplob_lstm_hidden < 1:
+            raise ValueError(f"deeplob_lstm_hidden must be >= 1, got {self.deeplob_lstm_hidden}")
+        if self.deeplob_num_levels < 1:
+            raise ValueError(f"deeplob_num_levels must be >= 1, got {self.deeplob_num_levels}")
 
 
 # =============================================================================

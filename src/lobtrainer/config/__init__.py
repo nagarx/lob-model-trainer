@@ -19,6 +19,7 @@ from lobtrainer.config.schema import (
     ModelType,
     NormalizationStrategy,
     LabelEncoding,
+    DeepLOBMode,
     # Functions
     load_config,
     save_config,
@@ -36,6 +37,7 @@ __all__ = [
     "ModelType",
     "NormalizationStrategy",
     "LabelEncoding",
+    "DeepLOBMode",
     # Functions
     "load_config",
     "save_config",

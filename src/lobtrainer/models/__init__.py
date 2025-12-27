@@ -4,7 +4,7 @@ Model implementations for LOB price prediction.
 Available models:
 - Baselines: NaivePreviousLabel, NaiveClassPrior, LogisticBaseline
 - Sequence: LSTMClassifier, GRUClassifier, TransformerClassifier (TODO)
-- Deep: DeepLOB (TODO)
+- Deep: DeepLOB (from lobmodels package)
 
 Design principles (RULE.md):
 - Each model class has a consistent interface
@@ -17,6 +17,10 @@ Usage:
     >>> from lobtrainer.config import ModelConfig, ModelType
     >>> 
     >>> config = ModelConfig(model_type=ModelType.LSTM, hidden_size=128)
+    >>> model = create_model(config)
+    >>> 
+    >>> # DeepLOB model
+    >>> config = ModelConfig(model_type=ModelType.DEEPLOB)
     >>> model = create_model(config)
 """
 
@@ -40,6 +44,16 @@ from lobtrainer.models.lstm import (
     create_gru,
 )
 
+# Conditional import of lobmodels (external dependency)
+try:
+    from lobmodels import DeepLOB, DeepLOBConfig, FeatureLayout
+    LOBMODELS_AVAILABLE = True
+except ImportError:
+    LOBMODELS_AVAILABLE = False
+    DeepLOB = None
+    DeepLOBConfig = None
+    FeatureLayout = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,6 +73,8 @@ __all__ = [
     "create_model",
     "create_lstm",
     "create_gru",
+    # Availability flags
+    "LOBMODELS_AVAILABLE",
 ]
 
 
@@ -79,13 +95,18 @@ def create_model(config) -> nn.Module:
     
     Raises:
         ValueError: If model type is not recognized
+        ImportError: If DeepLOB is requested but lobmodels is not installed
     
     Example:
         >>> from lobtrainer.config import ModelConfig, ModelType
         >>> config = ModelConfig(model_type=ModelType.LSTM, hidden_size=64)
         >>> model = create_model(config)
+        >>> 
+        >>> # DeepLOB model
+        >>> config = ModelConfig(model_type=ModelType.DEEPLOB)
+        >>> model = create_model(config)
     """
-    from lobtrainer.config import ModelConfig, ModelType
+    from lobtrainer.config import ModelConfig, ModelType, DeepLOBMode
     
     # Handle dict input
     if isinstance(config, dict):
@@ -135,10 +156,32 @@ def create_model(config) -> nn.Module:
         )
     
     elif model_type == ModelType.DEEPLOB:
-        raise NotImplementedError(
-            "DeepLOB not yet implemented. "
-            "Use LSTM or GRU for now."
+        if not LOBMODELS_AVAILABLE:
+            raise ImportError(
+                "lobmodels package is required for DeepLOB. "
+                "Install it with: pip install -e ../lob-models"
+            )
+        
+        # Map lobtrainer DeepLOBMode to lobmodels mode string
+        mode_str = config.deeplob_mode.value  # "benchmark" or "extended"
+        
+        # Create DeepLOBConfig from lobmodels
+        deeplob_config = DeepLOBConfig(
+            mode=mode_str,
+            feature_layout=FeatureLayout.GROUPED,  # Our data uses grouped layout
+            num_levels=config.deeplob_num_levels,
+            sequence_length=100,  # Standard DeepLOB input length
+            num_classes=config.num_classes,
+            conv_filters=config.deeplob_conv_filters,
+            inception_filters=config.deeplob_inception_filters,
+            lstm_hidden=config.deeplob_lstm_hidden,
+            lstm_layers=1,  # Paper uses single layer
+            dropout=config.dropout,
         )
+        
+        model = DeepLOB(deeplob_config)
+        logger.info(f"Created {model.name}")
+        return model
     
     else:
         raise ValueError(f"Unknown model type: {model_type}")
