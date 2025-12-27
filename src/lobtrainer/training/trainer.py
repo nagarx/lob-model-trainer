@@ -315,6 +315,7 @@ class Trainer:
         """Create data loaders for all splits."""
         cfg_data = self.config.data
         cfg_train = self.config.train
+        cfg_model = self.config.model
         
         # Note: num_workers > 0 requires picklable worker_init_fn
         # For simplicity, we use num_workers=0 which is still fast for our dataset size
@@ -324,6 +325,22 @@ class Trainer:
         # Load using the existing infrastructure
         # horizon_idx selects which prediction horizon to use (0=10 steps, 1=20, etc.)
         horizon_idx = getattr(cfg_data, 'horizon_idx', 0)
+        
+        # Feature selection for DeepLOB benchmark mode
+        # DeepLOB in benchmark mode uses only the first 40 LOB features
+        feature_indices = None
+        from lobtrainer.config import ModelType, DeepLOBMode
+        if cfg_model.model_type == ModelType.DEEPLOB:
+            deeplob_mode = getattr(cfg_model, 'deeplob_mode', DeepLOBMode.BENCHMARK)
+            if deeplob_mode == DeepLOBMode.BENCHMARK:
+                # First 40 features are LOB: bid_prices(10), ask_prices(10), 
+                # bid_sizes(10), ask_sizes(10) in GROUPED layout
+                from lobtrainer.constants import LOB_FEATURE_COUNT
+                feature_indices = list(range(LOB_FEATURE_COUNT))  # [0, 1, ..., 39]
+                logger.info(
+                    f"DeepLOB benchmark mode: selecting first {LOB_FEATURE_COUNT} LOB features"
+                )
+        
         loaders = create_dataloaders(
             data_dir=cfg_data.data_dir,
             batch_size=cfg_train.batch_size,
@@ -331,6 +348,7 @@ class Trainer:
             pin_memory=cfg_train.pin_memory and torch.cuda.is_available(),
             use_sequences=True,  # Use 3D sequences for sequence models
             horizon_idx=horizon_idx,
+            feature_indices=feature_indices,
         )
         
         return loaders

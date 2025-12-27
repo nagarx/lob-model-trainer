@@ -1,0 +1,97 @@
+# DeepLOB Benchmark Configuration for NVDA Dataset
+#
+# This configuration trains the DeepLOB model (Zhang et al. 2019) in benchmark mode
+# using only the first 40 LOB features for direct comparison with the original paper.
+#
+# Reference:
+#   Zhang, Zohren & Roberts (2019). "DeepLOB: Deep Convolutional Neural 
+#   Networks for Limit Order Books." IEEE Trans. Signal Processing.
+#
+# Usage:
+#   python scripts/train.py --config configs/deeplob_benchmark.yaml
+#
+# Data Contract:
+#   - Input: First 40 LOB features in GROUPED layout
+#     [bid_prices(10), ask_prices(10), bid_sizes(10), ask_sizes(10)]
+#   - DeepLOB internally rearranges to FI2010 layout for CNN processing
+#   - Sequences: [N_seq, 100, 40] after feature selection
+#   - Labels: Using horizon_idx=0 (horizon=10, ~1 second ahead)
+
+name: deeplob_benchmark_nvda_h10
+description: |
+  DeepLOB benchmark model for NVDA price direction prediction.
+  Uses exact paper architecture:
+  - 3 Conv blocks (32 filters each)
+  - Inception module (64 filters per branch, 192 total)
+  - LSTM (64 hidden units)
+  - Linear classifier (3 classes)
+  
+  Training on balanced dataset with horizon=10 (~1 second ahead).
+  
+tags:
+  - deeplob
+  - benchmark
+  - nvda
+  - 40-features
+  - horizon-10
+
+# Data Configuration
+data:
+  # Using nvda_balanced: balanced classes via quantile thresholds
+  data_dir: "../data/exports/nvda_balanced"
+  feature_count: 98  # Full dataset has 98, but we select first 40 for benchmark
+  horizon_idx: 0  # Horizon=10 samples (~1 second at 100ms sampling)
+  
+  sequence:
+    window_size: 100  # Must match Rust export config
+    stride: 10
+  
+  normalization:
+    strategy: zscore_per_day
+    eps: 1.0e-8
+    clip_value: 10.0
+    # No exclusions needed - only using first 40 LOB features
+    exclude_features: []
+  
+  label_encoding: categorical
+  num_classes: 3
+  cache_in_memory: true
+
+# Model Configuration - DeepLOB (Zhang et al. 2019)
+model:
+  model_type: deeplob
+  
+  # DeepLOB-specific parameters (paper defaults)
+  deeplob_mode: benchmark  # Use exact paper architecture
+  deeplob_conv_filters: 32  # Paper: 32 filters per conv block
+  deeplob_inception_filters: 64  # Paper: 64 filters per inception branch
+  deeplob_lstm_hidden: 64  # Paper: 64 hidden units
+  deeplob_num_levels: 10  # 10 LOB levels (standard)
+  
+  # These are not used for DeepLOB but required by schema
+  input_size: 40  # LOB features only (benchmark mode)
+  hidden_size: 64  # Matches deeplob_lstm_hidden
+  num_layers: 1
+  dropout: 0.0  # Paper uses no dropout
+  num_classes: 3  # Down / Stable / Up
+
+# Training Configuration
+train:
+  batch_size: 64  # Paper uses mini-batches
+  learning_rate: 1.0e-4  # Conservative start, paper uses ~0.0001
+  weight_decay: 0.0  # Paper doesn't mention weight decay
+  epochs: 100
+  early_stopping_patience: 15
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 0  # Avoid multiprocessing issues on macOS
+  pin_memory: true
+  seed: 42
+  mixed_precision: false
+  # Balanced dataset - no class weights needed
+  use_class_weights: false
+
+# Output
+output_dir: outputs/deeplob_benchmark_h10
+log_level: INFO
+
