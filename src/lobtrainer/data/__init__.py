@@ -28,6 +28,8 @@ from lobtrainer.data.transforms import (
     Normalizer,
     ZScoreNormalizer,
     compute_statistics,
+    BinaryLabelTransform,
+    ComposeTransform,
 )
 
 __all__ = [
@@ -46,4 +48,6 @@ __all__ = [
     "Normalizer",
     "ZScoreNormalizer",
     "compute_statistics",
+    "BinaryLabelTransform",
+    "ComposeTransform",
 ]

@@ -59,6 +59,67 @@ class LabelEncoding(str, Enum):
     
     BINARY_DOWN = "binary_down"
     """Binary: 1 if Down, 0 otherwise."""
+    
+    BINARY_SIGNAL = "binary_signal"
+    """Binary: 1 if Up OR Down (any signal), 0 if Stable (no opportunity)."""
+
+
+class LabelingStrategy(str, Enum):
+    """
+    Labeling strategy used in the exported data.
+    
+    Each strategy has different semantic meanings for its class indices,
+    which affects how metrics should be computed and interpreted.
+    """
+    
+    OPPORTUNITY = "opportunity"
+    """
+    Opportunity detection: peak return within horizon.
+    Classes: 0=BigDown, 1=NoOpportunity, 2=BigUp
+    Goal: Detect when a significant move will occur.
+    """
+    
+    TRIPLE_BARRIER = "triple_barrier"
+    """
+    Triple Barrier: which barrier is hit first.
+    Classes: 0=StopLoss, 1=Timeout, 2=ProfitTarget
+    Goal: Model entry → hold → exit trading logic.
+    Timeout means "don't trade" - no clear outcome expected.
+    
+    Reference: López de Prado (2018), "Advances in Financial Machine Learning"
+    """
+    
+    TLOB = "tlob"
+    """
+    TLOB/DeepLOB: smoothed endpoint return.
+    Classes: 0=Down, 1=Stable, 2=Up
+    Goal: Predict price direction at horizon.
+    
+    Reference: Zhang et al. (2019), "DeepLOB"
+    """
+
+
+class TaskType(str, Enum):
+    """Classification task type."""
+    
+    MULTICLASS = "multiclass"
+    """Standard 3-class classification: Down/Stable/Up."""
+    
+    BINARY_SIGNAL = "binary_signal"
+    """Binary signal detection: Signal (Up or Down) vs NoSignal (Stable)."""
+
+
+class LossType(str, Enum):
+    """Loss function type."""
+    
+    CROSS_ENTROPY = "cross_entropy"
+    """Standard cross-entropy loss."""
+    
+    FOCAL = "focal"
+    """Focal loss for class imbalance."""
+    
+    WEIGHTED_CE = "weighted_ce"
+    """Cross-entropy with inverse-frequency class weights."""
 
 
 class ModelType(str, Enum):
@@ -81,6 +142,9 @@ class ModelType(str, Enum):
     
     DEEPLOB = "deeplob"
     """DeepLOB (CNN + LSTM)."""
+    
+    TLOB = "tlob"
+    """TLOB (Transformer LOB with dual attention). Berti & Kasneci 2025."""
 
 
 # =============================================================================
@@ -183,6 +247,20 @@ class DataConfig:
     
     label_encoding: LabelEncoding = LabelEncoding.CATEGORICAL
     """Label encoding scheme."""
+    
+    labeling_strategy: LabelingStrategy = LabelingStrategy.OPPORTUNITY
+    """
+    Labeling strategy used in the exported data.
+    
+    This determines the semantic meaning of class indices and affects
+    how metrics are computed and interpreted:
+    
+    - OPPORTUNITY: 0=BigDown, 1=NoOpportunity, 2=BigUp
+    - TRIPLE_BARRIER: 0=StopLoss, 1=Timeout, 2=ProfitTarget
+    - TLOB: 0=Down, 1=Stable, 2=Up
+    
+    Must match the strategy used when exporting data from Rust.
+    """
     
     num_classes: int = 3
     """Number of output classes. Default: 3 (Down, Stable, Up)."""
@@ -290,6 +368,55 @@ class ModelConfig:
     deeplob_num_levels: int = 10
     """Number of LOB levels to use. Paper default: 10."""
     
+    # =========================================================================
+    # TLOB-specific parameters (Berti & Kasneci 2025)
+    # =========================================================================
+    
+    tlob_hidden_dim: int = 64
+    """
+    TLOB embedding/hidden dimension. Paper uses 40 for FI-2010.
+    
+    For 98 features, recommended values: 64-128.
+    Must be >= 4 (for final block reduction) and even (for sinusoidal PE).
+    """
+    
+    tlob_num_layers: int = 4
+    """
+    Number of TLOB blocks (each has temporal + feature attention).
+    Paper default: 4. More layers = more capacity but slower training.
+    """
+    
+    tlob_num_heads: int = 1
+    """
+    Number of attention heads. Paper uses 1.
+    More heads may help but increases computation.
+    """
+    
+    tlob_mlp_expansion: float = 4.0
+    """
+    MLP hidden dimension expansion factor.
+    MLP hidden = hidden_dim * expansion. Paper default: 4.0.
+    """
+    
+    tlob_use_sinusoidal_pe: bool = True
+    """
+    Use fixed sinusoidal positional encoding (True) or learned (False).
+    Sinusoidal generalizes better to different sequence lengths.
+    """
+    
+    tlob_use_bin: bool = True
+    """
+    Use Bilinear Normalization (BiN) layer.
+    Critical for handling non-stationarity in financial data.
+    Reference: Tran et al. (2021), ICPR.
+    """
+    
+    tlob_dataset_type: str = "nvda"
+    """
+    Dataset type for TLOB preprocessing: 'fi2010', 'lobster', or 'nvda'.
+    Affects internal handling (e.g., LOBSTER has order type embedding).
+    """
+    
     def __post_init__(self) -> None:
         if self.dropout < 0 or self.dropout > 1:
             raise ValueError(f"dropout must be in [0, 1], got {self.dropout}")
@@ -305,6 +432,23 @@ class ModelConfig:
             raise ValueError(f"deeplob_lstm_hidden must be >= 1, got {self.deeplob_lstm_hidden}")
         if self.deeplob_num_levels < 1:
             raise ValueError(f"deeplob_num_levels must be >= 1, got {self.deeplob_num_levels}")
+        # TLOB validation
+        if self.tlob_hidden_dim < 4:
+            raise ValueError(f"tlob_hidden_dim must be >= 4, got {self.tlob_hidden_dim}")
+        if self.tlob_use_sinusoidal_pe and self.tlob_hidden_dim % 2 != 0:
+            raise ValueError(
+                f"tlob_hidden_dim must be even for sinusoidal PE, got {self.tlob_hidden_dim}"
+            )
+        if self.tlob_num_layers < 1:
+            raise ValueError(f"tlob_num_layers must be >= 1, got {self.tlob_num_layers}")
+        if self.tlob_num_heads < 1:
+            raise ValueError(f"tlob_num_heads must be >= 1, got {self.tlob_num_heads}")
+        if self.tlob_mlp_expansion <= 0:
+            raise ValueError(f"tlob_mlp_expansion must be > 0, got {self.tlob_mlp_expansion}")
+        if self.tlob_dataset_type not in ("fi2010", "lobster", "nvda"):
+            raise ValueError(
+                f"tlob_dataset_type must be 'fi2010', 'lobster', or 'nvda', got {self.tlob_dataset_type}"
+            )
 
 
 # =============================================================================
@@ -367,6 +511,54 @@ class TrainConfig:
     Set to False if using a balanced dataset (e.g., quantile-based thresholds).
     """
     
+    # =========================================================================
+    # Task and Loss Configuration (Stage 1/2 Training)
+    # =========================================================================
+    
+    task_type: TaskType = TaskType.MULTICLASS
+    """
+    Classification task type:
+    - multiclass: Standard 3-class (Down/Stable/Up)
+    - binary_signal: Binary signal detection (Signal vs NoSignal)
+    
+    Stage 1 training uses binary_signal to detect trading opportunities.
+    Stage 2 uses multiclass (or binary Up/Down) to predict direction.
+    """
+    
+    loss_type: LossType = LossType.WEIGHTED_CE
+    """
+    Loss function type:
+    - cross_entropy: Standard unweighted CE
+    - weighted_ce: CE with inverse-frequency class weights
+    - focal: Focal loss for handling class imbalance
+    
+    For imbalanced data (like 71% Stable in nvda_bigmove), use focal or weighted_ce.
+    """
+    
+    focal_gamma: float = 2.0
+    """
+    Focal loss gamma parameter. Higher = more focus on hard examples.
+    
+    Common values:
+    - gamma=0: Equivalent to cross-entropy
+    - gamma=2: Default, strong focus on hard examples (recommended)
+    - gamma=5: Very aggressive focusing
+    
+    Only used when loss_type='focal'.
+    """
+    
+    focal_alpha: Optional[float] = None
+    """
+    Focal loss alpha parameter for class balancing.
+    
+    For binary: alpha = weight for positive class (Signal).
+                alpha > 0.5 gives more importance to Signal class.
+    For multi-class: Should be a list, but we use inverse-frequency weights instead.
+    
+    If None, uses inverse-frequency weighting computed from training data.
+    Only used when loss_type='focal'.
+    """
+    
     def __post_init__(self) -> None:
         if self.batch_size < 1:
             raise ValueError(f"batch_size must be >= 1, got {self.batch_size}")
@@ -374,6 +566,10 @@ class TrainConfig:
             raise ValueError(f"learning_rate must be > 0, got {self.learning_rate}")
         if self.epochs < 1:
             raise ValueError(f"epochs must be >= 1, got {self.epochs}")
+        if self.focal_gamma < 0:
+            raise ValueError(f"focal_gamma must be >= 0, got {self.focal_gamma}")
+        if self.focal_alpha is not None and (self.focal_alpha < 0 or self.focal_alpha > 1):
+            raise ValueError(f"focal_alpha must be in [0, 1], got {self.focal_alpha}")
 
 
 # =============================================================================

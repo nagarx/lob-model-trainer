@@ -1,0 +1,215 @@
+# =============================================================================
+# EXPERIMENT: NVDA TLOB Big Move Detection v1
+# =============================================================================
+#
+# Experiment ID: nvda_tlob_bigmove_v1
+# Date Created: 2025-01-09
+# Model: TLOB (Transformer LOB with dual attention)
+# Reference: Berti & Kasneci (2025), "TLOB: A Novel Transformer Model with
+#            Dual Attention for Price Trend Prediction with Limit Order Book Data"
+#
+# PURPOSE:
+#   Train TLOB on full 98 features for "big move" detection.
+#   TLOB's dual attention (temporal + feature) should better leverage
+#   the rich feature set including MBO aggregates and trading signals.
+#
+# KEY ADVANTAGES OF TLOB:
+#   1. Dual attention captures both temporal and feature relationships
+#   2. BiN layer handles non-stationarity in financial data
+#   3. Flexible input dimensions (works with any feature count)
+#   4. Better at learning long-range dependencies than CNN-based DeepLOB
+#
+# HYPOTHESIS:
+#   TLOB with 98 features will outperform DeepLOB (40 features) on
+#   opportunity detection because:
+#   - MBO features capture order flow dynamics
+#   - Trading signals provide explicit trend indicators
+#   - Dual attention can learn feature importance dynamically
+#
+# DATASET SUMMARY:
+#   - Export: nvda_bigmove (Opportunity labeling, 50 bps threshold)
+#   - Train: ~122K sequences (115 days)
+#   - Val:   ~21K sequences (25 days)
+#   - Test:  ~23K sequences (25 days)
+#   - Features: 98 (LOB:40 + Derived:8 + MBO:36 + Signals:14)
+#
+# LABEL DISTRIBUTION (h=200):
+#   - BigDown: ~15%
+#   - NoOpportunity: ~71%
+#   - BigUp: ~14%
+#
+# =============================================================================
+# HORIZON INDEX MAPPING
+# =============================================================================
+# The dataset contains labels for 3 prediction horizons:
+#
+#   horizon_idx: 0  →  h=50   (~5 seconds)   - Very short term
+#   horizon_idx: 1  →  h=100  (~10 seconds)  - Short term
+#   horizon_idx: 2  →  h=200  (~20 seconds)  - Optimal for opportunity detection
+#
+# Note: horizon_idx=2 (h=200) has ~30% opportunity rate vs ~5% at h=50.
+# =============================================================================
+
+name: nvda_tlob_bigmove_v1
+description: |
+  TLOB Transformer on NVDA big move detection with full 98 features.
+  
+  Key differences from DeepLOB experiment:
+  1. Uses ALL 98 features (vs 40 for DeepLOB)
+  2. Dual attention mechanism (temporal + feature)
+  3. BiN layer for non-stationary normalization
+  4. Transformer architecture (no CNN, no LSTM)
+  
+  This experiment tests whether TLOB's architecture can better leverage
+  the rich feature set from our Rust feature extractor.
+
+tags:
+  - tlob
+  - nvda
+  - opportunity-detection
+  - big-moves
+  - 98-features
+  - h200
+  - transformer
+  - dual-attention
+  - experiment-v1
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  # Path to exported dataset (relative to lob-model-trainer directory)
+  data_dir: "../data/exports/nvda_bigmove"
+  
+  # Feature specification
+  # Full 98 features: LOB(40) + Derived(8) + MBO(36) + Signals(14)
+  feature_count: 98
+  
+  # Horizon selection (0-based index into horizons array [50, 100, 200])
+  # CRITICAL: horizon_idx=2 corresponds to h=200 events (~20 seconds ahead)
+  horizon_idx: 2
+  
+  # Sequence configuration (must match Rust export)
+  sequence:
+    window_size: 100  # 100 timesteps per sequence
+    stride: 10        # Step between sequences
+  
+  # Normalization configuration
+  # IMPORTANT: Rust only normalizes LOB features (0-39) with market_structure_zscore.
+  # MBO and signal features (40-97) are RAW and need Python-side normalization.
+  # We use zscore to normalize ALL features uniformly.
+  normalization:
+    strategy: zscore
+    eps: 1.0e-8
+    clip_value: 10.0  # Clip extreme values (some MBO features have outliers)
+    exclude_features: []  # Normalize all 98 features
+  
+  # Label configuration
+  # Labels are stored as {-1, 0, 1} in .npy files
+  # Dataloader converts to {0, 1, 2} for CrossEntropyLoss:
+  #   -1 (BigDown) → 0
+  #    0 (NoOpportunity) → 1
+  #    1 (BigUp) → 2
+  label_encoding: categorical
+  num_classes: 3
+  cache_in_memory: true
+
+# =============================================================================
+# Model Configuration - TLOB (Berti & Kasneci 2025)
+# =============================================================================
+model:
+  model_type: tlob
+  
+  # Input specification
+  input_size: 98         # Full 98 features
+  num_classes: 3         # BigDown / NoOpportunity / BigUp
+  
+  # TLOB architecture hyperparameters
+  # Reference: TLOB paper Table 1, adapted for 98 features
+  tlob_hidden_dim: 64    # Embedding dimension (paper uses 40 for FI-2010)
+  tlob_num_layers: 4     # Number of TLOB blocks (paper default)
+  tlob_num_heads: 1      # Attention heads (paper uses 1)
+  tlob_mlp_expansion: 4.0  # MLP hidden = hidden_dim * expansion
+  tlob_use_sinusoidal_pe: true  # Fixed sinusoidal positional encoding
+  tlob_use_bin: true     # BiN layer for non-stationarity (critical!)
+  tlob_dataset_type: nvda  # Dataset type for preprocessing
+  
+  # Generic model params
+  hidden_size: 64        # For compatibility with trainer
+  num_layers: 4          # For compatibility with trainer
+  dropout: 0.0           # Paper uses no dropout
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+train:
+  # Batch size optimized for M1 Pro 16GB RAM
+  # TLOB with 98 features, hidden_dim=64: ~918K parameters
+  # Recommended: 32 (optimal), reduce to 16 if OOM
+  batch_size: 32
+  
+  # Training epochs
+  epochs: 30             # More epochs for Transformer convergence
+  
+  # Optimizer: Adam with weight decay
+  learning_rate: 1.0e-4  # Standard Transformer LR
+  weight_decay: 1.0e-5   # Small regularization
+  
+  # Class weights for imbalanced data
+  # Distribution: BigDown ~15%, NoOpp ~70%, BigUp ~15%
+  # Weights: inverse frequency to handle imbalance
+  use_class_weights: true
+  
+  # Gradient clipping (important for Transformers)
+  gradient_clip_norm: 1.0
+  
+  # Learning rate schedule
+  scheduler: cosine      # Cosine annealing with warm restarts
+  
+  # Early stopping
+  early_stopping_patience: 10  # Patient for Transformer convergence
+  
+  # Data loading
+  num_workers: 0         # macOS multiprocessing issues
+  pin_memory: true
+  
+  # Reproducibility
+  seed: 42
+  mixed_precision: false # Keep float32 for stability
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output_dir: outputs/experiments/nvda_tlob_bigmove_v1
+log_level: INFO
+
+# =============================================================================
+# Experiment Notes
+# =============================================================================
+#
+# COMPARISON PLAN:
+#   - nvda_bigmove_opportunity_v1 (DeepLOB, 40 features)
+#   - nvda_tlob_bigmove_v1 (TLOB, 98 features) ← THIS EXPERIMENT
+#
+# EXPECTED OUTCOMES:
+#   - Better feature utilization (MBO, signals contribute to prediction)
+#   - Potentially slower training (Transformer attention is O(n²))
+#   - Better long-range pattern recognition
+#
+# MONITORING PRIORITIES:
+#   1. Training loss curve (should decrease steadily)
+#   2. Validation accuracy (watch for overfitting)
+#   3. Attention weights (can be extracted for interpretability)
+#   4. Memory usage (TLOB is more memory-efficient than expected)
+#
+# NEXT EXPERIMENTS IF PROMISING:
+#   - nvda_tlob_h100_v1: Shorter horizon (h=100)
+#   - nvda_tlob_focal_v1: Focal loss for better class balance
+#   - nvda_tlob_larger_v1: hidden_dim=128, num_layers=6
+#
+# KNOWN ISSUES:
+#   - Features 40-97 are NOT pre-normalized by Rust, need Python normalization
+#   - Distribution shift between train/val/test (temporal bias)
+#   - Class imbalance (~70% NoOpportunity)
+#
+# =============================================================================

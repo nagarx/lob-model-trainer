@@ -76,6 +76,7 @@ logs/
 #       Analysis results are tracked in docs/analysis_results/
 #       To compare experiments, copy relevant metrics there
 outputs/
+!outputs/README.md
 
 # Runtime analysis logs
 analysis_log.txt

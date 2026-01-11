@@ -1,0 +1,192 @@
+# =============================================================================
+# EXPERIMENT: NVDA Big Move / Opportunity Detection v1
+# =============================================================================
+#
+# Experiment ID: nvda_bigmove_opportunity_v1
+# Date Created: 2025-12-29
+#
+# PURPOSE:
+#   Train DeepLOB to detect "big moves" (≥50 bps) using opportunity-based labeling.
+#   This shifts from high-frequency trading to detecting significant price jumps
+#   that occur when order flow imbalance is extreme or LOB state is predictable.
+#
+# HYPOTHESIS:
+#   By focusing on larger price movements (50 bps threshold vs previous smoothed
+#   averages), the model will learn to identify high-confidence trading opportunities
+#   rather than predicting micro-movements that are eaten by transaction costs.
+#
+# KEY METRICS TO TRACK:
+#   - val_accuracy: Overall classification accuracy
+#   - val_opportunity_precision: When predicting BigUp/BigDown, how often correct?
+#   - val_opportunity_recall: How many actual opportunities do we catch?
+#   - val_no_opportunity_precision: Avoid false signals (predict NoOpp correctly)
+#
+# DATASET SUMMARY:
+#   - Export: nvda_bigmove (Opportunity labeling, 50 bps threshold)
+#   - Train: 122,165 sequences (115 days)
+#   - Val:   21,009 sequences (25 days)
+#   - Test:  23,486 sequences (25 days)
+#   - Total: 166,660 sequences
+#
+# LABEL DISTRIBUTION (Train, h=200):
+#   - BigDown: 15.01% (18,333 samples)
+#   - NoOpportunity: 70.53% (86,163 samples)
+#   - BigUp: 14.46% (17,669 samples)
+#
+# =============================================================================
+# HORIZON INDEX MAPPING (nvda_bigmove dataset)
+# =============================================================================
+# The dataset contains labels for 3 prediction horizons:
+#
+#   horizon_idx: 0  →  h=50   (~5 seconds ahead)
+#   horizon_idx: 1  →  h=100  (~10 seconds ahead)
+#   horizon_idx: 2  →  h=200  (~20 seconds ahead)  - BEST FOR OPPORTUNITY DETECTION
+#
+# Note: Longer horizons capture more "big moves" since price has more time to move.
+# h=200 has ~30% opportunity rate vs ~3.5% at h=50.
+# =============================================================================
+
+name: nvda_bigmove_opportunity_v1
+description: |
+  NVDA DeepLOB experiment for detecting "big moves" using opportunity labeling.
+  
+  Key changes from previous experiments:
+  1. Opportunity labeling: Labels based on peak return within horizon (not smoothed avg)
+  2. 50 bps threshold: Only significant moves labeled as BigUp/BigDown
+  3. Multi-horizon: Using h=200 for best opportunity detection rate (~30%)
+  
+  This experiment tests the hypothesis that focusing on large, confident moves
+  will yield better trading profitability than predicting every micro-movement.
+
+tags:
+  - deeplob
+  - nvda
+  - opportunity-detection
+  - big-moves
+  - h200
+  - class-weights
+  - experiment-v1
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  # Path to exported dataset (relative to lob-model-trainer directory)
+  data_dir: "../data/exports/nvda_bigmove"
+  
+  # Feature specification
+  feature_count: 98  # Full feature set: LOB(40) + Derived(8) + MBO(36) + Signals(14)
+  
+  # Horizon selection (0-based index into horizons array [50, 100, 200])
+  horizon_idx: 2  # h=200 events (~20 seconds ahead) - Best opportunity rate
+  
+  # Sequence configuration (must match Rust export)
+  sequence:
+    window_size: 100  # 100 timesteps per sequence
+    stride: 10        # Step between sequences
+  
+  # Normalization: Data is already normalized by Rust exporter using
+  # market-structure preserving Z-score. No additional normalization needed.
+  normalization:
+    strategy: none
+    eps: 1.0e-8
+    clip_value: null
+    exclude_features: []
+  
+  # Label configuration
+  # IMPORTANT: Labels are stored as {-1, 0, 1} in the .npy files
+  # The dataloader converts to {0, 1, 2} for CrossEntropyLoss:
+  #   -1 (BigDown) → 0
+  #    0 (NoOpportunity) → 1
+  #    1 (BigUp) → 2
+  label_encoding: categorical  # 3-class classification
+  num_classes: 3
+  cache_in_memory: true
+
+# =============================================================================
+# Model Configuration - DeepLOB (Zhang et al. 2019)
+# =============================================================================
+model:
+  model_type: deeplob
+  
+  # DeepLOB architecture (exact paper specification)
+  deeplob_mode: benchmark      # Use 40 LOB features only
+  deeplob_conv_filters: 32     # 32 filters per conv block
+  deeplob_inception_filters: 64  # 64 filters per inception branch
+  deeplob_lstm_hidden: 64      # 64 hidden units
+  deeplob_num_levels: 10       # 10 LOB levels
+  
+  # Generic model params (required by schema)
+  input_size: 40       # LOB features only in benchmark mode
+  hidden_size: 64      # Matches LSTM hidden
+  num_layers: 1
+  dropout: 0.0         # Paper uses no dropout
+  num_classes: 3       # BigDown / NoOpportunity / BigUp
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+train:
+  # Batch and epochs
+  batch_size: 64
+  epochs: 20           # More epochs for imbalanced data
+  
+  # Optimizer
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5  # Small regularization for imbalanced data
+  
+  # Class weights for severe imbalance
+  # Based on train set h=200 distribution:
+  # BigDown: 15.01% → weight ~2.2
+  # NoOpp: 70.53% → weight ~0.5
+  # BigUp: 14.46% → weight ~2.3
+  use_class_weights: true
+  
+  # Regularization
+  gradient_clip_norm: 1.0
+  
+  # Learning rate schedule
+  scheduler: cosine
+  
+  # Early stopping (patient for imbalanced data)
+  early_stopping_patience: 7
+  
+  # Data loading
+  num_workers: 0       # Avoid multiprocessing issues on macOS
+  pin_memory: true
+  
+  # Reproducibility
+  seed: 42
+  mixed_precision: false
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output_dir: outputs/experiments/nvda_bigmove_opportunity_v1
+log_level: INFO
+
+# =============================================================================
+# Experiment Notes
+# =============================================================================
+# 
+# COMPARISON WITH PREVIOUS EXPERIMENTS:
+#   - Previous (nvda_h10_weighted_v1): ~66% directional accuracy, but
+#     only profitable at very high confidence thresholds
+#   - This experiment: Focus on larger moves that exceed transaction costs
+#
+# EXPECTED OUTCOMES:
+#   - Lower overall accuracy (harder task - predicting rare events)
+#   - Higher precision on opportunity classes (fewer false positives)
+#   - Better profitability in backtesting (larger moves offset costs)
+#
+# NEXT EXPERIMENTS IF PROMISING:
+#   - nvda_bigmove_h100_v1: Try shorter horizon (h=100)
+#   - nvda_bigmove_focal_v1: Focal loss for better handling of imbalance
+#   - nvda_bigmove_triple_barrier_v1: Triple barrier labeling for explicit P&L
+#
+# CRITICAL: The dataloader must handle the label encoding conversion:
+#   labels_raw = np.load(...)  # Values: -1, 0, 1
+#   labels_model = labels_raw + 1  # Values: 0, 1, 2 for CrossEntropyLoss
+#
+# =============================================================================
+

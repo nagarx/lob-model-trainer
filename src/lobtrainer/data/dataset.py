@@ -507,12 +507,19 @@ class LOBSequenceDataset(Dataset):
         - Single-horizon: Returns scalar label per sample
         - Multi-horizon: Specify horizon_idx to select one horizon, or get all
     
+    Supports label transformation for Two-Stage training:
+        - label_transform: Transform 3-class → 2-class for binary signal detection
+    
     Args:
         days: List of DayData instances (must be aligned format)
         transform: Optional transform to apply to sequences
         feature_indices: Optional list of feature indices to select
         horizon_idx: For multi-horizon labels, which horizon to use (0-based).
                      None returns all horizons (for multi-output models).
+        label_transform: Optional transform to apply to labels (e.g., BinaryLabelTransform).
+                        Applied AFTER horizon selection.
+        num_classes: Number of output classes (2 for binary, 3 for multiclass).
+                    Used for property access; automatically inferred if label_transform provided.
     
     Example:
         >>> days = load_split_data("data/exports/nvda_98feat_full", "train")
@@ -524,6 +531,17 @@ class LOBSequenceDataset(Dataset):
         >>> dataset = LOBSequenceDataset(days, horizon_idx=2)
         >>> sequence, label = dataset[0]
         >>> label.shape  # () - scalar
+        
+        >>> # Binary signal detection (Two-Stage training)
+        >>> from lobtrainer.data import BinaryLabelTransform
+        >>> dataset = LOBSequenceDataset(
+        ...     days,
+        ...     horizon_idx=2,
+        ...     label_transform=BinaryLabelTransform(),
+        ...     num_classes=2
+        ... )
+        >>> sequence, label = dataset[0]
+        >>> label  # 0 (NoSignal) or 1 (Signal)
     """
     
     def __init__(
@@ -532,6 +550,8 @@ class LOBSequenceDataset(Dataset):
         transform: Optional[callable] = None,
         feature_indices: Optional[List[int]] = None,
         horizon_idx: Optional[int] = 0,  # Default: first horizon (backward compatible)
+        label_transform: Optional[callable] = None,
+        num_classes: int = 3,
     ):
         # Verify all days have sequences
         for day in days:
@@ -545,6 +565,8 @@ class LOBSequenceDataset(Dataset):
         self.transform = transform
         self.feature_indices = feature_indices
         self.horizon_idx = horizon_idx
+        self.label_transform = label_transform
+        self._num_classes = num_classes
         
         # Build index mapping: global_idx -> (day_idx, local_idx)
         self._index_map: List[Tuple[int, int]] = []
@@ -561,6 +583,10 @@ class LOBSequenceDataset(Dataset):
                 logger.info(f"Using horizon index {horizon_idx}")
         else:
             self._num_horizons = 1
+        
+        # Log label transform if provided
+        if label_transform is not None:
+            logger.info(f"Using label transform: {label_transform}")
     
     def __len__(self) -> int:
         return len(self._index_map)
@@ -594,10 +620,24 @@ class LOBSequenceDataset(Dataset):
         if isinstance(label, np.ndarray) and label.ndim > 0:
             # Multi-horizon: [n_horizons]
             label_shifted = label.astype(np.int64) + 1  # {-1,0,1} -> {0,1,2}
-            label_tensor = torch.from_numpy(label_shifted)
+            label_value = label_shifted
         else:
             # Single-horizon: scalar
-            label_tensor = torch.tensor(int(label) + 1, dtype=torch.long)
+            label_value = int(label) + 1  # {-1,0,1} -> {0,1,2}
+        
+        # Apply label transform if provided (e.g., for binary signal detection)
+        # This converts 3-class {0=Down, 1=Stable, 2=Up} to 2-class {0=NoSignal, 1=Signal}
+        if self.label_transform is not None:
+            if isinstance(label_value, np.ndarray):
+                label_value = self.label_transform.transform_array(label_value)
+            else:
+                label_value = self.label_transform(label_value)
+        
+        # Convert to tensor
+        if isinstance(label_value, np.ndarray):
+            label_tensor = torch.from_numpy(label_value.astype(np.int64))
+        else:
+            label_tensor = torch.tensor(label_value, dtype=torch.long)
         
         return (
             torch.from_numpy(sequence).float(),
@@ -612,7 +652,8 @@ class LOBSequenceDataset(Dataset):
     
     @property
     def num_classes(self) -> int:
-        return 3  # Down, Stable, Up
+        """Number of output classes (2 for binary, 3 for multiclass)."""
+        return self._num_classes
     
     @property
     def sequence_length(self) -> int:

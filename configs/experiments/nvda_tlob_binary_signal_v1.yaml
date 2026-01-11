@@ -1,0 +1,138 @@
+# =============================================================================
+# TLOB Binary Signal Detection - Stage 1
+# =============================================================================
+#
+# Objective: Train TLOB to detect "trading opportunities" (binary classification)
+#
+# Instead of 3-class (Down/Stable/Up):
+#   - Signal (1): Up OR Down - something significant is happening
+#   - NoSignal (0): Stable - no actionable opportunity
+#
+# This is Stage 1 of Two-Stage training:
+#   Stage 1: "Is there an opportunity?" (binary)
+#   Stage 2: "Which direction?" (conditional on Stage 1 predicting Signal)
+#
+# Dataset: nvda_bigmove (opportunity labeling, 71% Stable)
+# Label Transform: 3-class → 2-class (Down+Up → Signal, Stable → NoSignal)
+# Loss: Focal Loss (gamma=2.0) to handle class imbalance
+#
+# Expected class distribution after transform:
+#   - NoSignal (Stable): ~71%
+#   - Signal (Up or Down): ~29%
+#
+# =============================================================================
+
+name: "TLOB_Binary_Signal_v1"
+description: "Stage 1: Binary signal detection with Focal Loss on nvda_bigmove dataset"
+
+tags:
+  - "stage1"
+  - "binary"
+  - "signal_detection"
+  - "focal_loss"
+  - "tlob"
+  - "nvda"
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+
+data:
+  data_dir: "../data/exports/nvda_bigmove"
+  feature_count: 98
+  
+  # Sequence configuration (matches Rust export)
+  sequence:
+    window_size: 100
+    stride: 10
+  
+  # Normalization
+  normalization:
+    strategy: "zscore_per_day"
+    eps: 0.00000001
+    clip_value: 10.0
+    exclude_features: [93]  # time_regime is categorical
+  
+  # Label configuration
+  label_encoding: "binary_signal"  # Conceptual - actual transform in train.task_type
+  num_classes: 2  # Binary: Signal vs NoSignal
+  
+  # Horizon: Use horizon index 2 = 200 events (~2 seconds at 10ms)
+  horizon_idx: 2
+
+# =============================================================================
+# Model Configuration (TLOB)
+# =============================================================================
+
+model:
+  model_type: "tlob"
+  input_size: 98
+  num_classes: 2  # Binary output!
+  
+  # TLOB-specific parameters
+  tlob_hidden_dim: 64
+  tlob_num_layers: 4
+  tlob_num_heads: 1
+  tlob_mlp_expansion: 4.0
+  tlob_use_sinusoidal_pe: true
+  tlob_use_bin: true
+  tlob_dataset_type: "nvda"
+  
+  # General
+  dropout: 0.1
+  hidden_size: 64
+  num_layers: 4
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+
+train:
+  # Batch size (M1 Pro 16GB: keep at 32 for safety)
+  batch_size: 32
+  
+  # Optimizer settings
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  
+  # Training duration
+  epochs: 30  # Reduced for faster iteration
+  early_stopping_patience: 10
+  
+  # Gradient clipping
+  gradient_clip_norm: 1.0
+  
+  # Learning rate scheduler
+  scheduler: "cosine"
+  
+  # Data loading
+  num_workers: 0  # Single-threaded for M1
+  pin_memory: false
+  
+  # Reproducibility
+  seed: 42
+  
+  # ==========================================================================
+  # Stage 1 / Binary Signal Configuration
+  # ==========================================================================
+  
+  # Task type: binary signal detection
+  task_type: "binary_signal"
+  
+  # Loss function: Focal Loss for class imbalance
+  loss_type: "focal"
+  
+  # Focal loss parameters
+  # gamma=2.0 strongly down-weights easy examples (e.g., predicting Stable)
+  focal_gamma: 2.0
+  focal_alpha: null  # Auto-compute from class distribution
+  
+  # Disable old class weights (using focal loss instead)
+  use_class_weights: false
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+
+output_dir: "outputs/nvda_tlob_binary_signal_v1"
+log_level: "INFO"

@@ -5,7 +5,14 @@
 
 Machine learning experimentation for limit order book price prediction.
 
-**Version**: 0.2.0 | **Schema**: 2.1
+**Version**: 0.3.0 | **Schema**: 2.1
+
+## What's New in v0.3.0
+
+- **Strategy-Aware Metrics**: `MetricsCalculator` understands labeling strategy semantics (TLOB, Triple Barrier, Opportunity)
+- **Focal Loss**: Handle class imbalance with `FocalLoss` and `BinaryFocalLoss`
+- **TLOB Model Support**: Transformer LOB model via `lob-models` integration
+- **Task/Loss Configuration**: New `task_type`, `loss_type`, `labeling_strategy` config fields
 
 ## Quick Start
 
@@ -181,9 +188,10 @@ output_dir: outputs/baseline_lstm
 ```
 
 See `configs/` for more examples:
-- `baseline_lstm.yaml` - Standard LSTM baseline
-- `baseline_lstm_quick.yaml` - Quick 20-epoch training
-- `lstm_attn_bidir_h20.yaml` - LSTM with attention + bidirectional, horizon H=20
+- `deeplob_benchmark.yaml` - DeepLOB benchmark mode (Zhang et al. 2019)
+- `deeplob_benchmark_h100.yaml` - DeepLOB with horizon=100 (paper setting)
+- `experiments/nvda_h10_weighted_v1.yaml` - Experiment config for NVDA h=10
+- `archive/baseline_lstm.yaml` - Legacy LSTM baseline (archived)
 
 ## Key Modules
 
@@ -193,9 +201,10 @@ Feature index mapping (Schema v2.1):
 
 ```python
 from lobtrainer.constants import (
-    FeatureIndex, FEATURE_COUNT, SCHEMA_VERSION,
+    FeatureIndex, SignalIndex, FEATURE_COUNT, SCHEMA_VERSION,
     LABEL_DOWN, LABEL_STABLE, LABEL_UP,
     SHIFTED_LABEL_NAMES,  # For PyTorch labels {0, 1, 2}
+    LOB_ASK_PRICES, LOB_ASK_SIZES, LOB_BID_PRICES, LOB_BID_SIZES,
 )
 
 assert FEATURE_COUNT == 98
@@ -227,7 +236,15 @@ from lobtrainer.models import (
     LSTMClassifier,    # LSTM with optional attention/bidirectional
     GRUClassifier,     # GRU variant
     create_model,      # Factory function from config
+    LOBMODELS_AVAILABLE,  # True if lob-models package installed (for DeepLOB)
 )
+
+# DeepLOB via create_model (requires lob-models package)
+from lobtrainer.config import ModelType, DeepLOBMode
+model = create_model(ModelConfig(
+    model_type=ModelType.DEEPLOB,
+    deeplob_mode=DeepLOBMode.BENCHMARK,
+))
 ```
 
 ### `lobtrainer.training`
@@ -236,11 +253,13 @@ Training infrastructure:
 
 ```python
 from lobtrainer.training import (
-    Trainer,                    # Main training class
-    EarlyStopping,              # Stop when metric plateaus
-    ModelCheckpoint,            # Save best model
-    MetricLogger,               # Log metrics to file
-    compute_classification_report,  # Detailed metrics
+    Trainer,                      # Main training class
+    EarlyStopping,                # Stop when metric plateaus
+    ModelCheckpoint,              # Save best model
+    MetricLogger,                 # Log metrics to file
+    compute_classification_report,   # Detailed metrics
+    compute_trading_metrics,         # Trading-specific metrics
+    compute_transition_accuracy,     # Accuracy on label transitions
 )
 ```
 
@@ -365,9 +384,10 @@ lob-model-trainer/
 
 | Version | Schema | Changes |
 |---------|--------|---------|
+| 0.3.0 | 2.1 | Strategy-aware metrics, Focal Loss, TLOB support, LabelingStrategy config |
 | 0.2.0 | 2.1 | Training infrastructure, multi-horizon support, sign convention fixes |
 | 0.1.0 | 2.0 | Initial release with analysis modules |
 
 ---
 
-*Last updated: December 24, 2025*
+*Last updated: January 11, 2026*

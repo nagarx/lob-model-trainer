@@ -41,7 +41,7 @@ from torch.optim.lr_scheduler import (
 )
 from torch.utils.data import DataLoader
 
-from lobtrainer.config import ExperimentConfig, ModelType
+from lobtrainer.config import ExperimentConfig, ModelType, TaskType, LossType
 from lobtrainer.data import (
     LOBSequenceDataset,
     LOBFlatDataset,
@@ -57,7 +57,6 @@ from lobtrainer.training.callbacks import (
 )
 from lobtrainer.training.metrics import (
     compute_accuracy,
-    compute_classification_report,
     ClassificationMetrics,
 )
 from lobtrainer.utils.reproducibility import set_seed, create_worker_init_fn
@@ -267,52 +266,92 @@ class Trainer:
     
     def _create_criterion(self) -> nn.Module:
         """
-        Create loss function, optionally with class weights for imbalanced data.
+        Create loss function based on configuration.
         
-        When use_class_weights=True, inverse frequency weighting gives more 
-        importance to minority classes (Down, Up).
+        Supports:
+        - cross_entropy: Standard unweighted CE
+        - weighted_ce: CE with inverse-frequency class weights
+        - focal: Focal loss for handling class imbalance
         
-        Class weights are computed as: weight[c] = total / (n_classes * count[c])
-        This gives higher weight to less frequent classes.
-        
-        When use_class_weights=False (e.g., balanced datasets), use unweighted loss.
+        For binary_signal task, uses 2 classes instead of 3.
         """
-        # Check if class weights are enabled in config
-        use_weights = getattr(self.config.train, 'use_class_weights', True)
+        from lobtrainer.training.loss import FocalLoss, BinaryFocalLoss
         
-        if not use_weights:
-            logger.info("Using unweighted CrossEntropyLoss (use_class_weights=False)")
+        cfg = self.config.train
+        loss_type = getattr(cfg, 'loss_type', LossType.WEIGHTED_CE)
+        task_type = getattr(cfg, 'task_type', TaskType.MULTICLASS)
+        
+        # Determine number of classes based on task type
+        if task_type == TaskType.BINARY_SIGNAL:
+            num_classes = 2
+            class_names = ["NoSignal", "Signal"]
+        else:
+            num_classes = 3
+            class_names = ["Down", "Stable", "Up"]
+        
+        # For unweighted cross-entropy, return immediately
+        if loss_type == LossType.CROSS_ENTROPY:
+            logger.info(f"Using unweighted CrossEntropyLoss ({num_classes} classes)")
             return nn.CrossEntropyLoss()
         
-        # Compute class weights from training data
-        # Note: Labels are in {0, 1, 2} after dataset shift ({-1,0,1} -> {0,1,2})
+        # Compute class weights from training data for weighted losses
+        class_counts = None
         try:
             if self._train_loader is not None:
-                # Count class frequencies
-                class_counts = torch.zeros(3)
+                class_counts = torch.zeros(num_classes)
                 for _, labels in self._train_loader:
-                    for c in range(3):
+                    for c in range(num_classes):
                         class_counts[c] += (labels == c).sum().item()
                 
                 total = class_counts.sum()
                 if total > 0:
+                    # Log class distribution
+                    for i, name in enumerate(class_names):
+                        pct = class_counts[i] / total * 100
+                        logger.info(f"  Class {name}: {int(class_counts[i]):,} ({pct:.1f}%)")
+        except Exception as e:
+            logger.warning(f"Could not compute class counts: {e}")
+            class_counts = None
+        
+        # Create appropriate loss function
+        if loss_type == LossType.FOCAL:
+            gamma = getattr(cfg, 'focal_gamma', 2.0)
+            
+            # For binary OR multi-class with num_classes output logits, use FocalLoss
+            # (not BinaryFocalLoss which expects single logit for sigmoid)
+            # Note: Our model outputs [batch, num_classes] logits for both binary and multiclass
+            weights = None
+            if class_counts is not None:
+                total = class_counts.sum()
+                if total > 0:
                     # Inverse frequency weighting
-                    weights = total / (3.0 * class_counts.clamp(min=1))
+                    weights = total / (num_classes * class_counts.clamp(min=1))
+                    weights = weights.to(self.device)
+            
+            logger.info(f"Using FocalLoss(gamma={gamma}, alpha={weights})")
+            return FocalLoss(gamma=gamma, alpha=weights)
+        
+        else:  # LossType.WEIGHTED_CE
+            # Compute class weights from training data
+            if class_counts is not None:
+                total = class_counts.sum()
+                if total > 0:
+                    # Inverse frequency weighting
+                    weights = total / (float(num_classes) * class_counts.clamp(min=1))
                     weights = weights.to(self.device)
                     
-                    logger.info(
-                        f"Using class weights: Down={weights[0]:.2f}, "
-                        f"Stable={weights[1]:.2f}, Up={weights[2]:.2f}"
+                    weight_str = ", ".join(
+                        f"{name}={weights[i]:.2f}" for i, name in enumerate(class_names)
                     )
+                    logger.info(f"Using class weights: {weight_str}")
                     return nn.CrossEntropyLoss(weight=weights)
-        except Exception as e:
-            logger.warning(f"Could not compute class weights: {e}")
         
         # Fallback to unweighted loss
+        logger.info("Using unweighted CrossEntropyLoss (fallback)")
         return nn.CrossEntropyLoss()
     
     def _create_dataloaders(self) -> Dict[str, DataLoader]:
-        """Create data loaders for all splits."""
+        """Create data loaders for all splits with proper task configuration."""
         cfg_data = self.config.data
         cfg_train = self.config.train
         cfg_model = self.config.model
@@ -341,15 +380,70 @@ class Trainer:
                     f"DeepLOB benchmark mode: selecting first {LOB_FEATURE_COUNT} LOB features"
                 )
         
-        loaders = create_dataloaders(
+        # Determine label transform based on task type
+        label_transform = None
+        num_classes = 3
+        task_type = getattr(cfg_train, 'task_type', TaskType.MULTICLASS)
+        
+        if task_type == TaskType.BINARY_SIGNAL:
+            from lobtrainer.data import BinaryLabelTransform
+            label_transform = BinaryLabelTransform()  # Down,Up → Signal; Stable → NoSignal
+            num_classes = 2
+            logger.info("Binary signal detection mode: converting 3-class → 2-class labels")
+        
+        # Create dataloaders with proper configuration
+        loaders = self._create_dataloaders_with_transform(
             data_dir=cfg_data.data_dir,
             batch_size=cfg_train.batch_size,
             num_workers=num_workers,
             pin_memory=cfg_train.pin_memory and torch.cuda.is_available(),
-            use_sequences=True,  # Use 3D sequences for sequence models
             horizon_idx=horizon_idx,
             feature_indices=feature_indices,
+            label_transform=label_transform,
+            num_classes=num_classes,
         )
+        
+        return loaders
+    
+    def _create_dataloaders_with_transform(
+        self,
+        data_dir: str,
+        batch_size: int,
+        num_workers: int,
+        pin_memory: bool,
+        horizon_idx: int,
+        feature_indices: Optional[List[int]],
+        label_transform: Optional[callable],
+        num_classes: int,
+    ) -> Dict[str, DataLoader]:
+        """Create dataloaders with custom label transform support."""
+        loaders = {}
+        
+        for split in ["train", "val", "test"]:
+            try:
+                days = load_split_data(data_dir, split, validate=True)
+            except FileNotFoundError:
+                logger.info(f"Split '{split}' not found, skipping")
+                continue
+            
+            # Create dataset with label transform
+            dataset = LOBSequenceDataset(
+                days,
+                transform=None,  # No feature transform for now
+                feature_indices=feature_indices,
+                horizon_idx=horizon_idx,
+                label_transform=label_transform,
+                num_classes=num_classes,
+            )
+            
+            loaders[split] = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=(split == "train"),
+                num_workers=num_workers,
+                pin_memory=pin_memory,
+                drop_last=(split == "train"),
+            )
         
         return loaders
     
@@ -533,16 +627,36 @@ class Trainer:
     @torch.no_grad()
     def _validate(self) -> Dict[str, float]:
         """
-        Run validation.
+        Run validation with strategy-aware metrics.
         
         Returns:
-            Dict with validation metrics
+            Dict with validation metrics. The specific metrics depend on the
+            labeling_strategy configured in the experiment:
+            
+            For TRIPLE_BARRIER:
+            - val_loss, val_accuracy, val_macro_f1
+            - stoploss_precision, timeout_precision, profittarget_precision
+            - profit_target_precision, stop_loss_precision (trading-specific)
+            - decisive_prediction_rate, true_win_rate, predicted_trade_win_rate
+            
+            For OPPORTUNITY:
+            - val_loss, val_accuracy, val_macro_f1
+            - bigdown_precision, noopportunity_precision, bigup_precision
+            - directional_accuracy, opportunity_prediction_rate
+            
+            For TLOB:
+            - val_loss, val_accuracy, val_macro_f1
+            - down_precision, stable_precision, up_precision
+            - directional_accuracy, signal_rate
         """
         self.model.eval()
         
         total_loss = 0.0
-        total_correct = 0
         total_samples = 0
+        
+        # Collect all predictions for metrics
+        all_preds = []
+        all_labels = []
         
         for features, labels in self._val_loader:
             features = features.to(self.device)
@@ -553,16 +667,54 @@ class Trainer:
             
             total_loss += loss.item() * features.size(0)
             predictions = outputs.argmax(dim=1)
-            total_correct += (predictions == labels).sum().item()
             total_samples += features.size(0)
+            
+            # Collect for metrics
+            all_preds.append(predictions.cpu())
+            all_labels.append(labels.cpu())
         
         avg_loss = total_loss / total_samples
-        accuracy = total_correct / total_samples
         
-        return {
+        # Concatenate all predictions and labels
+        y_pred = torch.cat(all_preds)
+        y_true = torch.cat(all_labels)
+        
+        # Get labeling strategy from config (default to opportunity for backward compat)
+        strategy = getattr(self.config.data, 'labeling_strategy', 'opportunity')
+        if hasattr(strategy, 'value'):
+            strategy = strategy.value
+        
+        num_classes = self.config.data.num_classes
+        
+        # Compute strategy-aware metrics
+        metrics_calculator = MetricsCalculator(strategy, num_classes)
+        metrics = metrics_calculator.compute(y_pred, y_true, loss=avg_loss)
+        
+        # Build result dict with val_ prefix
+        result = {
             'val_loss': avg_loss,
-            'val_accuracy': accuracy,
+            'val_accuracy': metrics.accuracy,
+            'val_macro_f1': metrics.macro_f1,
         }
+        
+        # Add per-class precision with class names (lowercase)
+        for class_id, precision in metrics.per_class_precision.items():
+            if class_id < len(metrics.class_names):
+                name = metrics.class_names[class_id].lower()
+                result[f'val_{name}_precision'] = precision
+        
+        # Add strategy-specific metrics with val_ prefix
+        for key, value in metrics.strategy_metrics.items():
+            result[f'val_{key}'] = value
+        
+        # Backward compatibility: add directional metrics for TLOB and OPPORTUNITY
+        if strategy in ('tlob', 'opportunity'):
+            if 'directional_accuracy' in metrics.strategy_metrics:
+                result['val_directional_accuracy'] = metrics.strategy_metrics['directional_accuracy']
+            if 'signal_rate' in metrics.strategy_metrics:
+                result['val_signal_rate'] = metrics.strategy_metrics['signal_rate']
+        
+        return result
     
     # =========================================================================
     # Evaluation
@@ -620,15 +772,26 @@ class Trainer:
         y_pred = np.concatenate(all_predictions)
         y_true = np.concatenate(all_labels)
         
-        # Compute comprehensive metrics
-        # Note: Dataset outputs labels in {0, 1, 2} (shifted from original {-1, 0, 1})
-        # Pass shifted=True to use correct label names: 0=Down, 1=Stable, 2=Up
-        metrics = compute_classification_report(y_true, y_pred, shifted=True)
+        # Use MetricsCalculator for strategy-aware metrics
+        from lobtrainer.training.metrics import MetricsCalculator
+        metrics_calculator = MetricsCalculator(
+            labeling_strategy=self.config.data.labeling_strategy,
+            num_classes=self.config.model.num_classes,
+        )
+        metrics = metrics_calculator.compute(y_pred, y_true)
         
+        # Log key metrics
         logger.info(
             f"Evaluation [{split}]: accuracy={metrics.accuracy:.4f}, "
             f"macro_f1={metrics.macro_f1:.4f}"
         )
+        
+        # Log strategy-specific metrics
+        if metrics.strategy_metrics:
+            strategy_str = ", ".join(
+                f"{k}={v:.4f}" for k, v in list(metrics.strategy_metrics.items())[:5]
+            )
+            logger.info(f"  Strategy metrics: {strategy_str}")
         
         return metrics
     

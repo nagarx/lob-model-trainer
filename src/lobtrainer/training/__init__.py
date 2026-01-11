@@ -24,12 +24,21 @@ Usage:
 """
 
 from lobtrainer.training.metrics import (
+    # New strategy-aware metrics
+    MetricsCalculator,
+    ClassificationMetrics,
+    compute_metrics,
+    get_class_names,
+    TRIPLE_BARRIER_CLASS_NAMES,
+    OPPORTUNITY_CLASS_NAMES,
+    TLOB_CLASS_NAMES,
+    BINARY_CLASS_NAMES,
+    # Backward compatibility
     compute_accuracy,
     compute_classification_report,
     compute_confusion_matrix,
     compute_trading_metrics,
     compute_transition_accuracy,
-    ClassificationMetrics,
     PerClassMetrics,
 )
 
@@ -56,11 +65,21 @@ from lobtrainer.training.trainer import (
     create_trainer,
 )
 
+from lobtrainer.training.loss import (
+    FocalLoss,
+    BinaryFocalLoss,
+    create_focal_loss,
+)
+
 __all__ = [
     # Core Trainer
     "Trainer",
     "TrainingState",
     "create_trainer",
+    # Loss Functions
+    "FocalLoss",
+    "BinaryFocalLoss",
+    "create_focal_loss",
     # Callbacks
     "Callback",
     "CallbackList",
@@ -68,7 +87,15 @@ __all__ = [
     "ModelCheckpoint",
     "MetricLogger",
     "ProgressCallback",
-    # Metrics
+    # Strategy-aware Metrics (NEW)
+    "MetricsCalculator",
+    "compute_metrics",
+    "get_class_names",
+    "TRIPLE_BARRIER_CLASS_NAMES",
+    "OPPORTUNITY_CLASS_NAMES",
+    "TLOB_CLASS_NAMES",
+    "BINARY_CLASS_NAMES",
+    # Metrics (backward compatibility)
     "compute_accuracy",
     "compute_classification_report",
     "compute_confusion_matrix",

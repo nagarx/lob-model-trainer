@@ -1,6 +1,22 @@
 # LOB-Model-Trainer: Codebase Technical Reference
 
+> **Version**: 0.3.0  
+> **Last Updated**: January 11, 2026  
 > **Purpose**: This document provides complete technical details for LLMs and developers to understand, modify, and extend the codebase without prior context.
+
+---
+
+## Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **LSTM/GRU Models** | ✅ Complete | Sequence models with optional attention |
+| **DeepLOB** | ✅ Complete | Via lob-models package integration |
+| **TLOB** | ✅ Complete | Via lob-models package integration |
+| **Strategy-Aware Metrics** | ✅ Complete | MetricsCalculator for TLOB/Triple Barrier/Opportunity |
+| **Focal Loss** | ✅ Complete | For class imbalance handling |
+| **Multi-Horizon Labels** | ✅ Complete | Support for multiple prediction horizons |
+| **Tests** | ✅ Complete | 340 tests (336 passed, 4 skipped for CUDA) |
 
 ---
 
@@ -268,8 +284,40 @@ DERIVED_FEATURES = list(range(40, 48))     # 8 features
 MBO_FEATURES = list(range(48, 84))         # 36 features
 SIGNAL_FEATURES = list(range(84, 98))      # 14 features
 
+# LOB feature slices (match Rust pipeline output)
+LOB_ASK_PRICES = slice(0, 10)   # Indices 0-9
+LOB_ASK_SIZES = slice(10, 20)   # Indices 10-19
+LOB_BID_PRICES = slice(20, 30)  # Indices 20-29
+LOB_BID_SIZES = slice(30, 40)   # Indices 30-39
+
 # Core signals for analysis
 CORE_SIGNAL_INDICES = [84, 85, 86, 87, 88, 89, 90, 91]
+```
+
+### SignalIndex Convenience Class
+
+```python
+class SignalIndex(IntEnum):
+    """
+    Convenience enum for the 14 trading signals (indices 84-97).
+    
+    Usage:
+        >>> signals = features[:, SignalIndex.TRUE_OFI:SignalIndex.SCHEMA_VERSION + 1]
+    """
+    TRUE_OFI = 84
+    DEPTH_NORM_OFI = 85
+    EXECUTED_PRESSURE = 86
+    SIGNED_MP_DELTA_BPS = 87
+    TRADE_ASYMMETRY = 88
+    CANCEL_ASYMMETRY = 89
+    FRAGILITY_SCORE = 90
+    DEPTH_ASYMMETRY = 91
+    BOOK_VALID = 92
+    TIME_REGIME = 93
+    MBO_READY = 94
+    DT_SECONDS = 95
+    INVALIDITY_DELTA = 96
+    SCHEMA_VERSION = 97
 ```
 
 ---
@@ -301,6 +349,27 @@ class ExperimentConfig:
     def from_dict(cls, d: Dict[str, Any]) -> 'ExperimentConfig': ...
 ```
 
+### LabelingStrategy (NEW v0.3)
+
+```python
+class LabelingStrategy(str, Enum):
+    """
+    Labeling strategy used in the exported data.
+    
+    Each strategy has different semantic meanings for its class indices,
+    which affects how metrics should be computed and interpreted.
+    """
+    
+    OPPORTUNITY = "opportunity"
+    """Classes: 0=BigDown, 1=NoOpportunity, 2=BigUp"""
+    
+    TRIPLE_BARRIER = "triple_barrier"
+    """Classes: 0=StopLoss, 1=Timeout, 2=ProfitTarget"""
+    
+    TLOB = "tlob"
+    """Classes: 0=Down, 1=Stable, 2=Up (default)"""
+```
+
 ### DataConfig
 
 ```python
@@ -315,6 +384,9 @@ class DataConfig:
     normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
     
     label_encoding: str = "categorical"        # "categorical" or "regression"
+    labeling_strategy: LabelingStrategy = LabelingStrategy.TLOB  # NEW v0.3
+    """Affects metric computation and class naming."""
+    
     num_classes: int = 3                       # For classification
     cache_in_memory: bool = True               # Cache loaded data
 ```
@@ -322,10 +394,27 @@ class DataConfig:
 ### ModelConfig
 
 ```python
+class ModelType(str, Enum):
+    """Model architecture type."""
+    LOGISTIC = "logistic"   # Logistic regression baseline
+    XGBOOST = "xgboost"     # XGBoost classifier
+    LSTM = "lstm"           # LSTM sequence model
+    GRU = "gru"             # GRU sequence model
+    TRANSFORMER = "transformer"  # Transformer encoder
+    DEEPLOB = "deeplob"     # DeepLOB (CNN + LSTM)
+    TLOB = "tlob"           # TLOB (Transformer LOB with dual attention) - NEW v0.3
+
+
+class DeepLOBMode(str, Enum):
+    """DeepLOB operational mode."""
+    BENCHMARK = "benchmark"  # Original paper: 40 LOB features only
+    EXTENDED = "extended"    # Extended: All 98 features
+
+
 @dataclass
 class ModelConfig:
     """Model architecture configuration."""
-    model_type: ModelType = ModelType.LSTM     # "lstm", "gru", "transformer"
+    model_type: ModelType = ModelType.LSTM     # "lstm", "gru", "deeplob", etc.
     
     input_size: int = 98                       # Features per timestep
     hidden_size: int = 64                      # Hidden layer dimension
@@ -336,6 +425,31 @@ class ModelConfig:
     # LSTM-specific
     lstm_bidirectional: bool = False           # Use bidirectional LSTM
     lstm_attention: bool = False               # Add attention mechanism
+    
+    # DeepLOB-specific (Zhang et al. 2019)
+    deeplob_mode: DeepLOBMode = DeepLOBMode.BENCHMARK
+    """benchmark: Original paper (40 LOB features), extended: All 98 features."""
+    
+    deeplob_conv_filters: int = 32             # Conv block filters (paper: 32)
+    deeplob_inception_filters: int = 64        # Inception branch filters (paper: 64)
+    deeplob_lstm_hidden: int = 64              # LSTM hidden size (paper: 64)
+    deeplob_num_levels: int = 10               # LOB levels to use (paper: 10)
+```
+
+### LossType and TaskType (NEW v0.3)
+
+```python
+class TaskType(str, Enum):
+    """Classification task type."""
+    MULTICLASS = "multiclass"      # Standard 3-class: Down/Stable/Up
+    BINARY_SIGNAL = "binary_signal"  # Binary: Signal vs NoSignal
+
+
+class LossType(str, Enum):
+    """Loss function type."""
+    CROSS_ENTROPY = "cross_entropy"  # Standard CE
+    FOCAL = "focal"                  # Focal loss for class imbalance
+    WEIGHTED_CE = "weighted_ce"      # CE with inverse-frequency weights
 ```
 
 ### TrainConfig
@@ -357,6 +471,19 @@ class TrainConfig:
     seed: int = 42
     
     use_class_weights: bool = True             # Weight loss by class frequency
+    
+    # NEW v0.3: Loss and task configuration
+    task_type: TaskType = TaskType.MULTICLASS
+    """Classification task type."""
+    
+    loss_type: LossType = LossType.WEIGHTED_CE
+    """Loss function type. Use 'focal' for severe class imbalance."""
+    
+    focal_gamma: float = 2.0
+    """Focal loss gamma parameter. Higher = more focus on hard examples."""
+    
+    focal_alpha: Optional[float] = None
+    """Focal loss alpha for class balancing. If None, uses inverse-frequency."""
 ```
 
 ### Loading Configuration
@@ -775,11 +902,12 @@ class GRUClassifier(nn.Module):
 
 ```python
 from lobtrainer.models import create_model
+from lobtrainer.config import ModelConfig, ModelType, DeepLOBMode
 
 # From config
 model = create_model(config.model)
 
-# Direct creation
+# Direct creation - LSTM
 model = create_model(ModelConfig(
     model_type=ModelType.LSTM,
     input_size=98,
@@ -788,7 +916,43 @@ model = create_model(ModelConfig(
     lstm_bidirectional=True,
     lstm_attention=True,
 ))
+
+# Direct creation - DeepLOB (requires lobmodels package)
+model = create_model(ModelConfig(
+    model_type=ModelType.DEEPLOB,
+    deeplob_mode=DeepLOBMode.BENCHMARK,  # 40 LOB features
+    deeplob_conv_filters=32,
+    deeplob_inception_filters=64,
+    deeplob_lstm_hidden=64,
+    deeplob_num_levels=10,
+    num_classes=3,
+))
 ```
+
+### DeepLOB Integration
+
+DeepLOB model is implemented in the separate `lob-models` package and integrated via:
+
+```python
+# Conditional import in lobtrainer/models/__init__.py
+try:
+    from lobmodels import DeepLOB, DeepLOBConfig, FeatureLayout
+    LOBMODELS_AVAILABLE = True
+except ImportError:
+    LOBMODELS_AVAILABLE = False
+```
+
+To use DeepLOB:
+
+```bash
+# Install lob-models package first
+pip install -e ../lob-models
+```
+
+In BENCHMARK mode, DeepLOB:
+- Uses only the first 40 LOB features (indices 0-39)
+- Automatically rearranges from GROUPED layout to FI2010 layout
+- Matches the original Zhang et al. 2019 paper architecture
 
 ---
 
@@ -886,7 +1050,10 @@ class Trainer:
         Evaluate model on a data split.
         
         Returns:
-            ClassificationMetrics with accuracy, per-class F1, etc.
+            ClassificationMetrics with:
+            - Standard metrics (accuracy, macro_f1, per-class metrics)
+            - Trading metrics (directional_accuracy, up_precision, 
+              down_precision, signal_rate)
         """
         ...
 ```
@@ -928,6 +1095,29 @@ def _create_criterion(self) -> nn.Module:
     return nn.CrossEntropyLoss(weight=weights.to(self.device))
 ```
 
+### Validation Metrics
+
+During training, `_validate()` returns both standard and trading metrics:
+
+```python
+{
+    'val_loss': float,                  # Average cross-entropy loss
+    'val_accuracy': float,              # Overall accuracy (includes Stable)
+    'val_directional_accuracy': float,  # Accuracy on Up/Down only
+    'val_up_precision': float,          # P(true=Up | pred=Up)
+    'val_down_precision': float,        # P(true=Down | pred=Down)
+    'val_signal_rate': float,           # Fraction of non-Stable predictions
+}
+```
+
+These metrics are logged per epoch and available in `trainer.state.history`.
+
+### DeepLOB Feature Selection
+
+When `model_type=DEEPLOB` and `deeplob_mode=BENCHMARK`, the Trainer automatically:
+- Sets `feature_indices=[0, 40]` to select only LOB features
+- Passes data through DeepLOB's layout transformation (GROUPED → FI2010)
+
 ### Factory Function
 
 ```python
@@ -942,6 +1132,38 @@ trainer = create_trainer(config, callbacks=[
     ModelCheckpoint(save_dir="checkpoints/"),
 ])
 ```
+
+### Loss Functions (NEW v0.3)
+
+The training module includes Focal Loss for handling class imbalance:
+
+```python
+from lobtrainer.training import FocalLoss, BinaryFocalLoss, create_focal_loss
+
+# Multi-class Focal Loss
+criterion = FocalLoss(gamma=2.0, alpha=class_weights)
+
+# Binary Focal Loss (for signal detection)
+criterion = BinaryFocalLoss(gamma=2.0, alpha=0.75)
+
+# Factory function (auto-selects based on num_classes)
+criterion = create_focal_loss(
+    num_classes=3,
+    gamma=2.0,
+    class_counts=torch.tensor([25000, 50000, 25000])  # Auto-computes weights
+)
+```
+
+**Focal Loss Formula:**
+```
+FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+```
+
+- `gamma=0`: Equivalent to CrossEntropyLoss
+- `gamma=2`: Commonly used (TLOB paper recommendation)
+- `alpha`: Class weights for balancing
+
+Reference: Lin et al. (2017), "Focal Loss for Dense Object Detection"
 
 ---
 
@@ -1074,39 +1296,105 @@ class CallbackList:
 
 ## 12. Evaluation Metrics
 
+### Strategy-Aware Metrics (NEW v0.3)
+
+The metrics module now provides strategy-aware calculations that understand the semantic meaning of different labeling strategies:
+
+```python
+# Class name constants per strategy
+TRIPLE_BARRIER_CLASS_NAMES = ["StopLoss", "Timeout", "ProfitTarget"]
+OPPORTUNITY_CLASS_NAMES = ["BigDown", "NoOpportunity", "BigUp"]
+TLOB_CLASS_NAMES = ["Down", "Stable", "Up"]
+```
+
+### MetricsCalculator (RECOMMENDED)
+
+```python
+class MetricsCalculator:
+    """
+    Strategy-aware metrics calculator.
+    
+    Computes metrics that match the semantic meaning of the labeling strategy.
+    
+    Args:
+        strategy: Labeling strategy (opportunity, triple_barrier, tlob)
+        num_classes: Number of classes (default 3)
+    
+    Example:
+        >>> calc = MetricsCalculator("triple_barrier")
+        >>> metrics = calc.compute(preds, labels)
+        >>> print(metrics.strategy_metrics["predicted_trade_win_rate"])
+    """
+    
+    def compute(
+        self,
+        predictions: Tensor,
+        labels: Tensor,
+        loss: Optional[float] = None,
+    ) -> ClassificationMetrics:
+        """Compute comprehensive metrics with strategy-specific additions."""
+        ...
+```
+
 ### ClassificationMetrics (src/lobtrainer/training/metrics.py)
 
 ```python
 @dataclass
-class PerClassMetrics:
-    """Metrics for a single class."""
-    label: int
-    name: str
-    precision: float
-    recall: float
-    f1: float
-    support: int
-
-
-@dataclass
 class ClassificationMetrics:
-    """Complete classification evaluation results."""
+    """
+    Complete classification evaluation results with strategy-aware semantics.
+    
+    NEW v0.3: Includes strategy_metrics dict for strategy-specific measures.
+    """
     accuracy: float
+    loss: float
+    
+    # Per-class metrics (indexed by class ID)
+    per_class_precision: Dict[int, float]
+    per_class_recall: Dict[int, float]
+    per_class_f1: Dict[int, float]
+    per_class_count: Dict[int, int]          # Ground truth counts
+    per_class_predicted_count: Dict[int, int]  # Prediction counts
+    
+    # Macro averages
     macro_precision: float
     macro_recall: float
     macro_f1: float
-    weighted_f1: float
-    per_class: List[PerClassMetrics]
+    
     confusion_matrix: np.ndarray
     
+    # Strategy-specific metrics (NEW v0.3)
+    strategy_metrics: Dict[str, float]
+    """
+    Strategy-specific metrics. Examples:
+    - triple_barrier: predicted_trade_win_rate, true_win_rate, decisive_prediction_rate
+    - opportunity: directional_accuracy, opportunity_prediction_rate
+    - tlob: directional_accuracy, signal_rate
+    """
+    
+    class_names: List[str]
+    """Human-readable class names for reporting."""
+    
     def summary(self) -> str:
-        """Format metrics as human-readable string."""
+        """Format metrics as human-readable string including strategy metrics."""
         ...
     
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
+    def to_dict(self) -> Dict[str, float]:
+        """Convert to flat dictionary for logging."""
         ...
 ```
+
+### Strategy-Specific Metrics
+
+| Strategy | Key Metrics | Description |
+|----------|-------------|-------------|
+| **Triple Barrier** | `predicted_trade_win_rate` | When we predict trade (not Timeout), actual win rate |
+| | `decisive_prediction_rate` | How often we predict StopLoss or ProfitTarget |
+| | `true_win_rate` | Ground truth ProfitTarget / (ProfitTarget + StopLoss) |
+| **Opportunity** | `directional_accuracy` | When predicting direction, are we right? |
+| | `opportunity_prediction_rate` | How often we predict BigUp or BigDown |
+| **TLOB** | `directional_accuracy` | Accuracy on non-Stable predictions |
+| | `signal_rate` | Fraction of directional (Up/Down) predictions |
 
 ### compute_classification_report
 
@@ -1174,10 +1462,29 @@ def compute_trading_metrics(
     Compute trading-specific metrics.
     
     Returns:
-        directional_accuracy: Correct prediction of Up/Down
-        stable_accuracy: Correct prediction of Stable
-        up_recall: True positive rate for Up
-        down_recall: True positive rate for Down
+        directional_accuracy: Accuracy on non-Stable samples (Up/Down only)
+        up_precision: P(true=Up | pred=Up) - when we predict Up, how often correct
+        down_precision: P(true=Down | pred=Down) - when we predict Down, how often correct
+        signal_rate: Fraction of non-Stable predictions (trading signals)
+    """
+    ...
+
+
+def compute_transition_accuracy(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+) -> Dict[str, float]:
+    """
+    Compute accuracy conditioned on label transitions.
+    
+    Measures performance on samples where the label changed
+    from the previous timestep (harder to predict).
+    
+    Returns:
+        overall_accuracy: Standard accuracy
+        transition_accuracy: Accuracy on samples where y[t] != y[t-1]
+        stable_accuracy: Accuracy on samples where y[t] == y[t-1]
+        transition_rate: Fraction of samples that are transitions
     """
     ...
 ```
@@ -1716,22 +2023,25 @@ def create_worker_init_fn(base_seed: int):
 ### Training Script (scripts/train.py)
 
 ```bash
-# Basic training
-python scripts/train.py --config configs/baseline_lstm.yaml
+# Basic training with DeepLOB
+python scripts/train.py --config configs/deeplob_benchmark.yaml
+
+# Specific experiment config
+python scripts/train.py --config configs/experiments/nvda_h10_weighted_v1.yaml
 
 # With overrides
-python scripts/train.py --config configs/baseline_lstm.yaml \
+python scripts/train.py --config configs/deeplob_benchmark.yaml \
     --epochs 50 \
     --batch-size 256 \
     --learning-rate 0.0005 \
     --output-dir outputs/experiment1
 
 # Resume from checkpoint
-python scripts/train.py --config configs/baseline_lstm.yaml \
+python scripts/train.py --config configs/deeplob_benchmark.yaml \
     --resume outputs/checkpoints/best.pt
 
 # Evaluation only
-python scripts/train.py --config configs/baseline_lstm.yaml \
+python scripts/train.py --config configs/deeplob_benchmark.yaml \
     --eval-only --resume outputs/checkpoints/best.pt
 ```
 
@@ -1744,92 +2054,113 @@ python scripts/run_complete_streaming_analysis.py \
     --output-dir docs/
 ```
 
+### Additional Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `run_baseline_evaluation.py` | Evaluate naive baselines (class prior, previous label) |
+| `validate_alignment_bugs.py` | Debug feature-label alignment issues |
+| `validate_export.py` | Validate exported NumPy data integrity |
+| `evaluate_model.py` | Evaluate trained model checkpoint |
+
 ---
 
 ## 18. Configuration Examples
 
-### Baseline LSTM (configs/baseline_lstm.yaml)
+### Config Directory Structure
+
+```
+configs/
+├── deeplob_benchmark.yaml          # Base DeepLOB template
+├── deeplob_benchmark_h100.yaml     # DeepLOB with horizon=100
+├── experiments/                    # Specific experiment configs
+│   └── nvda_h10_weighted_v1.yaml   # NVDA h=10 with class weights
+├── archive/                        # Legacy configs (for reference)
+│   ├── baseline_lstm.yaml
+│   ├── baseline_lstm_quick.yaml
+│   └── lstm_attn_bidir_h20.yaml
+└── README.md                       # Config documentation
+```
+
+### DeepLOB Benchmark (configs/deeplob_benchmark.yaml)
 
 ```yaml
-name: baseline_lstm
+name: deeplob_benchmark_nvda
 description: |
-  Baseline LSTM model for LOB price prediction.
-  
+  DeepLOB model (Zhang et al. 2019) in benchmark mode.
+  Uses first 40 LOB features only.
+
 tags:
-  - baseline
-  - lstm
+  - deeplob
+  - benchmark
   - nvda
 
 data:
   data_dir: "../data/exports/nvda_balanced"
   feature_count: 98
-  horizon_idx: 0
-  
-  sequence:
-    window_size: 100
-    stride: 10
-  
-  normalization:
-    strategy: zscore_per_day
-    eps: 1.0e-8
-    clip_value: 10.0
-    exclude_features:
-      - 93  # TIME_REGIME (categorical)
-  
-  label_encoding: categorical
+  horizon_idx: 0  # 0=h10, 1=h20, 2=h50, 3=h100, 4=h200
   num_classes: 3
-  cache_in_memory: true
 
 model:
-  model_type: lstm
-  input_size: 98
-  hidden_size: 64
-  num_layers: 2
-  dropout: 0.2
+  model_type: deeplob
   num_classes: 3
-  lstm_bidirectional: false
-  lstm_attention: false
+  # DeepLOB-specific
+  deeplob_mode: benchmark        # benchmark (40 features) or extended (98)
+  deeplob_conv_filters: 32       # Paper default
+  deeplob_inception_filters: 64  # Paper default
+  deeplob_lstm_hidden: 64        # Paper default
+  deeplob_num_levels: 10         # Paper default
 
 train:
-  batch_size: 128
-  learning_rate: 1.0e-3
-  weight_decay: 1.0e-5
-  epochs: 100
-  early_stopping_patience: 10
-  gradient_clip_norm: 1.0
-  scheduler: cosine
-  num_workers: 0
-  pin_memory: false
-  seed: 42
+  batch_size: 64
+  learning_rate: 1.0e-4
+  epochs: 10
+  early_stopping_patience: 5
   use_class_weights: true
+  seed: 42
 
-output_dir: outputs/baseline_lstm
-log_level: INFO
+output_dir: outputs/deeplob_benchmark
 ```
 
-### LSTM with Attention (configs/lstm_attn_bidir_h20.yaml)
+### Horizon Index Mapping
 
 ```yaml
-name: lstm_attn_bidir_h20
+# HORIZON INDEX MAPPING:
+# idx=0 → h=10  (best accuracy, most balanced)
+# idx=1 → h=20
+# idx=2 → h=50
+# idx=3 → h=100 (paper benchmark)
+# idx=4 → h=200 (hardest)
+```
+
+### Experiment Config (configs/experiments/nvda_h10_weighted_v1.yaml)
+
+```yaml
+name: deeplob_nvda_h10_weighted_v1
 description: |
-  LSTM with attention, bidirectional, horizon 20.
+  DeepLOB with h=10, class weights enabled.
+  Quick iteration experiment.
+
+tags:
+  - deeplob
+  - horizon-10
+  - weighted-loss
 
 data:
   data_dir: "../data/exports/nvda_balanced"
-  horizon_idx: 1  # Second horizon (H=20)
-  ...
+  horizon_idx: 0  # h=10
+  num_classes: 3
 
 model:
-  model_type: lstm
-  hidden_size: 64
-  num_layers: 2
-  lstm_bidirectional: true
-  lstm_attention: true
+  model_type: deeplob
+  deeplob_mode: benchmark
 
 train:
-  epochs: 20
-  early_stopping_patience: 5
+  epochs: 10
   use_class_weights: true
+  early_stopping_patience: 5
+
+output_dir: outputs/experiments/nvda_h10_weighted_v1
 ```
 
 ---
@@ -2058,7 +2389,7 @@ exclude_features:
 ```python
 # Core training
 from lobtrainer import Trainer, create_trainer, set_seed
-from lobtrainer.config import load_config, ExperimentConfig
+from lobtrainer.config import load_config, ExperimentConfig, ModelType, DeepLOBMode
 
 # Models
 from lobtrainer.models import LSTMClassifier, GRUClassifier, create_model
@@ -2067,16 +2398,21 @@ from lobtrainer.models import LSTMClassifier, GRUClassifier, create_model
 from lobtrainer.data import LOBSequenceDataset, create_dataloaders
 
 # Metrics
-from lobtrainer.training import compute_classification_report
+from lobtrainer.training import (
+    compute_classification_report,
+    compute_trading_metrics,
+    compute_transition_accuracy,
+)
 
 # Analysis
 from lobtrainer.analysis.streaming import iter_days, iter_days_aligned
 
 # Constants
 from lobtrainer.constants import (
-    FeatureIndex, FEATURE_COUNT,
+    FeatureIndex, SignalIndex, FEATURE_COUNT,
     LABEL_DOWN, LABEL_STABLE, LABEL_UP,
     SHIFTED_LABEL_NAMES,
+    LOB_ASK_PRICES, LOB_ASK_SIZES, LOB_BID_PRICES, LOB_BID_SIZES,
 )
 ```
 
@@ -2112,6 +2448,6 @@ from lobtrainer.constants import (
 
 ---
 
-*Last updated: December 24, 2025*
-*Version: 0.2.0*
+*Last updated: January 11, 2026*
+*Version: 0.3.0*
 

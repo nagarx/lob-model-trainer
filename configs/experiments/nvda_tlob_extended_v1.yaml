@@ -1,0 +1,149 @@
+# TLOB Model - Extended Dataset v1
+#
+# This configuration trains the TLOB model on the extended dataset
+# covering Feb 2025 - Jan 2026 (~235 trading days).
+#
+# KEY CHANGES FROM PREVIOUS EXPERIMENTS:
+# ======================================
+# 1. Extended date range for more data and better generalization
+# 2. Multi-horizon labels (h=10, 20, 50, 100) - use horizon_idx to select
+# 3. True out-of-sample test set (Oct 2025 - Jan 2026)
+#
+# PREREQUISITE:
+# =============
+# Export data first:
+#   cd feature-extractor-MBO-LOB
+#   cargo run --release --features parallel --bin export_dataset -- \
+#       --config configs/nvda_extended_multi_horizon.toml
+
+name: TLOB_Extended_v1
+description: "TLOB model trained on extended dataset (Feb 2025 - Jan 2026) with multi-horizon labels"
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  # Path to extended dataset export
+  data_dir: "../data/exports/nvda_extended_multi_horizon"
+  feature_count: 98
+  
+  # Labeling strategy: TLOB (smoothed average trend)
+  # Classes: 0=Down, 1=Stable, 2=Up (after +1 shift from {-1,0,1})
+  labeling_strategy: tlob
+  num_classes: 3
+  
+  # Multi-horizon label selection
+  # The export produces 4 horizons: [10, 20, 50, 100]
+  # horizon_idx selects which one to use for training:
+  #   0 = h=10 (very short-term, ~10 seconds)
+  #   1 = h=20 (short-term, ~20 seconds)
+  #   2 = h=50 (medium-term, ~50 seconds) [RECOMMENDED START]
+  #   3 = h=100 (longer-term, ~100 seconds)
+  horizon_idx: 2  # Use h=50 as primary target
+  
+  # Sequence configuration (must match export)
+  sequence:
+    window_size: 100
+    stride: 10
+  
+  # Normalization (z-score per day)
+  normalization:
+    strategy: zscore_per_day
+    eps: 0.00000001
+    clip_value: 10.0
+
+# =============================================================================
+# Model Configuration (TLOB)
+# =============================================================================
+model:
+  model_type: tlob
+  input_size: 98
+  num_classes: 3
+  
+  # TLOB hyperparameters
+  # Slightly larger model for extended dataset
+  tlob_hidden_dim: 64
+  tlob_num_layers: 4
+  tlob_num_heads: 1
+  tlob_mlp_expansion: 4.0
+  tlob_use_sinusoidal_pe: true
+  tlob_use_bin: true
+  tlob_dropout: 0.1  # Add dropout for regularization with more data
+  tlob_dataset_type: nvda
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+train:
+  batch_size: 64  # Larger batch for extended dataset
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  epochs: 50
+  early_stopping_patience: 10
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 4
+  pin_memory: true
+  seed: 42
+  mixed_precision: false
+  
+  # Loss configuration
+  # Start with standard CE, switch to focal if class imbalance is severe
+  loss_type: cross_entropy
+  use_class_weights: false
+  
+  # Focal loss parameters (if needed)
+  # loss_type: focal
+  # focal_gamma: 2.0
+  # focal_alpha: null
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output_dir: outputs/nvda_tlob_extended_v1
+log_level: INFO
+tags:
+  - nvda
+  - tlob
+  - extended_dataset
+  - multi_horizon
+  - h50
+
+# =============================================================================
+# KEY METRICS TO MONITOR
+# =============================================================================
+#
+# For TLOB labeling with multi-horizon:
+#
+# 1. ACCURACY & MACRO_F1
+#    Overall classification performance.
+#    Target: accuracy > 45%, macro_f1 > 0.40
+#
+# 2. PER-CLASS PRECISION/RECALL
+#    - up_precision: When we predict Up, are we right?
+#    - down_precision: When we predict Down, are we right?
+#    Balance is important - watch for collapse to majority class.
+#
+# 3. DIRECTIONAL ACCURACY (val_directional_accuracy)
+#    Excluding Stable predictions, what % of Up/Down are correct?
+#    This is the trading-relevant metric.
+#    Target: > 55% (better than random 50%)
+#
+# 4. SIGNAL RATE (val_signal_rate)
+#    What % of predictions are non-Stable?
+#    Low signal rate = conservative, high = aggressive.
+#    Target: 40-60%
+#
+# EXAMPLE GOOD TRAINING:
+# ======================
+# Epoch 20:
+#   val_loss: 0.95
+#   val_accuracy: 0.48
+#   val_macro_f1: 0.42
+#   val_directional_accuracy: 0.56
+#   val_signal_rate: 0.52
+#   val_up_precision: 0.45
+#   val_down_precision: 0.44
+#
+# This shows balanced learning with slight directional edge.
+#

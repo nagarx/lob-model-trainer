@@ -112,46 +112,75 @@ class TestMetrics:
         assert acc == 0.5, f"Expected 50% accuracy, got {acc}"
     
     def test_classification_report_structure(self):
-        """Test that classification report has correct structure."""
+        """Test that classification report has correct structure.
+        
+        Note: compute_classification_report is a backward-compatibility function
+        that returns a dict. Use compute_metrics for the new ClassificationMetrics API.
+        """
         y_true = np.array([0, 1, 2, 0, 1, 2, 0, 1, 2])
         y_pred = np.array([0, 1, 2, 0, 0, 2, 1, 1, 2])
         
-        # Adjust to use -1, 0, 1 encoding
-        y_true = y_true - 1  # Convert to -1, 0, 1
-        y_pred = y_pred - 1
+        # Use the backward-compatible function (returns dict of PerClassMetrics)
+        report = compute_classification_report(torch.tensor(y_pred), torch.tensor(y_true))
         
-        metrics = compute_classification_report(y_true, y_pred)
+        assert isinstance(report, dict)
+        assert len(report) == 3
+        for name, metrics in report.items():
+            assert hasattr(metrics, 'precision')
+            assert hasattr(metrics, 'recall')
+            assert hasattr(metrics, 'f1')
+            assert hasattr(metrics, 'support')
+    
+    def test_classification_metrics_new_api(self):
+        """Test new MetricsCalculator API returns ClassificationMetrics."""
+        from lobtrainer.training.metrics import compute_metrics
+        
+        y_true = np.array([0, 1, 2, 0, 1, 2, 0, 1, 2])
+        y_pred = np.array([0, 1, 2, 0, 0, 2, 1, 1, 2])
+        
+        metrics = compute_metrics(
+            torch.tensor(y_pred),
+            torch.tensor(y_true),
+            strategy="tlob"
+        )
         
         assert isinstance(metrics, ClassificationMetrics)
         assert 0 <= metrics.accuracy <= 1
         assert 0 <= metrics.macro_f1 <= 1
-        assert len(metrics.per_class) == 3
         assert metrics.confusion_matrix.shape == (3, 3)
-        assert metrics.n_samples == len(y_true)
     
     def test_classification_report_empty_arrays(self):
         """Test classification report with empty arrays."""
         y_true = np.array([])
         y_pred = np.array([])
         
-        metrics = compute_classification_report(y_true, y_pred)
+        # Use new API for empty arrays
+        from lobtrainer.training.metrics import compute_metrics
+        metrics = compute_metrics(
+            torch.tensor(y_pred, dtype=torch.long),
+            torch.tensor(y_true, dtype=torch.long),
+            strategy="tlob"
+        )
         
-        assert metrics.n_samples == 0
         assert metrics.accuracy == 0.0
     
     def test_classification_metrics_to_dict(self):
         """Test serialization of classification metrics."""
-        y_true = np.array([-1, 0, 1, -1, 0, 1])
-        y_pred = np.array([-1, 0, 1, 0, 0, 1])
+        from lobtrainer.training.metrics import compute_metrics
         
-        metrics = compute_classification_report(y_true, y_pred)
+        y_true = np.array([0, 1, 2, 0, 1, 2])
+        y_pred = np.array([0, 1, 2, 1, 1, 2])
+        
+        metrics = compute_metrics(
+            torch.tensor(y_pred),
+            torch.tensor(y_true),
+            strategy="tlob"
+        )
         result = metrics.to_dict()
         
         assert isinstance(result, dict)
         assert 'accuracy' in result
         assert 'macro_f1' in result
-        assert 'per_class' in result
-        assert 'confusion_matrix' in result
 
 
 # =============================================================================

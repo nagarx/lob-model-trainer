@@ -46,13 +46,22 @@ from lobtrainer.models.lstm import (
 
 # Conditional import of lobmodels (external dependency)
 try:
-    from lobmodels import DeepLOB, DeepLOBConfig, FeatureLayout
+    from lobmodels import (
+        DeepLOB,
+        DeepLOBConfig,
+        FeatureLayout,
+        # TLOB imports (Berti & Kasneci 2025)
+        TLOB,
+        TLOBConfig,
+    )
     LOBMODELS_AVAILABLE = True
 except ImportError:
     LOBMODELS_AVAILABLE = False
     DeepLOB = None
     DeepLOBConfig = None
     FeatureLayout = None
+    TLOB = None
+    TLOBConfig = None
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +190,36 @@ def create_model(config) -> nn.Module:
         
         model = DeepLOB(deeplob_config)
         logger.info(f"Created {model.name}")
+        return model
+    
+    elif model_type == ModelType.TLOB:
+        if not LOBMODELS_AVAILABLE:
+            raise ImportError(
+                "lobmodels package is required for TLOB. "
+                "Install it with: pip install -e ../lob-models"
+            )
+        
+        # Create TLOBConfig from lobmodels
+        # Reference: Berti & Kasneci (2025), "TLOB: A Novel Transformer Model..."
+        tlob_config = TLOBConfig(
+            num_features=config.input_size,
+            sequence_length=100,  # Standard window size from Rust export
+            num_classes=config.num_classes,
+            hidden_dim=config.tlob_hidden_dim,
+            num_layers=config.tlob_num_layers,
+            num_heads=config.tlob_num_heads,
+            mlp_expansion=config.tlob_mlp_expansion,
+            use_sinusoidal_pe=config.tlob_use_sinusoidal_pe,
+            use_bin=config.tlob_use_bin,
+            dropout=config.dropout,
+            dataset_type=config.tlob_dataset_type,
+        )
+        
+        model = TLOB(tlob_config)
+        logger.info(
+            f"Created {model.name} with {model.num_parameters:,} parameters "
+            f"(hidden_dim={config.tlob_hidden_dim}, layers={config.tlob_num_layers})"
+        )
         return model
     
     else:

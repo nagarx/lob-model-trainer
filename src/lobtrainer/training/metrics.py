@@ -1,406 +1,644 @@
 """
-Evaluation metrics for LOB price prediction.
+Strategy-aware metrics for LOB model training.
 
-Metrics are designed for 3-class classification (Down, Stable, Up).
+This module provides metrics that understand the semantic meaning of different
+labeling strategies, enabling accurate monitoring and evaluation.
 
-Label encoding:
-    -1 = Down (bearish)
-     0 = Stable (neutral)
-    +1 = Up (bullish)
+Design principles (per RULE.md):
+- Metrics match the labeling strategy semantics
+- All formulas are documented with clear definitions
+- No misleading metrics that game high numbers
 
-Design principles (RULE.md):
-- Consistent metric computation across all models
-- Handle edge cases (empty predictions, missing classes)
-- Provide both aggregate and per-class metrics
+Usage:
+    >>> from lobtrainer.training.metrics import MetricsCalculator
+    >>> from lobtrainer.config import LabelingStrategy
+    >>> 
+    >>> calculator = MetricsCalculator(LabelingStrategy.TRIPLE_BARRIER)
+    >>> metrics = calculator.compute(predictions, labels)
 """
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Dict, List, Optional, Tuple
 import numpy as np
-from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    confusion_matrix as sklearn_confusion_matrix,
-    classification_report as sklearn_classification_report,
-)
-
-from lobtrainer.constants import (
-    LABEL_DOWN,
-    LABEL_STABLE,
-    LABEL_UP,
-    LABEL_NAMES,
-    SHIFTED_LABEL_DOWN,
-    SHIFTED_LABEL_STABLE,
-    SHIFTED_LABEL_UP,
-    SHIFTED_LABEL_NAMES,
-    get_label_name,
-)
+import torch
+from torch import Tensor
 
 
 # =============================================================================
-# Dataclasses for structured results
+# Class Name Constants (per labeling strategy)
 # =============================================================================
 
+OPPORTUNITY_CLASS_NAMES = ["BigDown", "NoOpportunity", "BigUp"]
+TRIPLE_BARRIER_CLASS_NAMES = ["StopLoss", "Timeout", "ProfitTarget"]
+TLOB_CLASS_NAMES = ["Down", "Stable", "Up"]
+BINARY_CLASS_NAMES = ["NoSignal", "Signal"]
 
-@dataclass
-class PerClassMetrics:
-    """Metrics for a single class."""
+
+def get_class_names(strategy: str, num_classes: int = 3) -> List[str]:
+    """
+    Get human-readable class names for a labeling strategy.
     
-    label: int
-    """Label value (-1, 0, 1)."""
+    Args:
+        strategy: Labeling strategy name (opportunity, triple_barrier, tlob)
+        num_classes: Number of classes (2 for binary, 3 for multiclass)
     
-    name: str
-    """Label name (Down, Stable, Up)."""
+    Returns:
+        List of class names indexed by class ID.
+    """
+    if num_classes == 2:
+        return BINARY_CLASS_NAMES
     
-    precision: float
-    """Precision for this class."""
-    
-    recall: float
-    """Recall for this class."""
-    
-    f1: float
-    """F1 score for this class."""
-    
-    support: int
-    """Number of true instances of this class."""
+    strategy = strategy.lower()
+    if strategy == "opportunity":
+        return OPPORTUNITY_CLASS_NAMES
+    elif strategy == "triple_barrier":
+        return TRIPLE_BARRIER_CLASS_NAMES
+    elif strategy == "tlob":
+        return TLOB_CLASS_NAMES
+    else:
+        return [f"Class_{i}" for i in range(num_classes)]
+
+
+# =============================================================================
+# Metrics Dataclass
+# =============================================================================
 
 
 @dataclass
 class ClassificationMetrics:
     """
-    Comprehensive classification metrics.
+    Comprehensive classification metrics with strategy-aware semantics.
     
-    Includes:
-    - Overall accuracy
-    - Per-class precision, recall, F1
-    - Macro and weighted averages
-    - Confusion matrix
+    All metrics are computed per-class AND aggregated.
     """
     
-    accuracy: float
-    """Overall accuracy (correct / total)."""
+    # Overall metrics
+    accuracy: float = 0.0
+    """Overall accuracy: correct / total."""
     
-    macro_precision: float
-    """Unweighted mean precision across classes."""
+    loss: float = 0.0
+    """Average loss value."""
     
-    macro_recall: float
-    """Unweighted mean recall across classes."""
+    # Per-class metrics (indexed by class ID)
+    per_class_precision: Dict[int, float] = field(default_factory=dict)
+    """Precision per class: TP / (TP + FP)."""
     
-    macro_f1: float
-    """Unweighted mean F1 across classes."""
+    per_class_recall: Dict[int, float] = field(default_factory=dict)
+    """Recall per class: TP / (TP + FN)."""
     
-    weighted_precision: float
-    """Support-weighted mean precision."""
+    per_class_f1: Dict[int, float] = field(default_factory=dict)
+    """F1 score per class: 2 * (P * R) / (P + R)."""
     
-    weighted_recall: float
-    """Support-weighted mean recall."""
+    per_class_count: Dict[int, int] = field(default_factory=dict)
+    """Sample count per class (ground truth)."""
     
-    weighted_f1: float
-    """Support-weighted mean F1."""
+    per_class_predicted_count: Dict[int, int] = field(default_factory=dict)
+    """Predicted count per class."""
     
-    per_class: List[PerClassMetrics]
-    """Metrics for each class."""
+    # Macro averages
+    macro_precision: float = 0.0
+    """Macro-averaged precision (mean of per-class)."""
     
-    confusion_matrix: np.ndarray
-    """Confusion matrix of shape (n_classes, n_classes)."""
+    macro_recall: float = 0.0
+    """Macro-averaged recall (mean of per-class)."""
     
-    n_samples: int
-    """Total number of samples evaluated."""
+    macro_f1: float = 0.0
+    """Macro-averaged F1 (mean of per-class F1)."""
     
-    def to_dict(self) -> Dict:
-        """Convert to dictionary for JSON serialization."""
-        return {
+    # Confusion matrix (flattened)
+    confusion_matrix: Optional[np.ndarray] = None
+    """Confusion matrix: confusion_matrix[true][pred]."""
+    
+    # Strategy-specific metrics
+    strategy_metrics: Dict[str, float] = field(default_factory=dict)
+    """Strategy-specific metrics (e.g., win_rate for triple_barrier)."""
+    
+    # Class names for reporting
+    class_names: List[str] = field(default_factory=list)
+    """Human-readable class names."""
+    
+    def to_dict(self) -> Dict[str, float]:
+        """Convert to flat dictionary for logging."""
+        result = {
             "accuracy": self.accuracy,
+            "loss": self.loss,
             "macro_precision": self.macro_precision,
             "macro_recall": self.macro_recall,
             "macro_f1": self.macro_f1,
-            "weighted_precision": self.weighted_precision,
-            "weighted_recall": self.weighted_recall,
-            "weighted_f1": self.weighted_f1,
-            "per_class": {
-                pc.name: {
-                    "precision": pc.precision,
-                    "recall": pc.recall,
-                    "f1": pc.f1,
-                    "support": pc.support,
-                }
-                for pc in self.per_class
-            },
-            "confusion_matrix": self.confusion_matrix.tolist(),
-            "n_samples": self.n_samples,
         }
+        
+        # Add per-class metrics with class names
+        for class_id, precision in self.per_class_precision.items():
+            name = self.class_names[class_id] if class_id < len(self.class_names) else f"class_{class_id}"
+            result[f"{name.lower()}_precision"] = precision
+            
+        for class_id, recall in self.per_class_recall.items():
+            name = self.class_names[class_id] if class_id < len(self.class_names) else f"class_{class_id}"
+            result[f"{name.lower()}_recall"] = recall
+            
+        for class_id, f1 in self.per_class_f1.items():
+            name = self.class_names[class_id] if class_id < len(self.class_names) else f"class_{class_id}"
+            result[f"{name.lower()}_f1"] = f1
+        
+        # Add strategy-specific metrics
+        result.update(self.strategy_metrics)
+        
+        return result
     
     def summary(self) -> str:
-        """Human-readable summary."""
+        """Generate human-readable summary string."""
         lines = [
-            f"Accuracy: {self.accuracy:.4f} ({self.n_samples} samples)",
+            f"Accuracy: {self.accuracy:.4f}",
             f"Macro F1: {self.macro_f1:.4f}",
-            f"Weighted F1: {self.weighted_f1:.4f}",
-            "",
-            "Per-class metrics:",
         ]
-        for pc in self.per_class:
-            lines.append(
-                f"  {pc.name:>6}: P={pc.precision:.3f} R={pc.recall:.3f} "
-                f"F1={pc.f1:.3f} (n={pc.support})"
-            )
+        
+        # Per-class breakdown
+        for class_id in sorted(self.per_class_precision.keys()):
+            name = self.class_names[class_id] if class_id < len(self.class_names) else f"Class {class_id}"
+            p = self.per_class_precision.get(class_id, 0.0)
+            r = self.per_class_recall.get(class_id, 0.0)
+            f1 = self.per_class_f1.get(class_id, 0.0)
+            count = self.per_class_count.get(class_id, 0)
+            pred_count = self.per_class_predicted_count.get(class_id, 0)
+            lines.append(f"  {name}: P={p:.3f} R={r:.3f} F1={f1:.3f} (n={count}, pred={pred_count})")
+        
+        # Strategy metrics
+        if self.strategy_metrics:
+            lines.append("Strategy metrics:")
+            for key, value in self.strategy_metrics.items():
+                lines.append(f"  {key}: {value:.4f}")
+        
         return "\n".join(lines)
 
 
 # =============================================================================
-# Core metric functions
+# Metrics Calculator
 # =============================================================================
 
 
-def compute_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+class MetricsCalculator:
     """
-    Compute accuracy.
+    Strategy-aware metrics calculator.
+    
+    Computes metrics that match the semantic meaning of the labeling strategy,
+    providing meaningful insights for model evaluation.
     
     Args:
-        y_true: True labels
-        y_pred: Predicted labels
+        strategy: Labeling strategy (opportunity, triple_barrier, tlob)
+        num_classes: Number of classes (default 3)
+    
+    Example:
+        >>> calc = MetricsCalculator("triple_barrier")
+        >>> metrics = calc.compute(preds, labels)
+        >>> print(metrics.strategy_metrics["win_rate"])
+    """
+    
+    def __init__(self, strategy: str, num_classes: int = 3):
+        self.strategy = strategy.lower()
+        self.num_classes = num_classes
+        self.class_names = get_class_names(strategy, num_classes)
+    
+    def compute(
+        self,
+        predictions: Tensor,
+        labels: Tensor,
+        loss: Optional[float] = None,
+        probabilities: Optional[Tensor] = None,
+    ) -> ClassificationMetrics:
+        """
+        Compute comprehensive metrics.
+        
+        Args:
+            predictions: Predicted class indices [N]
+            labels: Ground truth class indices [N]
+            loss: Optional loss value to include
+            probabilities: Optional class probabilities [N, num_classes] for confidence
+        
+        Returns:
+            ClassificationMetrics with all computed values
+        """
+        # Convert to numpy if needed
+        if isinstance(predictions, Tensor):
+            predictions = predictions.cpu().numpy()
+        if isinstance(labels, Tensor):
+            labels = labels.cpu().numpy()
+        
+        predictions = predictions.astype(np.int64)
+        labels = labels.astype(np.int64)
+        
+        n_samples = len(labels)
+        if n_samples == 0:
+            return ClassificationMetrics(class_names=self.class_names)
+        
+        # Basic accuracy
+        correct = (predictions == labels).sum()
+        accuracy = correct / n_samples
+        
+        # Confusion matrix
+        confusion = np.zeros((self.num_classes, self.num_classes), dtype=np.int64)
+        for true_label, pred_label in zip(labels, predictions):
+            if 0 <= true_label < self.num_classes and 0 <= pred_label < self.num_classes:
+                confusion[true_label, pred_label] += 1
+        
+        # Per-class metrics
+        per_class_precision = {}
+        per_class_recall = {}
+        per_class_f1 = {}
+        per_class_count = {}
+        per_class_predicted_count = {}
+        
+        for c in range(self.num_classes):
+            # True positives, false positives, false negatives
+            tp = confusion[c, c]
+            fp = confusion[:, c].sum() - tp  # Other classes predicted as c
+            fn = confusion[c, :].sum() - tp  # Class c predicted as other
+            
+            # Precision
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            # Recall
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            # F1
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+            
+            per_class_precision[c] = precision
+            per_class_recall[c] = recall
+            per_class_f1[c] = f1
+            per_class_count[c] = int(confusion[c, :].sum())
+            per_class_predicted_count[c] = int(confusion[:, c].sum())
+        
+        # Macro averages
+        macro_precision = np.mean(list(per_class_precision.values()))
+        macro_recall = np.mean(list(per_class_recall.values()))
+        macro_f1 = np.mean(list(per_class_f1.values()))
+        
+        # Strategy-specific metrics
+        strategy_metrics = self._compute_strategy_metrics(
+            confusion, predictions, labels, probabilities
+        )
+        
+        return ClassificationMetrics(
+            accuracy=float(accuracy),
+            loss=float(loss) if loss is not None else 0.0,
+            per_class_precision=per_class_precision,
+            per_class_recall=per_class_recall,
+            per_class_f1=per_class_f1,
+            per_class_count=per_class_count,
+            per_class_predicted_count=per_class_predicted_count,
+            macro_precision=float(macro_precision),
+            macro_recall=float(macro_recall),
+            macro_f1=float(macro_f1),
+            confusion_matrix=confusion,
+            strategy_metrics=strategy_metrics,
+            class_names=self.class_names,
+        )
+    
+    def _compute_strategy_metrics(
+        self,
+        confusion: np.ndarray,
+        predictions: np.ndarray,
+        labels: np.ndarray,
+        probabilities: Optional[Tensor],
+    ) -> Dict[str, float]:
+        """Compute strategy-specific metrics based on labeling semantics."""
+        metrics = {}
+        
+        if self.strategy == "triple_barrier":
+            metrics.update(self._triple_barrier_metrics(confusion, predictions, labels))
+        elif self.strategy == "opportunity":
+            metrics.update(self._opportunity_metrics(confusion, predictions, labels))
+        elif self.strategy == "tlob":
+            metrics.update(self._tlob_metrics(confusion, predictions, labels))
+        
+        # Signal rate (how often model predicts non-neutral class)
+        if self.num_classes == 3:
+            # Classes 0 and 2 are "signal" classes in all strategies
+            signal_predictions = (predictions == 0) | (predictions == 2)
+            metrics["signal_rate"] = signal_predictions.mean()
+            
+            # Ground truth signal rate
+            signal_labels = (labels == 0) | (labels == 2)
+            metrics["true_signal_rate"] = signal_labels.mean()
+        
+        return metrics
+    
+    def _triple_barrier_metrics(
+        self,
+        confusion: np.ndarray,
+        predictions: np.ndarray,
+        labels: np.ndarray,
+    ) -> Dict[str, float]:
+        """
+        Triple Barrier specific metrics.
+        
+        Classes: 0=StopLoss, 1=Timeout, 2=ProfitTarget
+        
+        Note: Per-class precision/recall are already computed by the base calculator.
+        This method adds ONLY metrics specific to Triple Barrier trading semantics.
+        """
+        metrics = {}
+        
+        # Decisive rate: how often do we predict non-Timeout?
+        decisive_preds = (predictions == 0) | (predictions == 2)
+        metrics["decisive_prediction_rate"] = decisive_preds.mean()
+        
+        # Alias for consistency with other strategies
+        metrics["signal_rate"] = metrics["decisive_prediction_rate"]
+        
+        # True decisive rate in labels
+        decisive_labels = (labels == 0) | (labels == 2)
+        metrics["true_decisive_rate"] = decisive_labels.mean()
+        
+        # Alias for consistency
+        metrics["true_signal_rate"] = metrics["true_decisive_rate"]
+        
+        # Win rate among decisive samples (ground truth)
+        # "Of all samples where a barrier WAS hit, how many were profit targets?"
+        if decisive_labels.sum() > 0:
+            wins = (labels[decisive_labels] == 2).sum()
+            metrics["true_win_rate"] = wins / decisive_labels.sum()
+        else:
+            metrics["true_win_rate"] = 0.0
+        
+        # Predicted trade win rate (KEY TRADING METRIC)
+        # "Of samples where we predicted decisive (trade), what fraction were actually wins?"
+        if decisive_preds.sum() > 0:
+            predicted_decisive_labels = labels[decisive_preds]
+            actual_wins = (predicted_decisive_labels == 2).sum()
+            metrics["predicted_trade_win_rate"] = actual_wins / decisive_preds.sum()
+        else:
+            metrics["predicted_trade_win_rate"] = 0.0
+        
+        return metrics
+    
+    def _opportunity_metrics(
+        self,
+        confusion: np.ndarray,
+        predictions: np.ndarray,
+        labels: np.ndarray,
+    ) -> Dict[str, float]:
+        """
+        Opportunity detection specific metrics.
+        
+        Classes: 0=BigDown, 1=NoOpportunity, 2=BigUp
+        
+        Note: Per-class precision/recall are already computed by the base calculator.
+        This method adds ONLY metrics specific to opportunity detection semantics.
+        """
+        metrics = {}
+        
+        # Signal rate: how often do we predict an opportunity (BigUp or BigDown)?
+        opportunity_preds = (predictions == 0) | (predictions == 2)
+        opportunity_labels = (labels == 0) | (labels == 2)
+        
+        metrics["signal_rate"] = opportunity_preds.mean()
+        metrics["true_signal_rate"] = opportunity_labels.mean()
+        
+        # Legacy names for backward compatibility
+        metrics["opportunity_prediction_rate"] = metrics["signal_rate"]
+        metrics["true_opportunity_rate"] = metrics["true_signal_rate"]
+        
+        # Directional accuracy (KEY METRIC)
+        # "When we predict an opportunity (direction), are we right?"
+        if opportunity_preds.sum() > 0:
+            directional_preds = predictions[opportunity_preds]
+            directional_labels = labels[opportunity_preds]
+            directional_correct = (directional_preds == directional_labels).sum()
+            metrics["directional_accuracy"] = directional_correct / opportunity_preds.sum()
+        else:
+            metrics["directional_accuracy"] = 0.0
+        
+        return metrics
+    
+    def _tlob_metrics(
+        self,
+        confusion: np.ndarray,
+        predictions: np.ndarray,
+        labels: np.ndarray,
+    ) -> Dict[str, float]:
+        """
+        TLOB/DeepLOB specific metrics.
+        
+        Classes: 0=Down, 1=Stable, 2=Up
+        
+        Note: Per-class precision/recall are already computed by the base calculator.
+        This method adds ONLY metrics specific to TLOB trading semantics.
+        """
+        metrics = {}
+        
+        # Signal rate: how often do we predict non-Stable (i.e., make a directional call)?
+        directional_preds = (predictions == 0) | (predictions == 2)
+        metrics["signal_rate"] = directional_preds.mean()
+        
+        # True signal rate (directional labels in ground truth)
+        directional_labels = (labels == 0) | (labels == 2)
+        metrics["true_signal_rate"] = directional_labels.mean()
+        
+        # Directional accuracy (KEY METRIC)
+        # "When we predict a direction (Up or Down), are we right?"
+        if directional_preds.sum() > 0:
+            directional_pred_labels = labels[directional_preds]
+            directional_pred_preds = predictions[directional_preds]
+            correct = (directional_pred_preds == directional_pred_labels).sum()
+            metrics["directional_accuracy"] = correct / directional_preds.sum()
+        else:
+            metrics["directional_accuracy"] = 0.0
+        
+        return metrics
+
+
+# =============================================================================
+# Convenience Functions
+# =============================================================================
+
+
+def compute_metrics(
+    predictions: Tensor,
+    labels: Tensor,
+    strategy: str = "triple_barrier",
+    num_classes: int = 3,
+    loss: Optional[float] = None,
+) -> ClassificationMetrics:
+    """
+    Convenience function to compute strategy-aware metrics.
+    
+    Args:
+        predictions: Predicted class indices [N]
+        labels: Ground truth class indices [N]
+        strategy: Labeling strategy name
+        num_classes: Number of classes
+        loss: Optional loss value
     
     Returns:
-        Accuracy score in [0, 1]
+        ClassificationMetrics instance
     """
-    return float(accuracy_score(y_true, y_pred))
+    calculator = MetricsCalculator(strategy, num_classes)
+    return calculator.compute(predictions, labels, loss)
 
 
 def compute_confusion_matrix(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    labels: Optional[List[int]] = None,
+    predictions: Tensor,
+    labels: Tensor,
+    num_classes: int = 3,
 ) -> np.ndarray:
     """
     Compute confusion matrix.
     
     Args:
-        y_true: True labels
-        y_pred: Predicted labels
-        labels: Label order (default: [-1, 0, 1])
+        predictions: Predicted class indices [N]
+        labels: Ground truth class indices [N]
+        num_classes: Number of classes
     
     Returns:
-        Confusion matrix of shape (n_classes, n_classes)
-        Row i = true class i, Column j = predicted class j
+        Confusion matrix [num_classes, num_classes] where [i,j] = count of true=i, pred=j
     """
-    if labels is None:
-        labels = [LABEL_DOWN, LABEL_STABLE, LABEL_UP]
+    if isinstance(predictions, Tensor):
+        predictions = predictions.cpu().numpy()
+    if isinstance(labels, Tensor):
+        labels = labels.cpu().numpy()
     
-    return sklearn_confusion_matrix(y_true, y_pred, labels=labels)
+    confusion = np.zeros((num_classes, num_classes), dtype=np.int64)
+    for true_label, pred_label in zip(labels, predictions):
+        if 0 <= true_label < num_classes and 0 <= pred_label < num_classes:
+            confusion[true_label, pred_label] += 1
+    
+    return confusion
+
+
+# =============================================================================
+# Backward Compatibility: Per-Class Metrics Dataclass
+# =============================================================================
+
+
+@dataclass 
+class PerClassMetrics:
+    """Per-class metrics (backward compatibility)."""
+    
+    precision: float = 0.0
+    recall: float = 0.0
+    f1: float = 0.0
+    support: int = 0
+
+
+# =============================================================================
+# Backward Compatibility Functions
+# =============================================================================
+
+
+def compute_accuracy(predictions: Tensor, labels: Tensor) -> float:
+    """Compute accuracy (backward compatibility)."""
+    if isinstance(predictions, Tensor):
+        predictions = predictions.cpu().numpy()
+    if isinstance(labels, Tensor):
+        labels = labels.cpu().numpy()
+    return float((predictions == labels).mean())
 
 
 def compute_classification_report(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    labels: Optional[List[int]] = None,
-    shifted: bool = False,
-) -> ClassificationMetrics:
-    """
-    Compute comprehensive classification metrics.
+    predictions: Tensor,
+    labels: Tensor,
+    num_classes: int = 3,
+    class_names: Optional[List[str]] = None,
+) -> Dict[str, PerClassMetrics]:
+    """Compute per-class classification report (backward compatibility)."""
+    if isinstance(predictions, Tensor):
+        predictions = predictions.cpu().numpy()
+    if isinstance(labels, Tensor):
+        labels = labels.cpu().numpy()
     
-    Args:
-        y_true: True labels
-        y_pred: Predicted labels
-        labels: Label order. Default depends on `shifted`:
-            - shifted=False: [-1, 0, 1] (original encoding)
-            - shifted=True: [0, 1, 2] (PyTorch encoding)
-        shifted: If True, use shifted label names (0=Down, 1=Stable, 2=Up).
-            Set this to True when using labels directly from PyTorch DataLoader
-            which shifts {-1,0,1} to {0,1,2} for CrossEntropyLoss.
+    if class_names is None:
+        class_names = [f"class_{i}" for i in range(num_classes)]
     
-    Returns:
-        ClassificationMetrics with all metrics
+    report = {}
+    confusion = compute_confusion_matrix(predictions, labels, num_classes)
     
-    Note:
-        The label names in per_class metrics will correctly show:
-        - shifted=False: -1="Down", 0="Stable", 1="Up"
-        - shifted=True:   0="Down", 1="Stable", 2="Up"
-    """
-    # Set default labels based on encoding
-    if labels is None:
-        if shifted:
-            labels = [SHIFTED_LABEL_DOWN, SHIFTED_LABEL_STABLE, SHIFTED_LABEL_UP]
-        else:
-            labels = [LABEL_DOWN, LABEL_STABLE, LABEL_UP]
-    
-    # Select correct label names mapping
-    label_names = SHIFTED_LABEL_NAMES if shifted else LABEL_NAMES
-    
-    # Handle edge case of empty arrays
-    if len(y_true) == 0 or len(y_pred) == 0:
-        return ClassificationMetrics(
-            accuracy=0.0,
-            macro_precision=0.0,
-            macro_recall=0.0,
-            macro_f1=0.0,
-            weighted_precision=0.0,
-            weighted_recall=0.0,
-            weighted_f1=0.0,
-            per_class=[],
-            confusion_matrix=np.zeros((len(labels), len(labels)), dtype=np.int64),
-            n_samples=0,
+    for c in range(num_classes):
+        tp = confusion[c, c]
+        fp = confusion[:, c].sum() - tp
+        fn = confusion[c, :].sum() - tp
+        
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        
+        name = class_names[c] if c < len(class_names) else f"class_{c}"
+        report[name] = PerClassMetrics(
+            precision=precision,
+            recall=recall,
+            f1=f1,
+            support=int(confusion[c, :].sum()),
         )
     
-    # Overall accuracy
-    accuracy = accuracy_score(y_true, y_pred)
-    
-    # Macro averages (unweighted)
-    macro_precision = precision_score(y_true, y_pred, labels=labels, average='macro', zero_division=0)
-    macro_recall = recall_score(y_true, y_pred, labels=labels, average='macro', zero_division=0)
-    macro_f1 = f1_score(y_true, y_pred, labels=labels, average='macro', zero_division=0)
-    
-    # Weighted averages (by support)
-    weighted_precision = precision_score(y_true, y_pred, labels=labels, average='weighted', zero_division=0)
-    weighted_recall = recall_score(y_true, y_pred, labels=labels, average='weighted', zero_division=0)
-    weighted_f1 = f1_score(y_true, y_pred, labels=labels, average='weighted', zero_division=0)
-    
-    # Per-class metrics
-    per_class_precision = precision_score(y_true, y_pred, labels=labels, average=None, zero_division=0)
-    per_class_recall = recall_score(y_true, y_pred, labels=labels, average=None, zero_division=0)
-    per_class_f1 = f1_score(y_true, y_pred, labels=labels, average=None, zero_division=0)
-    
-    # Support (count of true instances per class)
-    unique, counts = np.unique(y_true, return_counts=True)
-    support_dict = dict(zip(unique, counts))
-    
-    per_class = []
-    for i, label in enumerate(labels):
-        per_class.append(PerClassMetrics(
-            label=label,
-            name=label_names.get(label, str(label)),
-            precision=float(per_class_precision[i]),
-            recall=float(per_class_recall[i]),
-            f1=float(per_class_f1[i]),
-            support=int(support_dict.get(label, 0)),
-        ))
-    
-    # Confusion matrix
-    cm = sklearn_confusion_matrix(y_true, y_pred, labels=labels)
-    
-    return ClassificationMetrics(
-        accuracy=float(accuracy),
-        macro_precision=float(macro_precision),
-        macro_recall=float(macro_recall),
-        macro_f1=float(macro_f1),
-        weighted_precision=float(weighted_precision),
-        weighted_recall=float(weighted_recall),
-        weighted_f1=float(weighted_f1),
-        per_class=per_class,
-        confusion_matrix=cm,
-        n_samples=len(y_true),
-    )
-
-
-# =============================================================================
-# Specialized metrics for trading
-# =============================================================================
-
-
-def compute_directional_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """
-    Compute directional accuracy (ignoring Stable class).
-    
-    This measures how well the model predicts Up vs Down,
-    excluding samples where true label is Stable.
-    
-    Args:
-        y_true: True labels
-        y_pred: Predicted labels
-    
-    Returns:
-        Directional accuracy (accuracy on non-Stable samples)
-    """
-    mask = y_true != LABEL_STABLE
-    if mask.sum() == 0:
-        return 0.0
-    return float(accuracy_score(y_true[mask], y_pred[mask]))
+    return report
 
 
 def compute_trading_metrics(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
+    predictions: Tensor,
+    labels: Tensor,
+    num_classes: int = 3,
 ) -> Dict[str, float]:
     """
-    Compute trading-specific metrics.
+    Compute trading-specific metrics (backward compatibility).
     
-    Args:
-        y_true: True labels
-        y_pred: Predicted labels
-    
-    Returns:
-        Dict with:
-        - directional_accuracy: Accuracy on non-Stable samples
-        - up_precision: Precision when predicting Up
-        - down_precision: Precision when predicting Down
-        - signal_rate: Fraction of non-Stable predictions
+    Returns signal rate, directional accuracy, up/down precision.
     """
-    # Directional accuracy
-    directional_mask = y_true != LABEL_STABLE
-    directional_acc = accuracy_score(y_true[directional_mask], y_pred[directional_mask]) if directional_mask.sum() > 0 else 0.0
+    if isinstance(predictions, Tensor):
+        predictions = predictions.cpu().numpy()
+    if isinstance(labels, Tensor):
+        labels = labels.cpu().numpy()
     
-    # Up precision: when we predict Up, how often is it correct?
-    up_pred_mask = y_pred == LABEL_UP
-    up_precision = (y_true[up_pred_mask] == LABEL_UP).mean() if up_pred_mask.sum() > 0 else 0.0
+    metrics = {}
     
-    # Down precision: when we predict Down, how often is it correct?
-    down_pred_mask = y_pred == LABEL_DOWN
-    down_precision = (y_true[down_pred_mask] == LABEL_DOWN).mean() if down_pred_mask.sum() > 0 else 0.0
+    # Signal rate
+    if num_classes == 3:
+        signal_preds = (predictions == 0) | (predictions == 2)
+        metrics["signal_rate"] = float(signal_preds.mean())
+        
+        # Directional accuracy
+        if signal_preds.sum() > 0:
+            directional_correct = (predictions[signal_preds] == labels[signal_preds]).sum()
+            metrics["directional_accuracy"] = float(directional_correct / signal_preds.sum())
+        else:
+            metrics["directional_accuracy"] = 0.0
+        
+        # Up/Down precision
+        up_preds = predictions == 2
+        down_preds = predictions == 0
+        
+        if up_preds.sum() > 0:
+            metrics["up_precision"] = float(((predictions == 2) & (labels == 2)).sum() / up_preds.sum())
+        else:
+            metrics["up_precision"] = 0.0
+            
+        if down_preds.sum() > 0:
+            metrics["down_precision"] = float(((predictions == 0) & (labels == 0)).sum() / down_preds.sum())
+        else:
+            metrics["down_precision"] = 0.0
     
-    # Signal rate: how often do we make a directional prediction?
-    signal_rate = (y_pred != LABEL_STABLE).mean()
-    
-    return {
-        "directional_accuracy": float(directional_acc),
-        "up_precision": float(up_precision),
-        "down_precision": float(down_precision),
-        "signal_rate": float(signal_rate),
-    }
-
-
-# =============================================================================
-# Transition-based metrics (for temporal evaluation)
-# =============================================================================
+    return metrics
 
 
 def compute_transition_accuracy(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-) -> Dict[str, float]:
+    predictions: Tensor,
+    labels: Tensor,
+) -> float:
     """
-    Compute accuracy conditioned on label transitions.
+    Compute accuracy on label transitions (backward compatibility).
     
-    This measures performance on samples where the label changed
-    from the previous timestep (harder to predict).
-    
-    Args:
-        y_true: True labels (temporally ordered)
-        y_pred: Predicted labels
-    
-    Returns:
-        Dict with:
-        - overall_accuracy: Standard accuracy
-        - transition_accuracy: Accuracy on samples where y[t] != y[t-1]
-        - stable_accuracy: Accuracy on samples where y[t] == y[t-1]
+    Only evaluates samples where label changed from previous sample.
     """
-    overall_acc = accuracy_score(y_true, y_pred)
+    if isinstance(predictions, Tensor):
+        predictions = predictions.cpu().numpy()
+    if isinstance(labels, Tensor):
+        labels = labels.cpu().numpy()
     
-    # Identify transitions
-    transitions = np.concatenate([[False], y_true[1:] != y_true[:-1]])
+    if len(labels) < 2:
+        return 0.0
     
-    # Transition accuracy (harder samples)
-    transition_mask = transitions
-    transition_acc = accuracy_score(y_true[transition_mask], y_pred[transition_mask]) if transition_mask.sum() > 0 else 0.0
+    # Find transitions
+    transitions = np.where(labels[1:] != labels[:-1])[0] + 1
     
-    # Stable accuracy (easier samples)
-    stable_mask = ~transitions
-    stable_acc = accuracy_score(y_true[stable_mask], y_pred[stable_mask]) if stable_mask.sum() > 0 else 0.0
+    if len(transitions) == 0:
+        return 0.0
     
-    return {
-        "overall_accuracy": float(overall_acc),
-        "transition_accuracy": float(transition_acc),
-        "stable_accuracy": float(stable_acc),
-        "transition_rate": float(transitions.mean()),
-    }
-
+    return float((predictions[transitions] == labels[transitions]).mean())

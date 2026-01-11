@@ -13,6 +13,10 @@ Normalization strategies:
 - Min-max: (x - min) / (max - min)
 - Robust: (x - median) / IQR
 
+Label transforms:
+- BinaryLabelTransform: 3-class (Down/Stable/Up) → 2-class (Signal/NoSignal)
+- Supports Two-Stage training: Stage 1 detects signals, Stage 2 predicts direction
+
 WARNING: Always check np.isfinite() before comparisons per RULE.md.
 """
 
@@ -586,4 +590,115 @@ class PerDayNormalizer(Normalizer):
             normalizer._is_fitted = data["is_fitted"]
         
         return normalizer
+
+
+# =============================================================================
+# Label Transforms
+# =============================================================================
+
+
+class BinaryLabelTransform:
+    """
+    Transform 3-class labels to binary signal detection labels.
+    
+    Converts the classification problem from:
+        3-class: Down (0), Stable (1), Up (2)
+    To:
+        2-class: NoSignal (0), Signal (1)
+    
+    Where Signal = Up OR Down (any directional move is an "opportunity").
+    
+    This enables Two-Stage training:
+        Stage 1: Detect if there's a trading opportunity (binary)
+        Stage 2: Given an opportunity, predict direction (Up vs Down)
+    
+    Use cases:
+        - Opportunity detection (current bigmove dataset has 71% Stable)
+        - Binary imbalanced learning is often easier than multi-class
+        - Align with trading objective: "Is now a good time to trade?"
+    
+    Args:
+        signal_classes: Which original classes are considered "Signal".
+                        Default: [0, 2] meaning Down=0 and Up=2 are signals.
+                        For opportunity labels: BigDown=0 and BigUp=2.
+    
+    Example:
+        >>> transform = BinaryLabelTransform()
+        >>> # Original: Down=0, Stable=1, Up=2
+        >>> # Transformed: NoSignal=0 (was Stable), Signal=1 (was Down or Up)
+        >>> transform(0)  # Down → Signal (1)
+        >>> transform(1)  # Stable → NoSignal (0)
+        >>> transform(2)  # Up → Signal (1)
+    
+    With Dataset:
+        >>> dataset = LOBSequenceDataset(
+        ...     days, 
+        ...     label_transform=BinaryLabelTransform()
+        ... )
+    """
+    
+    def __init__(self, signal_classes: Optional[List[int]] = None):
+        # Default: Down (0) and Up (2) are signals, Stable (1) is not
+        self.signal_classes = set(signal_classes or [0, 2])
+    
+    def __call__(self, label: int) -> int:
+        """
+        Transform a single label.
+        
+        Args:
+            label: Original label (0, 1, or 2)
+        
+        Returns:
+            Binary label: 0 (NoSignal) or 1 (Signal)
+        """
+        return 1 if label in self.signal_classes else 0
+    
+    def transform_array(self, labels: np.ndarray) -> np.ndarray:
+        """
+        Transform an array of labels.
+        
+        Args:
+            labels: Array of original labels
+        
+        Returns:
+            Array of binary labels
+        """
+        # Vectorized: check if each label is in signal_classes
+        result = np.zeros_like(labels, dtype=np.int64)
+        for signal_class in self.signal_classes:
+            result |= (labels == signal_class).astype(np.int64)
+        return result
+    
+    def get_class_names(self) -> List[str]:
+        """Return class names for the binary problem."""
+        return ["NoSignal", "Signal"]
+    
+    def __repr__(self) -> str:
+        return f"BinaryLabelTransform(signal_classes={sorted(self.signal_classes)})"
+
+
+class ComposeTransform:
+    """
+    Compose multiple transforms into a single callable.
+    
+    Applies transforms in order: first transform → second transform → ...
+    
+    Example:
+        >>> transform = ComposeTransform([
+        ...     ZScoreNormalizer().fit(train_data),
+        ...     lambda x: x.astype(np.float32),
+        ... ])
+        >>> normalized = transform(features)
+    """
+    
+    def __init__(self, transforms: List[callable]):
+        self.transforms = transforms
+    
+    def __call__(self, x):
+        for t in self.transforms:
+            x = t(x)
+        return x
+    
+    def __repr__(self) -> str:
+        return f"ComposeTransform({self.transforms})"
 

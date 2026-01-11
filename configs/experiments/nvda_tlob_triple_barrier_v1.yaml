@@ -1,0 +1,174 @@
+# TLOB Model with Triple Barrier Labels - Experiment v1
+#
+# This configuration trains the TLOB model on data exported with Triple Barrier
+# labeling strategy from the Rust feature extractor.
+#
+# OBJECTIVE:
+# ==========
+# Train a model that directly models: "If I enter a trade now, what happens first?"
+#   - ProfitTarget (class 2): Price hit upper barrier = WINNING trade
+#   - Timeout (class 1): Neither barrier hit = DON'T TRADE (unclear outcome)
+#   - StopLoss (class 0): Price hit lower barrier = LOSING trade
+#
+# KEY INSIGHT:
+# ============
+# Unlike opportunity labeling, Triple Barrier:
+#   1. Is PATH-DEPENDENT: Considers the entire price trajectory
+#   2. Encodes RISK/REWARD: Asymmetric barriers capture actual trading risk
+#   3. Has explicit "NO TRADE" signal: Timeout class means the market is unpredictable
+#
+# TRADING DECISION RULE:
+# ======================
+# Only trade when:
+#   1. Model predicts ProfitTarget (class 2)
+#   2. AND probability > confidence_threshold (e.g., 0.7)
+#
+# Timeout = "I don't know" = don't trade
+# StopLoss = "Bad entry point" = definitely don't trade
+#
+# EXPECTED CLASS DISTRIBUTION (from Rust export):
+# ===============================================
+# With 0.5%/0.3% barriers and 100-event horizon:
+#   - ProfitTarget: ~20-30%
+#   - StopLoss: ~15-25%
+#   - Timeout: ~45-60%
+#
+# This is MORE balanced than opportunity labeling (~10%/80%/10%)
+#
+# PREREQUISITE:
+# =============
+# Export data with Triple Barrier labels first:
+#   cd feature-extractor-MBO-LOB
+#   cargo run --release --features parallel --bin export_dataset -- \
+#       --config configs/nvda_triple_barrier.toml
+
+name: TLOB_Triple_Barrier_v1
+description: "TLOB model with Triple Barrier labeling for risk-managed trade signal detection"
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  # Path to Triple Barrier labeled data
+  data_dir: "../data/exports/nvda_triple_barrier"
+  feature_count: 98
+  
+  # CRITICAL: Set labeling strategy to match exported data
+  labeling_strategy: triple_barrier
+  
+  # Task type: 3-class classification
+  # Classes: 0=StopLoss, 1=Timeout, 2=ProfitTarget
+  num_classes: 3
+  
+  # Single-horizon labels: h=50 events (~5-25 seconds)
+  # The export used single-horizon mode, so this index is ignored.
+  # Future exports can use multi-horizon [50, 100, 200].
+  horizon_idx: 0
+  
+  # Sequence configuration
+  sequence:
+    window_size: 100
+    stride: 10
+  
+  # Normalization (same as other experiments)
+  normalization:
+    strategy: zscore_per_day
+    eps: 0.00000001
+    clip_value: 10.0
+
+# =============================================================================
+# Model Configuration (TLOB)
+# =============================================================================
+model:
+  model_type: tlob
+  input_size: 98
+  num_classes: 3
+  
+  # TLOB hyperparameters
+  tlob_hidden_dim: 64
+  tlob_num_layers: 4
+  tlob_num_heads: 1
+  tlob_mlp_expansion: 4.0
+  tlob_use_sinusoidal_pe: true
+  tlob_use_bin: true
+  tlob_dropout: 0.0
+  tlob_dataset_type: nvda
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+train:
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  epochs: 50
+  early_stopping_patience: 10
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 0
+  pin_memory: true
+  seed: 42
+  mixed_precision: false
+  
+  # Loss configuration
+  # Start with standard cross-entropy (no weighting)
+  # Triple Barrier creates more balanced classes than opportunity labeling
+  loss_type: cross_entropy
+  use_class_weights: false
+  
+  # If classes are imbalanced, try these:
+  # loss_type: focal
+  # focal_gamma: 2.0
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output_dir: outputs/nvda_tlob_triple_barrier_v1
+log_level: INFO
+tags:
+  - nvda
+  - tlob
+  - triple_barrier
+  - risk_managed
+  - selective_trading
+
+# =============================================================================
+# KEY METRICS TO MONITOR
+# =============================================================================
+#
+# For Triple Barrier labeling, the important metrics are:
+#
+# 1. PROFIT_TARGET_PRECISION (val_profittarget_precision)
+#    "When we predict ProfitTarget, what % are actually ProfitTarget?"
+#    This is the WIN RATE of our trading strategy.
+#    Target: > 50% (better than random)
+#    Excellent: > 60%
+#
+# 2. DECISIVE_PREDICTION_RATE (val_decisive_prediction_rate)
+#    "How often do we predict non-Timeout (i.e., actually recommend trading)?"
+#    Low = conservative (good for high precision)
+#    High = aggressive (may have lower precision)
+#    Target: 20-40% (selective trading)
+#
+# 3. PREDICTED_TRADE_WIN_RATE (val_predicted_trade_win_rate)
+#    "Of samples where we predicted trade (StopLoss or ProfitTarget), 
+#     what fraction were actually ProfitTarget?"
+#    This is the REAL win rate of trades we'd take.
+#    Target: > 50% (must beat random to be profitable)
+#
+# 4. TRUE_WIN_RATE (val_true_win_rate)
+#    "Of samples where a barrier WAS hit, what fraction were ProfitTarget?"
+#    This is the base rate in the data - the model should exceed this.
+#
+# EXAMPLE MONITORING:
+# ===================
+# Epoch 10:
+#   val_loss: 0.85
+#   val_accuracy: 0.55
+#   val_profittarget_precision: 0.58  <- Good! When we predict win, 58% are wins
+#   val_decisive_prediction_rate: 0.35 <- Moderate, we're being selective
+#   val_predicted_trade_win_rate: 0.52 <- OK, 52% of our trade signals are wins
+#   val_true_win_rate: 0.45            <- Dataset has 45% base win rate
+#
+# In this example, the model achieves 52% win rate vs 45% base rate = +7% edge!
+#
