@@ -23,6 +23,7 @@ from lobtrainer.models.baselines import BaseModel, NaivePreviousLabel, NaiveClas
 from lobtrainer.training.metrics import (
     compute_accuracy,
     compute_classification_report,
+    compute_metrics,
     compute_trading_metrics,
     compute_transition_accuracy,
     ClassificationMetrics,
@@ -59,8 +60,8 @@ def evaluate_model(
     # Get predictions
     y_pred = model.predict(X)
     
-    # Compute metrics
-    metrics = compute_classification_report(y, y_pred)
+    # Compute metrics using strategy-aware calculator
+    metrics = compute_metrics(y_pred, y, strategy="tlob", num_classes=3)
     
     logger.info(f"{model_name}: accuracy={metrics.accuracy:.4f}, macro_f1={metrics.macro_f1:.4f}")
     
@@ -92,7 +93,7 @@ def evaluate_naive_baseline(
     # Fit on data to get class distribution
     class_prior.fit(y_true.reshape(-1, 1), y_true)  # X doesn't matter
     y_pred_prior = class_prior.predict(y_true.reshape(-1, 1))
-    results['class_prior'] = compute_classification_report(y_true, y_pred_prior)
+    results['class_prior'] = compute_metrics(y_pred_prior, y_true, strategy="tlob", num_classes=3)
     
     logger.info(
         f"[{split_name}] ClassPrior: accuracy={results['class_prior'].accuracy:.4f}"
@@ -101,7 +102,7 @@ def evaluate_naive_baseline(
     # 2. Previous-label baseline (requires temporal ordering)
     # Predict: y_pred[i] = y_true[i-1]
     y_pred_prev = np.concatenate([[y_true[0]], y_true[:-1]])  # Shift by 1
-    results['previous_label'] = compute_classification_report(y_true, y_pred_prev)
+    results['previous_label'] = compute_metrics(y_pred_prev, y_true, strategy="tlob", num_classes=3)
     
     logger.info(
         f"[{split_name}] PreviousLabel: accuracy={results['previous_label'].accuracy:.4f}"
@@ -294,8 +295,8 @@ def full_evaluation(
     # Get predictions
     y_pred = model.predict(X)
     
-    # Standard metrics
-    classification = compute_classification_report(y, y_pred)
+    # Standard metrics using strategy-aware calculator
+    classification = compute_metrics(y_pred, y, strategy="tlob", num_classes=3)
     
     # Trading metrics
     trading = compute_trading_metrics(y, y_pred)

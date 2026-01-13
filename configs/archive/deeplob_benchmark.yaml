@@ -1,13 +1,18 @@
-# DeepLOB Benchmark - Horizon 100 (Paper Default)
+# DeepLOB Benchmark Configuration Template (ARCHIVED)
 #
-# This configuration matches the DeepLOB paper's k=4 (horizon=100) setting.
+# STATUS: ARCHIVED - Uses legacy nvda_balanced dataset (165 days)
+# For current experiments, use nvda_11month_complete (234 days) with TLOB model.
+#
+# VALUE: Reference for DeepLOB model configuration (Zhang et al. 2019)
+#
+# This is the BASE TEMPLATE for DeepLOB experiments.
 #
 # Reference:
 #   Zhang, Zohren & Roberts (2019). "DeepLOB: Deep Convolutional Neural 
 #   Networks for Limit Order Books." IEEE Trans. Signal Processing.
 #
 # Usage:
-#   python scripts/train.py --config configs/deeplob_benchmark_h100.yaml
+#   python scripts/train.py --config configs/archive/deeplob_benchmark.yaml
 #
 # =============================================================================
 # HORIZON INDEX MAPPING (nvda_balanced dataset)
@@ -17,28 +22,35 @@
 #   horizon_idx: 0  →  h=10   (~1 second ahead)    - easiest, best class balance
 #   horizon_idx: 1  →  h=20   (~2 seconds ahead)
 #   horizon_idx: 2  →  h=50   (~5 seconds ahead)
-#   horizon_idx: 3  →  h=100  (~10 seconds ahead)  - PAPER BENCHMARK (this config)
+#   horizon_idx: 3  →  h=100  (~10 seconds ahead)  - PAPER BENCHMARK
 #   horizon_idx: 4  →  h=200  (~20 seconds ahead)  - hardest, worst class balance
 #
+# IMPORTANT: The original DeepLOB paper uses k=4 which corresponds to h=100.
+#            Use horizon_idx=3 (not 4!) for paper comparison.
 # =============================================================================
 
-name: deeplob_benchmark_nvda_h100
+name: deeplob_benchmark_nvda
 description: |
-  DeepLOB benchmark model for NVDA price direction prediction.
-  Horizon=100 events (~10 seconds ahead) - matches original paper's k=4 setting.
+  DeepLOB benchmark template for NVDA price direction prediction.
   
   Architecture (exact paper spec):
   - 3 Conv blocks (32 filters each)
   - Inception module (64 filters per branch, 192 total)
   - LSTM (64 hidden units)
   - Linear classifier (3 classes)
+  
+  Data contract:
+  - Input: First 40 LOB features in GROUPED layout
+    [ask_prices(10), ask_sizes(10), bid_prices(10), bid_sizes(10)]
+  - DeepLOB internally rearranges to FI2010 layout for CNN processing
+  - Sequences: [N_seq, 100, 40] after feature selection
 
 tags:
   - deeplob
   - benchmark
   - nvda
-  - h100
-  - paper-default
+  - template
+  - archived
 
 # =============================================================================
 # Data Configuration
@@ -47,8 +59,8 @@ data:
   data_dir: "../data/exports/nvda_balanced"
   feature_count: 98  # Full dataset has 98, benchmark uses first 40
   
-  # CRITICAL: horizon_idx=3 corresponds to h=100 (see mapping above)
-  horizon_idx: 3
+  # ⚠️ MODIFY THIS for different horizons (see mapping above)
+  horizon_idx: 0  # Default: h=10 (quickest results, best class balance)
   
   sequence:
     window_size: 100  # Must match Rust export config
@@ -92,8 +104,8 @@ train:
   learning_rate: 1.0e-4  # Conservative for NVDA data
   weight_decay: 0.0
   
-  # Quick iteration on M1 Pro (10 epochs ≈ 2.5 hours)
-  epochs: 10
+  # Quick iteration settings (adjust as needed)
+  epochs: 10  # Start small, increase if promising
   early_stopping_patience: 5
   
   gradient_clip_norm: 1.0
@@ -107,6 +119,5 @@ train:
 # =============================================================================
 # Output
 # =============================================================================
-output_dir: outputs/deeplob_h100
+output_dir: outputs/deeplob_benchmark
 log_level: INFO
-

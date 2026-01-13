@@ -19,7 +19,7 @@ Quick Start:
     >>> from lobtrainer import create_trainer
     >>> from lobtrainer.config import load_config
     >>> 
-    >>> config = load_config("configs/baseline_lstm.yaml")
+    >>> config = load_config("configs/experiments/nvda_tlob_h10_v1.yaml")
     >>> trainer = create_trainer(config)
     >>> trainer.train()
     >>> metrics = trainer.evaluate("test")
@@ -28,7 +28,7 @@ Quick Start:
 See: plan/03-FEATURE-INDEX-MAP-v2.md for complete index mapping.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.4.0"
 __author__ = "Knight"
 
 # Constants
@@ -68,6 +68,19 @@ from lobtrainer.training import (
     EarlyStopping,
     ModelCheckpoint,
     ClassificationMetrics,
+    # Monitoring (NEW v0.4)
+    GradientMonitor,
+    TrainingDiagnostics,
+    LearningRateTracker,
+    create_standard_monitoring,
+)
+
+# Experiments (NEW v0.4)
+from lobtrainer.experiments import (
+    ExperimentResult,
+    ExperimentMetrics,
+    ExperimentRegistry,
+    create_comparison_table,
 )
 
 # Utilities
@@ -104,6 +117,16 @@ __all__ = [
     "EarlyStopping",
     "ModelCheckpoint",
     "ClassificationMetrics",
+    # Monitoring (NEW v0.4)
+    "GradientMonitor",
+    "TrainingDiagnostics",
+    "LearningRateTracker",
+    "create_standard_monitoring",
+    # Experiments (NEW v0.4)
+    "ExperimentResult",
+    "ExperimentMetrics",
+    "ExperimentRegistry",
+    "create_comparison_table",
     # Utilities
     "set_seed",
 ]

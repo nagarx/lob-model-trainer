@@ -1,0 +1,187 @@
+# =============================================================================
+# TLOB Experiment: Triple Barrier Labeling (Risk-Managed Trading)
+# =============================================================================
+#
+# This experiment trains TLOB on the complete 11-month NVDA dataset with
+# Triple Barrier labeling for risk-managed trading decisions.
+#
+# MODEL: TLOB (Berti & Kasneci 2025)
+# - Same architecture as TLOB experiments
+# - Different labels: risk-managed barriers
+#
+# DATA: nvda_11month_triple_barrier export
+# - 234 trading days (Feb 3, 2025 - Jan 7, 2026)
+# - Triple Barrier labels with configurable barriers
+#
+# LABELING STRATEGY: Triple Barrier
+# Classes represent what happens FIRST after entry:
+#   - Class 0 (StopLoss): Hit lower barrier → LOSING trade
+#   - Class 1 (Timeout): Neither barrier hit → DON'T TRADE
+#   - Class 2 (ProfitTarget): Hit upper barrier → WINNING trade
+#
+# WHY TRIPLE BARRIER?
+# Unlike TLOB/DeepLOB labeling which asks "what is the trend?",
+# Triple Barrier asks "if I enter now, what happens to my position?"
+# This directly models trading decisions with explicit risk management.
+#
+# EXPECTED CLASS DISTRIBUTION:
+# With typical barriers (5 bps profit, 2.5 bps stop, 200 tick max hold):
+#   - ProfitTarget: ~25-35%
+#   - StopLoss: ~20-30%
+#   - Timeout: ~40-50%
+#
+# TRADING DECISION RULE:
+# Only trade when:
+#   1. Model predicts ProfitTarget (class 2)
+#   2. Probability > confidence_threshold (e.g., 0.6-0.7)
+#
+# KEY INSIGHT:
+# Timeout is NOT neutral - it means "market is unpredictable right now"
+# which is valuable information for position sizing and risk management.
+#
+# REFERENCE:
+# - López de Prado (2018), "Advances in Financial Machine Learning", Ch. 3
+# - Berti & Kasneci (2025), TLOB architecture
+# =============================================================================
+
+name: TLOB_NVDA_TripleBarrier_11mo_v1
+description: |
+  TLOB model with Triple Barrier labeling on complete 11-month NVDA dataset.
+  Risk-managed trading experiment with explicit profit/stop/timeout outcomes.
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  # Path to Triple Barrier export
+  # NOTE: This export must be generated first using:
+  # cd feature-extractor-MBO-LOB
+  # cargo run --release --features parallel --bin export_dataset -- \
+  #     --config configs/nvda_11month_triple_barrier.toml
+  data_dir: "../data/exports/nvda_11month_triple_barrier"
+  feature_count: 98
+  
+  # CRITICAL: Set labeling strategy to triple_barrier
+  # This affects metric computation and class naming
+  labeling_strategy: triple_barrier
+  num_classes: 3
+  
+  # Triple Barrier can have multiple horizons (max hold periods)
+  # horizon_idx selects which one to use
+  horizon_idx: 0
+  
+  # Sequence configuration
+  sequence:
+    window_size: 100
+    stride: 10
+  
+  # Normalization
+  normalization:
+    strategy: zscore_per_day
+    eps: 1.0e-8
+    clip_value: 10.0
+    exclude_features: [93]  # TIME_REGIME
+
+# =============================================================================
+# Model Configuration (TLOB)
+# =============================================================================
+model:
+  model_type: tlob
+  input_size: 98
+  num_classes: 3
+  dropout: 0.1
+  
+  # TLOB architecture
+  tlob_hidden_dim: 64
+  tlob_num_layers: 4
+  tlob_num_heads: 1
+  tlob_mlp_expansion: 4.0
+  tlob_use_sinusoidal_pe: true
+  tlob_use_bin: true
+  tlob_dataset_type: nvda
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+train:
+  batch_size: 64
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  epochs: 50
+  early_stopping_patience: 10
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 4
+  pin_memory: true
+  seed: 42
+  mixed_precision: false
+  
+  # Loss configuration
+  # Triple Barrier classes are more balanced than TLOB
+  # Can use standard cross-entropy or focal for fine-tuning
+  loss_type: cross_entropy
+  use_class_weights: false
+  """
+  Triple Barrier creates more balanced classes than TLOB.
+  Try with/without weights and compare.
+  """
+  
+  task_type: multiclass
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output_dir: outputs/experiments/nvda_tlob_triple_barrier_11mo_v1
+log_level: INFO
+
+tags:
+  - nvda
+  - tlob
+  - triple-barrier
+  - risk-managed
+  - 11month
+  - full-dataset
+
+# =============================================================================
+# KEY METRICS FOR TRIPLE BARRIER
+# =============================================================================
+#
+# Different metrics are important for Triple Barrier vs TLOB labeling:
+#
+# 1. PROFITTARGET_PRECISION (most important for trading)
+#    "When we predict ProfitTarget, what % actually hit profit target?"
+#    This is the WIN RATE of our trading strategy.
+#    Target: > 50% (must beat random to be profitable)
+#    Excellent: > 60%
+#
+# 2. DECISIVE_PREDICTION_RATE
+#    "How often do we predict non-Timeout (i.e., recommend trading)?"
+#    Low = conservative (good for high win rate)
+#    High = aggressive (may have lower win rate)
+#    Target: 20-40%
+#
+# 3. PREDICTED_TRADE_WIN_RATE (KEY TRADING METRIC)
+#    "Of samples where we predicted decisive (trade), what fraction won?"
+#    This is what matters for P&L.
+#    Target: > 50%
+#
+# 4. TRUE_WIN_RATE (baseline)
+#    "Of all decisive outcomes, what fraction were wins?"
+#    This is the market base rate - model should beat this.
+#
+# EXAMPLE INTERPRETATION:
+# ======================
+# Epoch 10:
+#   val_profittarget_precision: 0.58  <- When we predict win, 58% are wins
+#   val_decisive_prediction_rate: 0.35 <- We recommend trading 35% of time
+#   val_predicted_trade_win_rate: 0.52 <- 52% of our trades would win
+#   val_true_win_rate: 0.45            <- Market base rate is 45%
+#
+# Interpretation: Model achieves 52% win rate vs 45% base = +7% edge!
+# With proper position sizing, this is potentially profitable.
+#
+# CAUTION:
+# These metrics assume no transaction costs. In practice:
+# - Win rate must exceed: (cost per trade) / (average win size)
+# - Need to model actual P&L with realistic execution
+# =============================================================================

@@ -268,8 +268,8 @@ def main():
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=Path("../data/exports/nvda_98feat_full"),
-        help="Path to exported data directory",
+        default=Path("../data/exports/nvda_11month_complete"),
+        help="Path to exported data directory (default: nvda_11month_complete)",
     )
     parser.add_argument(
         "--output-dir",

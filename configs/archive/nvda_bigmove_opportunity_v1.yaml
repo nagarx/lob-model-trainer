@@ -1,6 +1,9 @@
 # =============================================================================
-# EXPERIMENT: NVDA Big Move / Opportunity Detection v1
+# EXPERIMENT: NVDA Big Move / Opportunity Detection v1 (ARCHIVED)
 # =============================================================================
+#
+# STATUS: ARCHIVED - Uses legacy nvda_bigmove dataset (165 days)
+# VALUE: Reference for OPPORTUNITY labeling strategy (vs TLOB labeling)
 #
 # Experiment ID: nvda_bigmove_opportunity_v1
 # Date Created: 2025-12-29
@@ -66,6 +69,7 @@ tags:
   - h200
   - class-weights
   - experiment-v1
+  - archived
 
 # =============================================================================
 # Data Configuration
@@ -189,4 +193,3 @@ log_level: INFO
 #   labels_model = labels_raw + 1  # Values: 0, 1, 2 for CrossEntropyLoss
 #
 # =============================================================================
-

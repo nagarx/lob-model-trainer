@@ -1,6 +1,10 @@
 # =============================================================================
-# TLOB Binary Signal Detection - Stage 1
+# TLOB Binary Signal Detection - Stage 1 (ARCHIVED)
 # =============================================================================
+#
+# STATUS: ARCHIVED - Uses legacy nvda_bigmove dataset (165 days)
+# VALUE: Reference for BINARY classification + FOCAL LOSS configuration
+#        Only config showing 2-class task type and focal loss
 #
 # Objective: Train TLOB to detect "trading opportunities" (binary classification)
 #
@@ -32,6 +36,7 @@ tags:
   - "focal_loss"
   - "tlob"
   - "nvda"
+  - "archived"
 
 # =============================================================================
 # Data Configuration

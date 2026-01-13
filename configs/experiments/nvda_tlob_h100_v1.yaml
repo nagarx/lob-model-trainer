@@ -1,0 +1,144 @@
+# =============================================================================
+# TLOB Experiment: Multi-Horizon H=100 (Long-term Prediction)
+# =============================================================================
+#
+# This experiment trains TLOB on the complete 11-month NVDA dataset with
+# long-term prediction horizon (H=100 ticks, ~10 seconds).
+#
+# MODEL: TLOB (Berti & Kasneci 2025)
+# - Same architecture as H=10 experiment
+# - Comparison point for horizon sensitivity
+#
+# DATA: nvda_11month_complete export
+# - 234 trading days (Feb 3, 2025 - Jan 7, 2026)
+# - 272,238 sequences
+# - Multi-horizon labels [10, 20, 50, 100]
+# - Using horizon_idx=3 (H=100)
+#
+# HYPOTHESIS:
+# H=100 is the standard benchmark horizon from DeepLOB paper (Zhang et al. 2019).
+# Longer horizons should show:
+# - Lower accuracy (harder to predict further ahead)
+# - More stable predictions (less noise)
+# - Better alignment with trading decisions (10s is actionable)
+#
+# COMPARISON WITH H=10:
+# - H=10: Higher accuracy, faster signal decay
+# - H=100: Lower accuracy, more persistent signals, matches literature
+#
+# EXPECTED PERFORMANCE (DeepLOB benchmark):
+# - Accuracy: 0.45-0.55 (DeepLOB paper: ~0.50)
+# - Macro F1: 0.40-0.50
+# - Directional Accuracy: 0.55-0.65
+#
+# REFERENCE:
+# - Zhang et al. (2019), Table 1: DeepLOB achieves ~50% accuracy at H=100
+# - Berti & Kasneci (2025), TLOB outperforms DeepLOB
+# =============================================================================
+
+name: TLOB_NVDA_H100_v1
+description: |
+  TLOB model with H=100 horizon on complete 11-month NVDA dataset.
+  Long-term prediction experiment matching DeepLOB paper benchmark.
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  # Path to the complete 11-month export
+  data_dir: "../data/exports/nvda_11month_complete"
+  feature_count: 98
+  
+  # Labeling strategy: TLOB (Down/Stable/Up based on smoothed return)
+  labeling_strategy: tlob
+  num_classes: 3
+  
+  # Use horizon index 3 = H=100 ticks (~10 seconds)
+  # This matches the DeepLOB paper benchmark
+  horizon_idx: 3
+  
+  # Sequence configuration (matches export)
+  sequence:
+    window_size: 100
+    stride: 10
+  
+  # Normalization: per-day z-score
+  normalization:
+    strategy: zscore_per_day
+    eps: 1.0e-8
+    clip_value: 10.0
+    exclude_features: [93]  # TIME_REGIME
+
+# =============================================================================
+# Model Configuration (TLOB)
+# =============================================================================
+model:
+  model_type: tlob
+  input_size: 98
+  num_classes: 3
+  dropout: 0.1
+  
+  # TLOB architecture (same as H=10 for fair comparison)
+  tlob_hidden_dim: 64
+  tlob_num_layers: 4
+  tlob_num_heads: 1
+  tlob_mlp_expansion: 4.0
+  tlob_use_sinusoidal_pe: true
+  tlob_use_bin: true
+  tlob_dataset_type: nvda
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+train:
+  batch_size: 64
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  epochs: 50
+  early_stopping_patience: 10
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 4
+  pin_memory: true
+  seed: 42
+  mixed_precision: false
+  
+  # Loss configuration
+  loss_type: weighted_ce
+  use_class_weights: true
+  task_type: multiclass
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output_dir: outputs/experiments/nvda_tlob_h100_v1
+log_level: INFO
+
+tags:
+  - nvda
+  - tlob
+  - horizon-100
+  - multi-horizon
+  - 11month
+  - full-dataset
+  - deeplob-benchmark
+
+# =============================================================================
+# BENCHMARK COMPARISON
+# =============================================================================
+#
+# Compare with DeepLOB paper (Zhang et al. 2019):
+#
+# | Model    | Horizon | Accuracy | F1     | Data      |
+# |----------|---------|----------|--------|-----------|
+# | DeepLOB  | H=100   | ~0.50    | ~0.45  | FI-2010   |
+# | TLOB     | H=100   | ~0.52*   | ~0.48* | FI-2010   |
+# | Ours     | H=100   | ?        | ?      | NVDA 11mo |
+#
+# *Estimated from TLOB paper.
+#
+# NOTES ON NVDA vs FI-2010:
+# - FI-2010: Finnish stocks, lower liquidity
+# - NVDA: US large-cap, high liquidity, more efficient
+# - May see lower accuracy on NVDA due to market efficiency
+# =============================================================================

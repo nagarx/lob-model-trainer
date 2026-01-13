@@ -17,7 +17,7 @@ Usage:
     >>> from lobtrainer.training import Trainer, create_trainer
     >>> from lobtrainer.config import load_config
     >>> 
-    >>> config = load_config("configs/baseline_lstm.yaml")
+    >>> config = load_config("configs/experiments/nvda_tlob_h10_v1.yaml")
     >>> trainer = create_trainer(config)
     >>> trainer.train()
     >>> metrics = trainer.evaluate("test")
@@ -71,6 +71,16 @@ from lobtrainer.training.loss import (
     create_focal_loss,
 )
 
+from lobtrainer.training.monitoring import (
+    GradientMonitor,
+    GradientStats,
+    LearningRateTracker,
+    TrainingDiagnostics,
+    HealthCheckResult,
+    PerClassMetricsTracker,
+    create_standard_monitoring,
+)
+
 __all__ = [
     # Core Trainer
     "Trainer",
@@ -109,4 +119,12 @@ __all__ = [
     "create_baseline_report",
     "full_evaluation",
     "BaselineReport",
+    # Monitoring (NEW)
+    "GradientMonitor",
+    "GradientStats",
+    "LearningRateTracker",
+    "TrainingDiagnostics",
+    "HealthCheckResult",
+    "PerClassMetricsTracker",
+    "create_standard_monitoring",
 ]

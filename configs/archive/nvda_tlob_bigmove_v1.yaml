@@ -1,6 +1,9 @@
 # =============================================================================
-# EXPERIMENT: NVDA TLOB Big Move Detection v1
+# EXPERIMENT: NVDA TLOB Big Move Detection v1 (ARCHIVED)
 # =============================================================================
+#
+# STATUS: ARCHIVED - Uses legacy nvda_bigmove dataset (165 days)
+# VALUE: Reference for TLOB + Opportunity labeling combination
 #
 # Experiment ID: nvda_tlob_bigmove_v1
 # Date Created: 2025-01-09
@@ -73,6 +76,7 @@ tags:
   - transformer
   - dual-attention
   - experiment-v1
+  - archived
 
 # =============================================================================
 # Data Configuration

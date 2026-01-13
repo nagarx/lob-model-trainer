@@ -18,7 +18,7 @@ Usage:
     >>> from lobtrainer.training import Trainer
     >>> from lobtrainer.config import load_config
     >>> 
-    >>> config = load_config("configs/baseline_lstm.yaml")
+    >>> config = load_config("configs/experiments/nvda_tlob_h10_v1.yaml")
     >>> trainer = Trainer(config)
     >>> trainer.train()
     >>> metrics = trainer.evaluate("test")

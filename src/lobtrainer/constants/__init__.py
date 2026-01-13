@@ -12,6 +12,23 @@ Version History:
     - v2.1: Fixed net_trade_flow (56) and net_cancel_flow (55) sign convention
 """
 
+# Feature presets for experiment configuration
+from lobtrainer.constants.feature_presets import (
+    PRESET_LOB_ONLY,
+    PRESET_LOB_DERIVED,
+    PRESET_FULL,
+    PRESET_SIGNALS_CORE,
+    PRESET_SIGNALS_FULL,
+    PRESET_LOB_SIGNALS,
+    PRESET_NO_META,
+    PRESET_DEEPLOB_EXTENDED,
+    FEATURE_PRESETS,
+    get_feature_preset,
+    list_presets,
+    describe_preset,
+    get_preset_summary,
+)
+
 from lobtrainer.constants.feature_index import (
     FeatureIndex,
     SignalIndex,
@@ -84,5 +101,19 @@ __all__ = [
     "PRIMARY_SIGNALS",
     "ASYMMETRY_SIGNALS",
     "UNSIGNED_FEATURES",
+    # Feature presets (NEW v0.4)
+    "PRESET_LOB_ONLY",
+    "PRESET_LOB_DERIVED",
+    "PRESET_FULL",
+    "PRESET_SIGNALS_CORE",
+    "PRESET_SIGNALS_FULL",
+    "PRESET_LOB_SIGNALS",
+    "PRESET_NO_META",
+    "PRESET_DEEPLOB_EXTENDED",
+    "FEATURE_PRESETS",
+    "get_feature_preset",
+    "list_presets",
+    "describe_preset",
+    "get_preset_summary",
 ]
 

@@ -1,0 +1,246 @@
+# =============================================================================
+# TLOB Experiment: Multi-Horizon H=10 (Short-term Prediction)
+# =============================================================================
+#
+# This experiment trains TLOB (Transformer LOB) on the complete 11-month NVDA
+# dataset with short-term prediction horizon (H=10 ticks, ~1 second).
+#
+# MODEL: TLOB (Berti & Kasneci 2025)
+# - Dual attention mechanism (temporal + feature)
+# - Bilinear Normalization (BiN) for non-stationarity
+# - 4 transformer blocks
+#
+# DATA: nvda_11month_complete export
+# - 234 trading days (Feb 3, 2025 - Jan 7, 2026)
+# - 272,238 sequences
+# - Multi-horizon labels [10, 20, 50, 100]
+# - Using horizon_idx=0 (H=10)
+#
+# HYPOTHESIS:
+# Short-term predictions (H=10) should show higher accuracy but lower
+# signal persistence compared to longer horizons. The model should learn
+# immediate order flow patterns.
+#
+# EXPECTED PERFORMANCE (based on DeepLOB benchmarks):
+# - Accuracy: 0.40-0.50
+# - Macro F1: 0.35-0.45
+# - Directional Accuracy: 0.50-0.60
+#
+# REFERENCE:
+# - Berti & Kasneci (2025), "TLOB: A Novel Transformer Model for Price Movement"
+# - Zhang et al. (2019), "DeepLOB" (baseline comparison)
+# =============================================================================
+
+name: TLOB_NVDA_H10_v1
+description: |
+  TLOB model with H=10 horizon on complete 11-month NVDA dataset.
+  Short-term prediction experiment for immediate price movement.
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  # Path to the complete 11-month export
+  data_dir: "../data/exports/nvda_11month_complete"
+  feature_count: 98
+  
+  # Labeling strategy: TLOB (Down/Stable/Up based on smoothed return)
+  labeling_strategy: tlob
+  num_classes: 3
+  
+  # Use horizon index 0 = H=10 ticks (~1 second)
+  horizon_idx: 0
+  
+  # Sequence configuration (matches export)
+  sequence:
+    window_size: 100
+    stride: 10
+  
+  # Normalization: per-day z-score
+  normalization:
+    strategy: zscore_per_day
+    eps: 1.0e-8
+    clip_value: 10.0
+    # Exclude categorical features from normalization
+    exclude_features: [93]  # TIME_REGIME
+
+# =============================================================================
+# Model Configuration (TLOB)
+# =============================================================================
+model:
+  model_type: tlob
+  input_size: 98
+  num_classes: 3
+  dropout: 0.1
+  
+  # TLOB architecture parameters
+  # Reference: Berti & Kasneci (2025), Section 3.2
+  tlob_hidden_dim: 64
+  """
+  Embedding dimension. Paper uses 40 for FI-2010 (40 features).
+  For 98 features, 64 provides better capacity.
+  """
+  
+  tlob_num_layers: 4
+  """
+  Number of TLOB blocks. Each block has temporal + feature attention.
+  Paper default: 4.
+  """
+  
+  tlob_num_heads: 1
+  """
+  Attention heads. Paper uses 1.
+  """
+  
+  tlob_mlp_expansion: 4.0
+  """
+  MLP hidden dimension = hidden_dim × expansion.
+  Paper default: 4.0.
+  """
+  
+  tlob_use_sinusoidal_pe: true
+  """
+  Use fixed sinusoidal positional encoding.
+  Better generalization than learned PE.
+  """
+  
+  tlob_use_bin: true
+  """
+  Use Bilinear Normalization (BiN).
+  Critical for handling non-stationarity in financial data.
+  Reference: Tran et al. (2021), ICPR.
+  """
+  
+  tlob_dataset_type: nvda
+  """
+  Dataset type affects internal preprocessing.
+  'nvda' for our NVIDIA dataset.
+  """
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+train:
+  batch_size: 64
+  """
+  Batch size. Larger = faster but more memory.
+  TLOB paper uses 32-64.
+  """
+  
+  learning_rate: 1.0e-4
+  """
+  Initial learning rate. TLOB paper uses 1e-4.
+  """
+  
+  weight_decay: 1.0e-5
+  """
+  L2 regularization for AdamW.
+  """
+  
+  epochs: 50
+  """
+  Maximum epochs. Early stopping will likely trigger earlier.
+  """
+  
+  early_stopping_patience: 10
+  """
+  Stop if no improvement for 10 epochs.
+  """
+  
+  gradient_clip_norm: 1.0
+  """
+  Gradient clipping for stability.
+  """
+  
+  scheduler: cosine
+  """
+  Learning rate scheduler. Cosine annealing to minimum.
+  """
+  
+  num_workers: 4
+  """
+  DataLoader workers. Adjust based on CPU cores.
+  """
+  
+  pin_memory: true
+  """
+  Pin memory for faster GPU transfer.
+  """
+  
+  seed: 42
+  """
+  Random seed for reproducibility.
+  """
+  
+  mixed_precision: false
+  """
+  Disable mixed precision for reproducibility.
+  Enable for faster training on supported GPUs.
+  """
+  
+  # Loss configuration
+  loss_type: weighted_ce
+  """
+  Weighted cross-entropy to handle class imbalance.
+  """
+  
+  use_class_weights: true
+  """
+  Compute weights from training data distribution.
+  """
+  
+  # Task type
+  task_type: multiclass
+  """
+  Standard 3-class classification.
+  """
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output_dir: outputs/experiments/nvda_tlob_h10_v1
+log_level: INFO
+
+tags:
+  - nvda
+  - tlob
+  - horizon-10
+  - multi-horizon
+  - 11month
+  - full-dataset
+
+# =============================================================================
+# KEY METRICS TO MONITOR
+# =============================================================================
+#
+# For TLOB labeling (Down/Stable/Up):
+#
+# 1. ACCURACY: Overall prediction accuracy
+#    Baseline (random): 33%
+#    Target: > 40%
+#
+# 2. MACRO_F1: Balanced F1 across classes
+#    More robust than accuracy for imbalanced data
+#    Target: > 0.35
+#
+# 3. DIRECTIONAL_ACCURACY: Accuracy on Up/Down predictions
+#    "When we predict a direction, are we right?"
+#    Target: > 50%
+#
+# 4. SIGNAL_RATE: Fraction of directional predictions
+#    Low = conservative (mostly predicting Stable)
+#    High = aggressive (more Up/Down predictions)
+#    Target: 30-50%
+#
+# 5. PER-CLASS PRECISION:
+#    - up_precision: "When we predict Up, how often correct?"
+#    - down_precision: "When we predict Down, how often correct?"
+#    Target: > 40% each
+#
+# MONITORING PATTERN:
+# Good training shows:
+#   - Loss decreasing on both train and val
+#   - Accuracy improving
+#   - No divergence between train and val (overfitting)
+#   - Signal rate stabilizing (not collapsing to Stable-only)
+# =============================================================================

@@ -230,10 +230,14 @@ class DataConfig:
     Data is loaded from NumPy arrays exported by the Rust pipeline.
     """
     
-    data_dir: str = "../data/exports/nvda_98feat"
+    data_dir: str = "../data/exports/nvda_11month_complete"
     """
     Path to exported data directory (relative to lob-model-trainer or absolute).
     Directory should contain train/, val/, test/ subdirectories.
+    
+    Current datasets:
+    - nvda_11month_complete: 234 days, TLOB multi-horizon labels
+    - nvda_11month_triple_barrier: 234 days, Triple Barrier labels
     """
     
     feature_count: int = 98
@@ -248,18 +252,19 @@ class DataConfig:
     label_encoding: LabelEncoding = LabelEncoding.CATEGORICAL
     """Label encoding scheme."""
     
-    labeling_strategy: LabelingStrategy = LabelingStrategy.OPPORTUNITY
+    labeling_strategy: LabelingStrategy = LabelingStrategy.TLOB
     """
     Labeling strategy used in the exported data.
     
     This determines the semantic meaning of class indices and affects
     how metrics are computed and interpreted:
     
-    - OPPORTUNITY: 0=BigDown, 1=NoOpportunity, 2=BigUp
+    - TLOB: 0=Down, 1=Stable, 2=Up (smoothed endpoint return)
     - TRIPLE_BARRIER: 0=StopLoss, 1=Timeout, 2=ProfitTarget
-    - TLOB: 0=Down, 1=Stable, 2=Up
+    - OPPORTUNITY: 0=BigDown, 1=NoOpportunity, 2=BigUp
     
     Must match the strategy used when exporting data from Rust.
+    Default: TLOB (most common for DeepLOB/TLOB experiments).
     """
     
     num_classes: int = 3

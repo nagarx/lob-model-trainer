@@ -158,6 +158,12 @@ def create_model(config) -> nn.Module:
             "Use LogisticBaseline class directly."
         )
     
+    elif model_type == ModelType.XGBOOST:
+        raise NotImplementedError(
+            "XGBoost model not yet implemented in PyTorch trainer. "
+            "Use LogisticBaseline or LSTM for now."
+        )
+    
     elif model_type == ModelType.TRANSFORMER:
         raise NotImplementedError(
             "TransformerClassifier not yet implemented. "
