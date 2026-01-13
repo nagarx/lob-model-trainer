@@ -42,6 +42,8 @@ def evaluate_model(
     X: np.ndarray,
     y: np.ndarray,
     name: Optional[str] = None,
+    strategy: str = "tlob",
+    num_classes: int = 3,
 ) -> ClassificationMetrics:
     """
     Evaluate a model on given data.
@@ -51,9 +53,11 @@ def evaluate_model(
         X: Features
         y: True labels
         name: Optional name for logging
+        strategy: Labeling strategy ('tlob', 'triple_barrier', 'opportunity')
+        num_classes: Number of output classes
     
     Returns:
-        ClassificationMetrics with all metrics
+        ClassificationMetrics with strategy-aware metrics
     """
     model_name = name or model.name
     
@@ -61,7 +65,7 @@ def evaluate_model(
     y_pred = model.predict(X)
     
     # Compute metrics using strategy-aware calculator
-    metrics = compute_metrics(y_pred, y, strategy="tlob", num_classes=3)
+    metrics = compute_metrics(y_pred, y, strategy=strategy, num_classes=num_classes)
     
     logger.info(f"{model_name}: accuracy={metrics.accuracy:.4f}, macro_f1={metrics.macro_f1:.4f}")
     
@@ -71,6 +75,8 @@ def evaluate_model(
 def evaluate_naive_baseline(
     y_true: np.ndarray,
     split_name: str = "test",
+    strategy: str = "tlob",
+    num_classes: int = 3,
 ) -> Dict[str, ClassificationMetrics]:
     """
     Evaluate naive baselines on given labels.
@@ -82,6 +88,8 @@ def evaluate_naive_baseline(
     Args:
         y_true: True labels (must be temporally ordered for previous-label baseline)
         split_name: Name for logging
+        strategy: Labeling strategy ('tlob', 'triple_barrier', 'opportunity')
+        num_classes: Number of output classes
     
     Returns:
         Dict with 'class_prior' and 'previous_label' metrics
@@ -93,7 +101,7 @@ def evaluate_naive_baseline(
     # Fit on data to get class distribution
     class_prior.fit(y_true.reshape(-1, 1), y_true)  # X doesn't matter
     y_pred_prior = class_prior.predict(y_true.reshape(-1, 1))
-    results['class_prior'] = compute_metrics(y_pred_prior, y_true, strategy="tlob", num_classes=3)
+    results['class_prior'] = compute_metrics(y_pred_prior, y_true, strategy=strategy, num_classes=num_classes)
     
     logger.info(
         f"[{split_name}] ClassPrior: accuracy={results['class_prior'].accuracy:.4f}"
@@ -102,7 +110,7 @@ def evaluate_naive_baseline(
     # 2. Previous-label baseline (requires temporal ordering)
     # Predict: y_pred[i] = y_true[i-1]
     y_pred_prev = np.concatenate([[y_true[0]], y_true[:-1]])  # Shift by 1
-    results['previous_label'] = compute_metrics(y_pred_prev, y_true, strategy="tlob", num_classes=3)
+    results['previous_label'] = compute_metrics(y_pred_prev, y_true, strategy=strategy, num_classes=num_classes)
     
     logger.info(
         f"[{split_name}] PreviousLabel: accuracy={results['previous_label'].accuracy:.4f}"
@@ -234,6 +242,8 @@ def create_baseline_report(
     X: np.ndarray,
     y: np.ndarray,
     split: str = "test",
+    strategy: str = "tlob",
+    num_classes: int = 3,
 ) -> BaselineReport:
     """
     Create comprehensive baseline comparison report.
@@ -243,15 +253,17 @@ def create_baseline_report(
         X: Features
         y: True labels (must be temporally ordered)
         split: Split name for logging
+        strategy: Labeling strategy ('tlob', 'triple_barrier', 'opportunity')
+        num_classes: Number of output classes
     
     Returns:
         BaselineReport with full comparison
     """
     # Evaluate model
-    model_metrics = evaluate_model(model, X, y)
+    model_metrics = evaluate_model(model, X, y, strategy=strategy, num_classes=num_classes)
     
     # Evaluate baselines
-    baseline_metrics = evaluate_naive_baseline(y, split)
+    baseline_metrics = evaluate_naive_baseline(y, split, strategy=strategy, num_classes=num_classes)
     
     return BaselineReport(
         model_name=model.name,
@@ -273,12 +285,14 @@ def full_evaluation(
     X: np.ndarray,
     y: np.ndarray,
     split: str = "test",
+    strategy: str = "tlob",
+    num_classes: int = 3,
 ) -> Dict:
     """
     Full evaluation with all metrics.
     
     Includes:
-    - Standard classification metrics
+    - Standard classification metrics (strategy-aware)
     - Trading-specific metrics
     - Transition analysis
     - Baseline comparison
@@ -288,6 +302,8 @@ def full_evaluation(
         X: Features
         y: True labels (temporally ordered)
         split: Split name
+        strategy: Labeling strategy ('tlob', 'triple_barrier', 'opportunity')
+        num_classes: Number of output classes
     
     Returns:
         Dict with comprehensive evaluation results
@@ -296,7 +312,7 @@ def full_evaluation(
     y_pred = model.predict(X)
     
     # Standard metrics using strategy-aware calculator
-    classification = compute_metrics(y_pred, y, strategy="tlob", num_classes=3)
+    classification = compute_metrics(y_pred, y, strategy=strategy, num_classes=num_classes)
     
     # Trading metrics
     trading = compute_trading_metrics(y, y_pred)
@@ -305,7 +321,7 @@ def full_evaluation(
     transitions = compute_transition_accuracy(y, y_pred)
     
     # Baseline comparison
-    baseline_report = create_baseline_report(model, X, y, split)
+    baseline_report = create_baseline_report(model, X, y, split, strategy=strategy, num_classes=num_classes)
     
     return {
         "split": split,
