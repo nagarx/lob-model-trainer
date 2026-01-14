@@ -12,6 +12,10 @@ Key classes:
 - LOBFlatDataset: For flat features (Logistic, XGBoost, MLP)
 - LOBSequenceDataset: For 3D sequences (LSTM, Transformer)
 - load_numpy_data: For sklearn-based models
+
+Normalization (matching official TLOB repo):
+- GlobalZScoreNormalizer: Global Z-score with training stats for all prices/sizes
+- GlobalNormalizationStats: Container for normalization statistics
 """
 
 from lobtrainer.data.dataset import (
@@ -31,6 +35,11 @@ from lobtrainer.data.transforms import (
     BinaryLabelTransform,
     ComposeTransform,
 )
+from lobtrainer.data.normalization import (
+    GlobalZScoreNormalizer,
+    GlobalNormalizationStats,
+    compute_and_save_normalization_stats,
+)
 
 __all__ = [
     # Data structures
@@ -44,10 +53,14 @@ __all__ = [
     "load_numpy_data",
     "create_dataloaders",
     "get_dataset_info",
-    # Transforms
+    # Transforms (per-sample)
     "Normalizer",
     "ZScoreNormalizer",
     "compute_statistics",
     "BinaryLabelTransform",
     "ComposeTransform",
+    # Global normalization (TLOB repo matching)
+    "GlobalZScoreNormalizer",
+    "GlobalNormalizationStats",
+    "compute_and_save_normalization_stats",
 ]

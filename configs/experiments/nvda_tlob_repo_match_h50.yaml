@@ -1,0 +1,131 @@
+# =============================================================================
+# TLOB Experiment: EXACT MATCH with Official TLOB Repository
+# =============================================================================
+#
+# This experiment EXACTLY matches the official TLOB repository preprocessing:
+# https://github.com/... (TLOB/preprocessing/lobster.py)
+#
+# OFFICIAL TLOB PREPROCESSING PIPELINE:
+# 1. Export RAW 40 LOB features (10 levels × 4: ask_p, ask_s, bid_p, bid_s)
+# 2. Compute GLOBAL mean/std from ALL training data:
+#    - mean_prices = ALL_PRICES.stack().mean()  (one value for all 20 price cols)
+#    - std_prices  = ALL_PRICES.stack().std()   (one value for all 20 price cols)
+#    - mean_sizes  = ALL_SIZES.stack().mean()   (one value for all 20 size cols)
+#    - std_sizes   = ALL_SIZES.stack().std()    (one value for all 20 size cols)
+# 3. Apply training stats to normalize train/val/test
+# 4. BiN layer in model provides additional per-sample adaptive normalization
+#
+# DATA: nvda_tlob_repo_v1 export (40 features, raw values)
+# - 234 trading days (Feb 3, 2025 - Jan 7, 2026)
+# - 40 LOB features only (matching TLOB paper Section 4)
+# - Multi-horizon labels [10, 20, 50, 100]
+#
+# REFERENCE:
+# - Berti & Kasneci (2025), "TLOB: A Novel Transformer Model"
+# - Tran et al. (2021), "Data Normalization for Bilinear Structures"
+# =============================================================================
+
+name: TLOB_NVDA_REPO_MATCH_H50
+description: |
+  TLOB model with EXACT preprocessing matching official repository.
+  Global Z-score normalization (all prices together, all sizes together).
+  BiN layer for adaptive per-sample normalization on top.
+  This is the CORRECT approach per TLOB paper and repo.
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  # Path to NEW export with 40 RAW features (will be normalized here)
+  data_dir: "../data/exports/nvda_tlob_repo_v1"
+  
+  # 40 features: 10 levels × 4 (ask_p, ask_s, bid_p, bid_s)
+  feature_count: 40
+  
+  # Labeling strategy: TLOB (Down/Stable/Up based on smoothed return)
+  labeling_strategy: tlob
+  num_classes: 3
+  
+  # Use horizon index 2 = H=50 ticks (~5 seconds)
+  horizon_idx: 2
+  
+  # Sequence configuration (matches export)
+  sequence:
+    window_size: 100
+    stride: 10
+  
+  # ==========================================================================
+  # CRITICAL: Global Z-Score Normalization (MATCHING OFFICIAL TLOB REPO)
+  # ==========================================================================
+  #
+  # This exactly matches TLOB/utils/utils_data.py::z_score_orderbook():
+  #   mean_prices = data.iloc[:, 0::2].stack().mean()  (one value)
+  #   std_prices  = data.iloc[:, 0::2].stack().std()   (one value)
+  #   mean_sizes  = data.iloc[:, 1::2].stack().mean()  (one value)
+  #   std_sizes   = data.iloc[:, 1::2].stack().std()   (one value)
+  #
+  # Applied to train first (computes stats), then val/test with same stats.
+  # ==========================================================================
+  normalization:
+    strategy: global_zscore
+    eps: 1.0e-8
+    clip_value: null
+    exclude_features: []
+
+# =============================================================================
+# Model Configuration (TLOB)
+# =============================================================================
+model:
+  model_type: tlob
+  input_size: 40  # CRITICAL: 40 features, not 98
+  num_classes: 3
+  dropout: 0.1
+  
+  # TLOB Architecture Parameters (Berti & Kasneci 2025)
+  tlob_hidden_dim: 64
+  tlob_num_layers: 4
+  tlob_num_heads: 1
+  tlob_mlp_expansion: 4.0
+  
+  # Sinusoidal positional encoding (generalizes better)
+  tlob_use_sinusoidal_pe: true
+  
+  # BiN enabled - provides adaptive per-sample normalization ON TOP OF global z-score
+  tlob_use_bin: true
+  
+  # Dataset type
+  tlob_dataset_type: nvda
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+train:
+  batch_size: 64
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  epochs: 50
+  early_stopping_patience: 10
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 4
+  pin_memory: true
+  seed: 42
+  mixed_precision: false
+  loss_type: weighted_ce
+  use_class_weights: true
+  task_type: multiclass
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output_dir: outputs/experiments/nvda_tlob_repo_match_h50
+log_level: INFO
+
+tags:
+  - nvda
+  - tlob
+  - horizon-50
+  - tlob-repo-match
+  - global-zscore
+  - 40-features
+  - official-preprocessing

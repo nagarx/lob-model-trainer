@@ -41,6 +41,22 @@ class NormalizationStrategy(str, Enum):
     ZSCORE_PER_DAY = "zscore_per_day"
     """Per-day Z-score: normalize within each trading day."""
     
+    GLOBAL_ZSCORE = "global_zscore"
+    """
+    Global Z-score matching official TLOB repository.
+    
+    Computes ONE mean/std for ALL prices and ONE mean/std for ALL sizes
+    from the ENTIRE training set, then applies to train/val/test.
+    
+    This matches TLOB/utils/utils_data.py::z_score_orderbook():
+        mean_prices = ALL_PRICES.stack().mean()  (one value for all 20 price cols)
+        std_prices  = ALL_PRICES.stack().std()   (one value for all 20 price cols)
+        mean_sizes  = ALL_SIZES.stack().mean()   (one value for all 20 size cols)
+        std_sizes   = ALL_SIZES.stack().std()    (one value for all 20 size cols)
+    
+    Reference: TLOB GitHub repository preprocessing
+    """
+    
     MINMAX = "minmax"
     """Min-max scaling to [0, 1]."""
     

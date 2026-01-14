@@ -41,12 +41,13 @@ from torch.optim.lr_scheduler import (
 )
 from torch.utils.data import DataLoader
 
-from lobtrainer.config import ExperimentConfig, ModelType, TaskType, LossType
+from lobtrainer.config import ExperimentConfig, ModelType, TaskType, LossType, NormalizationStrategy
 from lobtrainer.data import (
     LOBSequenceDataset,
     LOBFlatDataset,
     load_split_data,
     create_dataloaders,
+    GlobalZScoreNormalizer,
 )
 from lobtrainer.training.callbacks import (
     Callback,
@@ -56,8 +57,13 @@ from lobtrainer.training.callbacks import (
     MetricLogger,
 )
 from lobtrainer.training.metrics import (
-    compute_accuracy,
+    # Core metrics computation
+    MetricsCalculator,
     ClassificationMetrics,
+    compute_metrics,
+    compute_accuracy,
+    # Class name mappings for logging
+    get_class_names,
 )
 from lobtrainer.utils.reproducibility import set_seed, create_worker_init_fn
 
@@ -136,9 +142,14 @@ class Trainer:
         self.callbacks = CallbackList(callbacks or [])
         self.callbacks.set_trainer(self)
         
-        # Auto-detect device
+        # Auto-detect device (CUDA > MPS > CPU)
         if device is None:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            if torch.cuda.is_available():
+                device = torch.device('cuda')
+            elif torch.backends.mps.is_available():
+                device = torch.device('mps')
+            else:
+                device = torch.device('cpu')
         self.device = device
         
         # Initialize state
@@ -416,20 +427,54 @@ class Trainer:
         label_transform: Optional[callable],
         num_classes: int,
     ) -> Dict[str, DataLoader]:
-        """Create dataloaders with custom label transform support."""
-        loaders = {}
+        """
+        Create dataloaders with custom label transform support.
         
+        Handles global_zscore normalization matching official TLOB repository:
+        1. Load training data first
+        2. Compute global mean/std for prices and sizes
+        3. Apply same normalization to train/val/test
+        """
+        loaders = {}
+        all_days = {}
+        
+        # Load all splits first (needed for global normalization)
         for split in ["train", "val", "test"]:
             try:
-                days = load_split_data(data_dir, split, validate=True)
+                all_days[split] = load_split_data(data_dir, split, validate=True)
             except FileNotFoundError:
                 logger.info(f"Split '{split}' not found, skipping")
                 continue
+        
+        if "train" not in all_days:
+            raise ValueError("No training data found")
+        
+        # Create feature transform based on normalization strategy
+        feature_transform = None
+        norm_strategy = self.config.data.normalization.strategy
+        
+        if norm_strategy == NormalizationStrategy.GLOBAL_ZSCORE:
+            # Global Z-score matching TLOB repository
+            # Compute stats from ALL training data, apply to all splits
+            num_features = self.config.data.feature_count
+            logger.info(f"Creating GlobalZScoreNormalizer for {num_features} features...")
+            feature_transform = GlobalZScoreNormalizer.from_train_data(
+                all_days["train"],
+                num_features=num_features,
+                eps=self.config.data.normalization.eps,
+            )
+            logger.info("Global normalization stats computed from training data")
             
-            # Create dataset with label transform
+            # Optionally save stats for reproducibility
+            stats_path = Path(data_dir) / "normalization_stats.json"
+            if not stats_path.exists():
+                feature_transform.stats.save(stats_path)
+        
+        # Create datasets with transform
+        for split, days in all_days.items():
             dataset = LOBSequenceDataset(
                 days,
-                transform=None,  # No feature transform for now
+                transform=feature_transform,
                 feature_indices=feature_indices,
                 horizon_idx=horizon_idx,
                 label_transform=label_transform,
@@ -773,7 +818,6 @@ class Trainer:
         y_true = np.concatenate(all_labels)
         
         # Use MetricsCalculator for strategy-aware metrics
-        from lobtrainer.training.metrics import MetricsCalculator
         metrics_calculator = MetricsCalculator(
             labeling_strategy=self.config.data.labeling_strategy,
             num_classes=self.config.model.num_classes,
