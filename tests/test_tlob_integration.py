@@ -25,11 +25,14 @@ from lobtrainer.config import (
     ExperimentConfig,
     load_config,
 )
-from lobtrainer.models import (
-    create_model,
-    LOBMODELS_AVAILABLE,
-)
+from lobtrainer.models import create_model
 
+# Check if lobmodels is available
+try:
+    import lobmodels
+    LOBMODELS_AVAILABLE = True
+except ImportError:
+    LOBMODELS_AVAILABLE = False
 
 # Skip all tests if lobmodels is not installed
 pytestmark = pytest.mark.skipif(
@@ -85,52 +88,63 @@ class TestTLOBModelCreation:
 
 
 class TestTLOBConfigValidation:
-    """Test TLOB configuration validation."""
-    
+    """Test TLOB configuration validation.
+
+    Architecture-specific validation happens at create_model() time when
+    the params dict is passed to TLOBConfig. ModelConfig stores raw params
+    without model-specific validation (Phase 3 design).
+    """
+
     def test_hidden_dim_must_be_at_least_4(self):
         """Hidden dim must be >= 4 for final block reduction."""
-        with pytest.raises(ValueError, match="tlob_hidden_dim must be >= 4"):
-            ModelConfig(model_type=ModelType.TLOB, tlob_hidden_dim=2)
-    
+        config = ModelConfig(model_type=ModelType.TLOB, tlob_hidden_dim=2)
+        with pytest.raises(ValueError, match="hidden_dim must be >= 4"):
+            create_model(config)
+
     def test_hidden_dim_must_be_even_for_sinusoidal_pe(self):
         """Hidden dim must be even when using sinusoidal PE."""
-        with pytest.raises(ValueError, match="tlob_hidden_dim must be even"):
-            ModelConfig(
-                model_type=ModelType.TLOB,
-                tlob_hidden_dim=33,
-                tlob_use_sinusoidal_pe=True,
-            )
-    
+        config = ModelConfig(
+            model_type=ModelType.TLOB,
+            tlob_hidden_dim=33,
+            tlob_use_sinusoidal_pe=True,
+        )
+        with pytest.raises(ValueError, match="hidden_dim must be even"):
+            create_model(config)
+
     def test_hidden_dim_odd_ok_with_learned_pe(self):
         """Odd hidden dim is OK when not using sinusoidal PE."""
-        # Should not raise
+        # Should not raise at config creation time
         config = ModelConfig(
             model_type=ModelType.TLOB,
             tlob_hidden_dim=33,
             tlob_use_sinusoidal_pe=False,
         )
         assert config.tlob_hidden_dim == 33
-    
+
     def test_num_layers_must_be_positive(self):
         """Number of layers must be >= 1."""
-        with pytest.raises(ValueError, match="tlob_num_layers must be >= 1"):
-            ModelConfig(model_type=ModelType.TLOB, tlob_num_layers=0)
-    
+        config = ModelConfig(model_type=ModelType.TLOB, tlob_num_layers=0)
+        with pytest.raises(ValueError, match="num_layers must be >= 1"):
+            create_model(config)
+
     def test_num_heads_must_be_positive(self):
         """Number of attention heads must be >= 1."""
-        with pytest.raises(ValueError, match="tlob_num_heads must be >= 1"):
-            ModelConfig(model_type=ModelType.TLOB, tlob_num_heads=0)
-    
+        config = ModelConfig(model_type=ModelType.TLOB, tlob_num_heads=0)
+        with pytest.raises(ValueError, match="num_heads must be >= 1"):
+            create_model(config)
+
     def test_mlp_expansion_must_be_positive(self):
         """MLP expansion factor must be > 0."""
-        with pytest.raises(ValueError, match="tlob_mlp_expansion must be > 0"):
-            ModelConfig(model_type=ModelType.TLOB, tlob_mlp_expansion=0)
-    
+        config = ModelConfig(model_type=ModelType.TLOB, tlob_mlp_expansion=0)
+        with pytest.raises(ValueError, match="mlp_expansion must be > 0"):
+            create_model(config)
+
     def test_dataset_type_validation(self):
         """Dataset type must be valid."""
-        with pytest.raises(ValueError, match="tlob_dataset_type"):
-            ModelConfig(model_type=ModelType.TLOB, tlob_dataset_type="invalid")
-    
+        config = ModelConfig(model_type=ModelType.TLOB, tlob_dataset_type="invalid")
+        with pytest.raises(ValueError, match="dataset_type"):
+            create_model(config)
+
     def test_valid_dataset_types(self):
         """Valid dataset types should be accepted."""
         for dt in ["fi2010", "lobster", "nvda"]:
@@ -149,7 +163,7 @@ class TestTLOBForwardPass:
         
         x = torch.randn(4, 100, 98)  # [batch, seq, features]
         with torch.no_grad():
-            out = model(x)
+            out = model(x).logits
         
         assert out.shape == (4, 3)
     
@@ -161,7 +175,7 @@ class TestTLOBForwardPass:
         
         x = torch.randn(4, 100, 40)
         with torch.no_grad():
-            out = model(x)
+            out = model(x).logits
         
         assert out.shape == (4, 3)
     
@@ -176,24 +190,24 @@ class TestTLOBForwardPass:
         x_batch = torch.cat([x1, x2], dim=0)
         
         with torch.no_grad():
-            out1 = model(x1)
-            out2 = model(x2)
-            out_batch = model(x_batch)
-        
+            out1 = model(x1).logits
+            out2 = model(x2).logits
+            out_batch = model(x_batch).logits
+
         assert torch.allclose(out_batch[0], out1[0], atol=1e-5)
         assert torch.allclose(out_batch[1], out2[0], atol=1e-5)
-    
+
     def test_forward_deterministic(self):
         """Same input should produce same output."""
         config = ModelConfig(model_type=ModelType.TLOB, input_size=98)
         model = create_model(config)
         model.eval()
-        
+
         x = torch.randn(4, 100, 98)
         with torch.no_grad():
-            out1 = model(x)
-            out2 = model(x)
-        
+            out1 = model(x).logits
+            out2 = model(x).logits
+
         assert torch.allclose(out1, out2)
 
 
@@ -213,7 +227,7 @@ class TestTLOBTraining:
         y = torch.randint(0, 3, (4,))
         
         optimizer.zero_grad()
-        out = model(x)
+        out = model(x).logits
         loss = criterion(out, y)
         loss.backward()
         optimizer.step()
@@ -236,7 +250,7 @@ class TestTLOBTraining:
         initial_loss = None
         for _ in range(10):
             optimizer.zero_grad()
-            out = model(x)
+            out = model(x).logits
             loss = criterion(out, y)
             loss.backward()
             optimizer.step()
@@ -256,7 +270,7 @@ class TestTLOBTraining:
         x = torch.randn(4, 100, 98)
         y = torch.randint(0, 3, (4,))
         
-        out = model(x)
+        out = model(x).logits
         loss = nn.CrossEntropyLoss()(out, y)
         loss.backward()
         
@@ -282,7 +296,7 @@ class TestTLOBModelOutput:
         
         x = torch.randn(4, 100, 98)
         with torch.no_grad():
-            out = model(x)
+            out = model(x).logits
         
         # Logits can be negative
         assert out.min() < 0 or out.max() > 1
@@ -295,7 +309,7 @@ class TestTLOBModelOutput:
         
         x = torch.randn(4, 100, 98)
         with torch.no_grad():
-            out = model(x)
+            out = model(x).logits
             probs = torch.softmax(out, dim=-1)
         
         # Probabilities should sum to 1
@@ -362,7 +376,7 @@ class TestTLOBWithBiN:
         x[:, :, 80:90] *= 1000000  # Simulate extreme outliers
         
         with torch.no_grad():
-            out = model(x)
+            out = model(x).logits
         
         # Output should still be valid
         assert not torch.isnan(out).any()
@@ -402,7 +416,7 @@ class TestTLOBWithData:
         model.eval()
         
         with torch.no_grad():
-            out = model(x)
+            out = model(x).logits
         
         assert out.shape == (8, 3)
         assert not torch.isnan(out).any()

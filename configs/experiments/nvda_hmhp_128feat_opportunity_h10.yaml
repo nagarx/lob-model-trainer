@@ -1,0 +1,111 @@
+# =============================================================================
+# HMHP Experiment: 128-Feature Opportunity Labels (0DTE-Aligned)
+# =============================================================================
+#
+# Same HMHP architecture as nvda_hmhp_128feat_h10_primary.yaml but with
+# Opportunity labeling instead of TLOB.
+#
+# KEY HYPOTHESIS:
+# Opportunity labels detect PEAK returns within each horizon window,
+# which better matches 0DTE ATM options where any sufficient move during
+# the holding period is profitable. TLOB labels only capture the endpoint
+# direction, missing profitable paths that reverse before the horizon end.
+#
+# ARCHITECTURE COMPATIBILITY:
+# Opportunity labels use the same signed encoding {-1, 0, 1} as TLOB:
+#   -1 = BigDown (price reaches trough < -threshold)
+#    0 = NoOpportunity (no move exceeds threshold)
+#   +1 = BigUp (price reaches peak > threshold)
+# The HMHP cascade (H10 -> H60 -> H300) works identically because the
+# directional semantics are the same. "Short-term big move" informs
+# "long-term big move" through state passing.
+#
+# EXPECTED CLASS DISTRIBUTION:
+# With 30 bps threshold, expect ~15-25% BigUp, ~15-25% BigDown, ~50-70% NoOpp.
+# This imbalance requires class weighting (use_class_weights: true).
+#
+# BENCHMARK:
+# - HMHP TLOB XNAS: 59.62% H10 test accuracy
+# - Target: comparable or better accuracy on Opportunity labels
+# - The key metric is whether directional accuracy at high conviction
+#   exceeds the TLOB result (93.88% XNAS, 97.21% ARCX)
+#
+# =============================================================================
+
+name: HMHP_NVDA_128feat_Opportunity_H10
+description: |
+  HMHP on 233-day XNAS 128-feature export with Opportunity labels (30 bps).
+  Tests whether peak-return detection improves 0DTE signal quality.
+
+data:
+  data_dir: "../data/exports/nvda_xnas_128feat_opportunity"
+  feature_count: 128
+  feature_preset: "analysis_ready_128"
+  labeling_strategy: opportunity
+  num_classes: 3
+  horizon_idx: 0
+
+  sequence:
+    window_size: 100
+    stride: 10
+
+  normalization:
+    strategy: hybrid
+    eps: 1.0e-8
+    clip_value: 10.0
+    exclude_features: [93, 115]
+
+model:
+  model_type: hmhp
+  input_size: 119
+  num_classes: 3
+  dropout: 0.1
+
+  hmhp_horizons:
+    - 10
+    - 60
+    - 300
+
+  hmhp_cascade_mode: full
+  hmhp_state_fusion: gate
+  hmhp_encoder_type: tlob
+  hmhp_encoder_hidden_dim: 64
+  hmhp_num_encoder_layers: 2
+  hmhp_decoder_hidden_dim: 32
+  hmhp_state_dim: 32
+  hmhp_use_confirmation: true
+
+  hmhp_loss_weights:
+    H10: 0.50
+    H60: 0.25
+    H300: 0.10
+    consistency: 0.05
+    final: 0.10
+
+train:
+  batch_size: 256
+  learning_rate: 5.0e-4
+  weight_decay: 0.01
+  epochs: 30
+  early_stopping_patience: 8
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 4
+  pin_memory: true
+  seed: 42
+  mixed_precision: false
+  loss_type: weighted_ce
+  use_class_weights: true
+  task_type: multiclass
+
+output_dir: outputs/experiments/nvda_hmhp_128feat_opportunity_h10
+log_level: INFO
+
+tags:
+  - nvda
+  - xnas
+  - hmhp
+  - 128-features
+  - opportunity
+  - 0dte-aligned
+  - peak-return

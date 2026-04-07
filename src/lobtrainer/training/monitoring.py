@@ -199,9 +199,9 @@ class GradientMonitor(Callback):
     
     def on_batch_end(self, batch_idx: int, logs: Dict[str, float]) -> None:
         """Compute and optionally log gradient stats."""
-        if self.trainer is None or self.trainer._model is None:
+        if self.trainer is None or not self.trainer.model_initialized:
             return
-        
+
         stats = self.compute_gradient_stats(self.trainer.model)
         self._batch_stats.append(stats)
         
@@ -316,7 +316,7 @@ class LearningRateTracker(Callback):
     
     def on_epoch_start(self, epoch: int) -> None:
         """Record learning rate at epoch start."""
-        if self.trainer is None or self.trainer._optimizer is None:
+        if self.trainer is None or not self.trainer.optimizer_initialized:
             return
         
         # Get current LR (handle multiple param groups)
@@ -330,7 +330,7 @@ class LearningRateTracker(Callback):
     
     def on_epoch_end(self, epoch: int, logs: Dict[str, float]) -> None:
         """Log LR at epoch end (after potential scheduler step)."""
-        if self.trainer is None or self.trainer._optimizer is None:
+        if self.trainer is None or not self.trainer.optimizer_initialized:
             return
         
         lr = self.trainer.optimizer.param_groups[0]['lr']
@@ -427,6 +427,7 @@ class TrainingDiagnostics(Callback):
         self._val_loss_history = []
         self._accuracy_history = []
         self._best_accuracy = 0.0
+        self._best_val_loss = float('inf')
         self._epochs_without_improvement = 0
         self._initial_loss = None
         self._health_history = []
@@ -473,12 +474,20 @@ class TrainingDiagnostics(Callback):
         if accuracy is not None:
             self._accuracy_history.append(accuracy)
             
-            # Check for improvement
+            # Classification: check accuracy improvement (higher is better)
             if accuracy > self._best_accuracy:
                 self._best_accuracy = accuracy
                 self._epochs_without_improvement = 0
             else:
                 self._epochs_without_improvement += 1
+        else:
+            # Regression: check loss improvement (lower is better)
+            if val_loss is not None:
+                if not hasattr(self, '_best_val_loss') or val_loss < self._best_val_loss:
+                    self._best_val_loss = val_loss
+                    self._epochs_without_improvement = 0
+                else:
+                    self._epochs_without_improvement += 1
         
         # === Health Checks ===
         
@@ -666,6 +675,7 @@ def create_standard_monitoring(
     include_diagnostics: bool = True,
     include_lr_tracker: bool = True,
     include_per_class: bool = True,
+    **kwargs,
 ) -> List[Callback]:
     """
     Create a standard set of monitoring callbacks.
@@ -675,6 +685,8 @@ def create_standard_monitoring(
         include_diagnostics: Include TrainingDiagnostics.
         include_lr_tracker: Include LearningRateTracker.
         include_per_class: Include PerClassMetricsTracker.
+        **kwargs: Additional options. Supports 'task_type' to skip
+            per-class tracking for regression tasks.
     
     Returns:
         List of monitoring callbacks.
@@ -693,7 +705,8 @@ def create_standard_monitoring(
     if include_lr_tracker:
         callbacks.append(LearningRateTracker())
     
-    if include_per_class:
+    task_type = kwargs.get('task_type', 'multiclass')
+    if include_per_class and task_type != 'regression':
         callbacks.append(PerClassMetricsTracker())
     
     return callbacks

@@ -1,0 +1,32 @@
+# =============================================================================
+# NVDA XGBoost Baseline — ARCX H60 (1 Minute Horizon)
+# =============================================================================
+#
+# Cross-exchange comparison: same model on ARCX (NYSE Arca) data.
+# Profiler found: ARCX OFI-return r is 14pp higher than XNAS at 1s.
+# Expect: higher OFI importance on ARCX, similar overall accuracy.
+#
+# Usage:
+#   python scripts/train_xgboost_baseline.py \
+#       --config configs/experiments/nvda_xgboost_baseline_arcx_h60.yaml
+# =============================================================================
+
+experiment:
+  name: "NVDA XGBoost Baseline H60 — ARCX"
+  description: "Cross-exchange comparison: XGBoost on 119 features at 1-minute horizon (ARCX)"
+
+data:
+  data_dir: "../data/exports/nvda_arcx_128feat"
+  feature_preset: "analysis_ready_128"
+  horizon_idx: 3
+
+model:
+  n_estimators: 500
+  max_depth: 6
+  learning_rate: 0.05
+  subsample: 0.8
+  colsample_bytree: 0.8
+  early_stopping_rounds: 50
+
+output:
+  output_dir: "outputs/xgboost_baseline_arcx_h60"

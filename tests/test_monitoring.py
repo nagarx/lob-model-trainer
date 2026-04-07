@@ -54,9 +54,9 @@ def mock_trainer(simple_model, tmp_path):
     """Create a mock trainer object."""
     trainer = MagicMock()
     trainer.model = simple_model
-    trainer._model = simple_model
-    trainer._optimizer = torch.optim.SGD(simple_model.parameters(), lr=0.01)
-    trainer.optimizer = trainer._optimizer
+    trainer.model_initialized = True
+    trainer.optimizer_initialized = True
+    trainer.optimizer = torch.optim.SGD(simple_model.parameters(), lr=0.01)
     trainer.config = MagicMock()
     trainer.config.output_dir = str(tmp_path)
     trainer.output_dir = tmp_path
@@ -575,8 +575,8 @@ class TestMonitoringIntegration:
         
         trainer = MagicMock()
         trainer.model = simple_model
-        trainer._model = simple_model
-        trainer._optimizer = optimizer
+        trainer.model_initialized = True
+        trainer.optimizer_initialized = True
         trainer.optimizer = optimizer
         trainer.config = MagicMock()
         trainer.config.output_dir = str(tmp_path)

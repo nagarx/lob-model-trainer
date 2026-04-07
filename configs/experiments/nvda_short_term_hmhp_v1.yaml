@@ -1,0 +1,234 @@
+# =============================================================================
+# Short-Term HMHP Experiment: H10/H20 with 40 Evidence-Based Features
+# =============================================================================
+#
+# PURPOSE: Optimized short-term predictor for intraday options trading on NVDA
+#
+# This experiment is designed for:
+# - Very short-term prediction (1-2 seconds ahead)
+# - Options trading where quick directional moves matter most
+# - Evidence-based feature selection from correlation analysis
+#
+# DESIGN PHILOSOPHY:
+# - Focus: Only H10 (100ms) and H20 (200ms) horizons
+# - Features: 40 carefully selected features with highest H10/H20 correlation
+# - Reduced Noise: Fewer features = less overfitting risk
+# - Faster: Smaller model, faster training and inference
+#
+# MODEL: HMHP-Lite (Short-Term Variant)
+# - Shared TLOB encoder with BiN normalization
+# - Only 2 horizon decoders (H10 → H20 cascade)
+# - Confirmation module for H10/H20 agreement
+#
+# FEATURE SELECTION EVIDENCE (from nvda_116_correlation/horizon_correlations.json):
+# 
+# Top Predictors at H10:
+# | Feature            | Index | Correlation | Type        |
+# |--------------------|-------|-------------|-------------|
+# | depth_norm_ofi     | 85    | +0.289      | Core Signal |
+# | net_trade_flow     | 56    | +0.259      | Order Flow  |
+# | trade_asymmetry    | 88    | +0.259      | Core Signal |
+# | volume_imbalance   | 45    | -0.253      | Derived     |
+# | true_ofi           | 84    | +0.242      | Core Signal |
+# | executed_pressure  | 86    | +0.201      | Core Signal |
+# | net_order_flow     | 54    | +0.178      | Order Flow  |
+# | trade_rate_bid     | 52    | -0.135      | Order Flow  |
+# | trade_rate_ask     | 53    | +0.128      | Order Flow  |
+#
+# HYPOTHESIS:
+# By focusing on the most predictive features for short horizons,
+# we reduce noise and improve signal-to-noise ratio for rapid trading decisions.
+#
+# EXPECTED PERFORMANCE:
+# - H10 accuracy: 46-48% (higher than 116-feature baseline)
+# - H20 accuracy: 43-45%
+# - Agreement ratio: >0.70 (H10/H20 often agree for genuine moves)
+# - Inference latency: <5ms per batch
+#
+# =============================================================================
+
+name: HMHP_NVDA_ShortTerm_v1
+description: |
+  Short-term focused HMHP with H10/H20 horizons and 40 evidence-based features.
+  Designed for intraday options trading with emphasis on quick directional predictions.
+  Evidence-based feature selection from correlation analysis.
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  # Path to the 116-feature export (source data)
+  data_dir: "../data/exports/nvda_116feat_full_analysis"
+  
+  # SOURCE data has 116 features (normalization computed on all 116)
+  feature_count: 116
+  
+  # FEATURE SELECTION: Use short_term_40 preset
+  # This selects 40 evidence-based features optimized for H10/H20 prediction
+  # Selection happens AFTER normalization to preserve normalizer compatibility
+  # 
+  # Preset includes:
+  # - L1-L2 book microstructure (8 features)
+  # - Derived features including volume_imbalance (7 features)
+  # - Order flow dynamics (9 features)
+  # - Flow indicators (3 features)
+  # - Primary trading signals (8 features)
+  # - Safety gates (3 features)
+  # - Institutional patience (2 features with H10 correlation)
+  feature_preset: short_term_40
+  
+  # Labeling strategy: TLOB (Down/Stable/Up)
+  labeling_strategy: tlob
+  num_classes: 3
+  
+  # HMHP MODE: horizon_idx will be set to None automatically
+  horizon_idx: 0  # Overridden to None for HMHP
+  
+  # Sequence configuration (matches export)
+  sequence:
+    window_size: 100
+    stride: 10
+  
+  # Normalization: hybrid for the full 116-feature source
+  # Note: Normalization computed on ALL 116 features, then selection applied
+  normalization:
+    strategy: hybrid
+    eps: 1.0e-8
+    clip_value: 10.0
+    # Exclude categorical features from normalization
+    # TIME_REGIME (93) is in our selection, so we exclude it
+    exclude_features: [93, 111]
+
+# =============================================================================
+# Model Configuration (Short-Term HMHP)
+# =============================================================================
+model:
+  model_type: hmhp
+  
+  # INPUT SIZE MUST MATCH SELECTED FEATURE COUNT (40)
+  # This is validated at runtime - config error if mismatch
+  input_size: 40
+  
+  num_classes: 3
+  dropout: 0.15  # Slightly higher for smaller feature set (regularization)
+  
+  # SHORT-TERM HORIZONS ONLY
+  # Only H10 and H20 for rapid trading decisions
+  # H10 = ~1 second ahead, H20 = ~2 seconds ahead
+  hmhp_horizons:
+    - 10    # ~1 second: Immediate order flow impact
+    - 20    # ~2 seconds: Short-term momentum confirmation
+  
+  # Cascade Mode: H10 → H20 state passing
+  # With only 2 horizons, cascade is simpler but still valuable
+  hmhp_cascade_mode: full
+  
+  # State Fusion: gated for learned importance
+  hmhp_state_fusion: gate
+  
+  # Encoder Architecture
+  # Using TLOB encoder for temporal patterns in short windows
+  hmhp_encoder_type: tlob
+  hmhp_encoder_hidden_dim: 48  # Reduced from 64 (fewer features)
+  hmhp_num_encoder_layers: 2
+  
+  # Decoder Architecture (per-horizon)
+  # Compact decoders for 2-horizon setup
+  hmhp_decoder_hidden_dim: 24  # Reduced from 32
+  hmhp_state_dim: 24           # Reduced from 32
+  
+  # Confirmation Module: H10/H20 agreement
+  # Critical for filtering false positives
+  hmhp_use_confirmation: true
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+train:
+  # Batch size: Can be larger with fewer features
+  batch_size: 64
+  
+  # Learning rate: Standard for smaller model
+  learning_rate: 1.0e-4
+  
+  # L2 regularization (moderate)
+  weight_decay: 1.0e-5
+  
+  # Maximum epochs (may converge faster with focused features)
+  epochs: 50
+  
+  # Early stopping patience
+  early_stopping_patience: 12
+  
+  # Gradient clipping for stability
+  gradient_clip_norm: 1.0
+  
+  # Learning rate scheduler
+  scheduler: cosine
+  
+  # DataLoader workers
+  num_workers: 4
+  
+  # Pin memory for faster GPU transfer
+  pin_memory: true
+  
+  # Random seed for reproducibility
+  seed: 42
+  
+  # Disable mixed precision for numerical stability
+  mixed_precision: false
+  
+  # Note: HMHP uses built-in multi-task loss
+  loss_type: weighted_ce
+  use_class_weights: true
+  task_type: multiclass
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output_dir: outputs/experiments/nvda_short_term_hmhp_v1
+log_level: INFO
+
+tags:
+  - nvda
+  - hmhp
+  - short-term
+  - h10-h20
+  - feature-selection
+  - options-trading
+  - intraday
+  - experiment
+
+# =============================================================================
+# COMPARISON METRICS (vs full 116-feature HMHP)
+# =============================================================================
+#
+# This experiment tests the hypothesis that focused feature selection
+# improves short-term prediction quality.
+#
+# BASELINE COMPARISON (nvda_hmhp_multihorizon_v1):
+# - Features: 116 (all)
+# - Horizons: 5 (H10, H20, H50, H100, H200)
+# - H10 accuracy: ~45%
+# - H20 accuracy: ~43%
+#
+# THIS EXPERIMENT:
+# - Features: 40 (evidence-based selection)
+# - Horizons: 2 (H10, H20 only)
+# - Target H10 accuracy: 47%+ (improvement from reduced noise)
+# - Target H20 accuracy: 44%+ (better cascade with only 2 horizons)
+#
+# KEY METRICS TO COMPARE:
+# 1. H10/H20 accuracy vs baseline
+# 2. Agreement ratio (should be higher with only 2 horizons)
+# 3. Training time (should be faster)
+# 4. Inference latency (should be lower)
+# 5. Overfitting (val vs train gap should be smaller)
+#
+# SUCCESS CRITERIA:
+# - H10 accuracy >= 46% (baseline ~45%)
+# - H20 accuracy >= 43% (baseline ~42%)
+# - Agreement ratio >= 0.65
+# - Training time < 50% of baseline
+#
+# =============================================================================

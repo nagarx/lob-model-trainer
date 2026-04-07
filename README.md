@@ -5,7 +5,7 @@
 
 Machine learning experimentation for limit order book price prediction.
 
-**Version**: 0.4.0 | **Schema**: 2.1
+**Version**: 0.4.0 | **Schema**: 2.2
 
 ---
 
@@ -15,12 +15,13 @@ This package provides tools for training and evaluating ML models on LOB feature
 
 ### Key Features
 
-- **Multiple Model Architectures**: LSTM, GRU, DeepLOB, TLOB (via `lob-models`)
-- **Strategy-Aware Metrics**: Metrics that understand TLOB, Triple Barrier, Opportunity labeling
+- **Multiple Model Architectures**: LSTM, GRU, DeepLOB, TLOB, HMHP, HMHP-R, LogisticLOB, XGBoostLOB, TemporalRidge, TemporalGradBoost (via `lob-models`)
+- **Dual Task Support**: Classification (multiclass, binary) and regression (continuous bps returns)
+- **Strategy-Aware Metrics**: Metrics that understand TLOB, Triple Barrier, Opportunity, Regression labeling
 - **Advanced Monitoring**: Gradient tracking, learning rate monitoring, training diagnostics
-- **Experiment Tracking**: Structured comparison across experiments
+- **Experiment Tracking**: Structured comparison across experiments with EXPERIMENT_INDEX.md
 - **Feature Presets**: Named feature subsets for easy configuration
-- **Focal Loss**: Handle class imbalance effectively
+- **Multiple Losses**: CrossEntropy, Focal, WeightedCE, MSE, Huber, Heteroscedastic, GMADL
 
 ---
 
@@ -41,7 +42,7 @@ python scripts/train.py --config configs/experiments/nvda_tlob_h10_v1.yaml
 
 ---
 
-## Data Contract (Schema v2.1)
+## Data Contract (Schema v2.2)
 
 | Property | Value |
 |----------|-------|
@@ -75,7 +76,7 @@ lob-model-trainer/
 │   │   └── schema.py            # ExperimentConfig, DataConfig, ModelConfig
 │   ├── data/                    # Dataset classes, transforms
 │   │   ├── dataset.py           # DayData, LOBSequenceDataset, LOBFlatDataset
-│   │   └── transforms.py        # ZScoreNormalizer, BinaryLabelTransform
+│   │   └── transforms.py        # FeatureStatistics, BinaryLabelTransform
 │   ├── models/                  # Model implementations
 │   │   ├── lstm.py              # LSTMClassifier, GRUClassifier
 │   │   └── baselines.py         # NaiveClassPrior, NaivePreviousLabel, LogisticBaseline
@@ -100,7 +101,7 @@ lob-model-trainer/
 │   ├── README_configs.md        # Complete config reference
 │   ├── experiments/             # Active experiment configs (3)
 │   └── archive/                 # Reference configs (6)
-└── tests/                       # 14 test modules
+└── tests/                       # 24 test modules
 ```
 
 ---
@@ -195,7 +196,7 @@ All experiments use YAML configuration. See `configs/README_configs.md` for comp
 
 ### `lobtrainer.constants`
 
-Feature index mapping (Schema v2.1):
+Feature index mapping (Schema v2.2):
 
 ```python
 from lobtrainer.constants import (
@@ -205,7 +206,7 @@ from lobtrainer.constants import (
 )
 
 assert FEATURE_COUNT == 98
-assert SCHEMA_VERSION == 2.1
+assert SCHEMA_VERSION == 2.2
 assert FeatureIndex.TRUE_OFI == 84
 
 # Feature presets
@@ -237,7 +238,6 @@ from lobtrainer.models import (
     GRUClassifier,     # GRU variant
     LogisticBaseline,  # Logistic regression baseline
     create_model,      # Factory function from config
-    LOBMODELS_AVAILABLE,  # True if lob-models installed
 )
 
 # DeepLOB/TLOB via create_model (requires lob-models package)
@@ -304,7 +304,7 @@ Labels are shifted for PyTorch compatibility:
 
 The shift happens automatically in `LOBSequenceDataset.__getitem__()`.
 
-### Sign Conventions (Schema v2.1)
+### Sign Conventions (Schema v2.2)
 
 All directional features follow standard convention:
 - `> 0` = BULLISH (buy pressure)
@@ -340,7 +340,7 @@ pytest tests/ -v
 pytest tests/test_trainer.py -v
 ```
 
-**Test Coverage**: 14 test modules covering all core functionality.
+**Test Coverage**: 24 test modules covering all core functionality (classification + regression).
 
 ---
 
@@ -358,10 +358,10 @@ pytest tests/test_trainer.py -v
 python scripts/train.py --config configs/experiments/nvda_tlob_h10_v1.yaml
 
 # Evaluate model
-python scripts/evaluate_model.py --checkpoint outputs/best.pt
+python scripts/analysis/evaluate_model.py --checkpoint outputs/best.pt
 
 # Run baseline comparison
-python scripts/run_baseline_evaluation.py --data-dir ../data/exports/nvda_11month_complete
+python scripts/analysis/run_baseline_evaluation.py --data-dir ../data/exports/nvda_11month_complete
 ```
 
 ---

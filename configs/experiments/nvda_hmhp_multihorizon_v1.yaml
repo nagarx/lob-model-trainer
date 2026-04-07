@@ -1,0 +1,243 @@
+# =============================================================================
+# HMHP Experiment: Hierarchical Multi-Horizon Predictor v1
+# =============================================================================
+#
+# This experiment trains the HMHP (Hierarchical Multi-Horizon Predictor) model
+# which predicts across multiple horizons simultaneously with cascading state
+# passing and cross-horizon confirmation.
+#
+# MODEL: HMHP (Custom architecture)
+# - Shared TLOB-based encoder with BiN normalization
+# - Per-horizon decoders with gated state fusion
+# - Cascading state from short to long horizons (H10 → H20 → H50 → H100 → H200)
+# - Confirmation module for cross-horizon agreement and ensemble prediction
+#
+# DATA: nvda_11month_complete export (or 116-feature extended export)
+# - Multi-horizon labels [10, 20, 50, 100, 200]
+# - Using horizon_idx=None (all horizons for HMHP)
+#
+# KEY INSIGHT (from signal analysis):
+# - depth_norm_ofi has predictive power ~0.29 at H10 but decays to ~0.05 at H200
+# - Different features excel at different horizons (mixture-of-experts concept)
+# - Cross-horizon confirmation filters false positives
+#
+# HYPOTHESIS:
+# Cascading shorter-horizon predictions can:
+# 1. Provide temporal anchoring for longer-horizon predictions
+# 2. Improve consistency across horizons (agreement_ratio)
+# 3. Filter noisy predictions via confirmation module
+#
+# EXPECTED PERFORMANCE:
+# - Per-horizon accuracy: H10 ~45%, H200 ~38%
+# - Agreement ratio: >0.6 (horizons mostly agree)
+# - Ensemble accuracy: Better than individual horizons
+#
+# =============================================================================
+
+name: HMHP_NVDA_MultiHorizon_v1
+description: |
+  Hierarchical Multi-Horizon Predictor (HMHP) on 11-month NVDA dataset.
+  First experiment with cascading state and cross-horizon confirmation.
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  # Path to the 116-feature export with multi-horizon labels
+  data_dir: "../data/exports/nvda_116feat_full_analysis"
+  
+  # 116 features: 98 standard + 18 experimental (institutional_v2, volatility, seasonality)
+  feature_count: 116
+  
+  # Labeling strategy: TLOB (Down/Stable/Up)
+  labeling_strategy: tlob
+  num_classes: 3
+  
+  # HMHP MODE: horizon_idx=None returns all horizons as dict
+  # This is automatically set by trainer for HMHP models
+  horizon_idx: 0  # Will be overridden to None for HMHP
+  
+  # Sequence configuration (matches export)
+  sequence:
+    window_size: 100
+    stride: 10
+  
+  # Normalization: hybrid for full 116-feature set
+  # - Global Z-score for raw LOB (indices 0-39)
+  # - Per-feature Z-score for derived/MBO/signals (indices 40-115)
+  normalization:
+    strategy: hybrid
+    eps: 1.0e-8
+    clip_value: 10.0
+    # Exclude categorical features from normalization
+    exclude_features: [93, 111]  # TIME_REGIME (93), VOL_REGIME (111)
+
+# =============================================================================
+# Model Configuration (HMHP)
+# =============================================================================
+model:
+  model_type: hmhp
+  input_size: 116  # Must match data.feature_count
+  num_classes: 3
+  dropout: 0.1
+  
+  # HMHP Horizons: Match the export label horizons
+  hmhp_horizons:
+    - 10    # ~1 second: Immediate order flow impact
+    - 20    # ~2 seconds: Short-term momentum
+    - 50    # ~5 seconds: Medium-term trend
+    - 100   # ~10 seconds: Longer-term direction
+    - 200   # ~20 seconds: Extended outlook
+  
+  # Cascade Mode: How state flows between horizon decoders
+  # 'full': All horizons receive state from previous (recommended)
+  # 'none': Independent decoders (ablation baseline)
+  # 'selective': Custom connections
+  hmhp_cascade_mode: full
+  
+  # State Fusion: How previous horizon state is combined
+  # 'gate': Learned gating (most flexible, recommended)
+  # 'add': Simple addition
+  # 'concat': Concatenation
+  hmhp_state_fusion: gate
+  
+  # Encoder Architecture
+  # 'tlob': Transformer with BiN (best for temporal patterns)
+  # 'linear': Simple MLP (faster, less capacity)
+  hmhp_encoder_type: tlob
+  hmhp_encoder_hidden_dim: 64
+  hmhp_num_encoder_layers: 2
+  
+  # Decoder Architecture (per-horizon)
+  hmhp_decoder_hidden_dim: 32
+  hmhp_state_dim: 32
+  
+  # Confirmation Module: Cross-horizon agreement and ensemble
+  hmhp_use_confirmation: true
+  
+  # Optional: Feature emphasis by horizon (mixture-of-experts)
+  # Based on signal analysis - can be null to use all features equally
+  # Uncomment and customize to emphasize specific features per horizon
+  # hmhp_optimal_features_by_horizon:
+  #   10: [85, 88, 84, 86]   # depth_norm_ofi, trade_asymmetry, true_ofi, exec_pressure
+  #   20: [85, 88, 84, 86]
+  #   50: [85, 88, 84, 86, 90]  # Add fragility_score
+  #   100: [85, 84, 90, 88]
+  #   200: [85, 84, 90, 88]
+  
+  # Optional: Custom loss weights per horizon
+  # If null, auto-computed (shorter horizons get higher weight)
+  # hmhp_loss_weights:
+  #   H10: 0.25
+  #   H20: 0.20
+  #   H50: 0.15
+  #   H100: 0.10
+  #   H200: 0.10
+  #   consistency: 0.10
+  #   final: 0.10
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+train:
+  # Batch size: HMHP is memory intensive, start smaller
+  batch_size: 32
+  
+  # Learning rate: Conservative for multi-task learning
+  learning_rate: 5.0e-5
+  
+  # L2 regularization
+  weight_decay: 1.0e-5
+  
+  # Maximum epochs
+  epochs: 50
+  
+  # Early stopping patience
+  early_stopping_patience: 15
+  
+  # Gradient clipping for stability with multiple loss terms
+  gradient_clip_norm: 1.0
+  
+  # Learning rate scheduler
+  scheduler: cosine
+  
+  # DataLoader workers
+  num_workers: 4
+  
+  # Pin memory for faster GPU transfer
+  pin_memory: true
+  
+  # Random seed for reproducibility
+  seed: 42
+  
+  # Disable mixed precision for stability with multi-task loss
+  mixed_precision: false
+  
+  # Note: HMHP uses its own built-in multi-task loss
+  # These settings are for reference, not used by HMHP
+  loss_type: weighted_ce
+  use_class_weights: true
+  task_type: multiclass
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output_dir: outputs/experiments/nvda_hmhp_multihorizon_v1
+log_level: INFO
+
+tags:
+  - nvda
+  - hmhp
+  - multi-horizon
+  - cascade
+  - confirmation
+  - 11month
+  - experiment
+
+# =============================================================================
+# KEY METRICS TO MONITOR
+# =============================================================================
+#
+# HMHP provides rich multi-horizon metrics:
+#
+# 1. TOTAL LOSS (val_loss): Combined weighted multi-task loss
+#    Includes per-horizon losses + consistency + final losses
+#
+# 2. PER-HORIZON LOSSES (val_h10_loss, val_h20_loss, etc.)
+#    Track which horizons are easier/harder to predict
+#    Expected: H10 < H200 (shorter horizons easier)
+#
+# 3. PER-HORIZON ACCURACY (val_h10_accuracy, val_h20_accuracy, etc.)
+#    Classification accuracy for each prediction horizon
+#    Expected: H10 ~45%, H200 ~38%
+#
+# 4. AGREEMENT RATIO (val_agreement_ratio)
+#    Fraction of samples where all horizons predict same direction
+#    High agreement = confident prediction
+#    Target: > 0.6
+#
+# 5. CONFIRMATION SCORE (val_confirmation_score)
+#    Confidence-weighted ensemble agreement
+#    Higher = more confident predictions
+#
+# 6. FINAL ACCURACY (val_accuracy)
+#    Ensemble prediction accuracy (weighted combination)
+#    Target: Better than best individual horizon
+#
+# 7. CONSISTENCY LOSS (val_consistency_loss)
+#    Measures cross-horizon prediction disagreement
+#    Lower = more consistent predictions across horizons
+#
+# MONITORING PATTERN:
+# Good training shows:
+#   - All per-horizon losses decreasing
+#   - Agreement ratio increasing (predictions becoming consistent)
+#   - Final accuracy exceeding individual horizon accuracies
+#   - Consistency loss decreasing
+#   - No divergence between train and val
+#
+# WARNING SIGNS:
+#   - One horizon stuck while others improve (cascade issue)
+#   - Agreement ratio collapsing (predictions diverging)
+#   - Final accuracy lower than best individual (confirmation not helping)
+# =============================================================================

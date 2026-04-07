@@ -62,8 +62,8 @@ class TestFeatureCounts:
         assert SIGNAL_FEATURE_COUNT == 14
     
     def test_schema_version(self):
-        """Schema version should be 2.1 (sign convention fixes)."""
-        assert SCHEMA_VERSION == 2.1
+        """Schema version should be 2.2 (MBO core renames + experimental features)."""
+        assert SCHEMA_VERSION == "2.2"
 
 
 class TestFeatureIndexRanges:
@@ -86,13 +86,13 @@ class TestFeatureIndexRanges:
         """MBO features should be 48-83."""
         assert MBO_ALL == slice(48, 84)
         assert FeatureIndex.ADD_RATE_BID == 48
-        assert FeatureIndex.ORDER_COUNT_ACTIVE == 83
+        assert FeatureIndex.ACTIVE_ORDER_COUNT == 83
     
     def test_signal_range(self):
         """Signal features should be 84-97."""
         assert SIGNALS_ALL == slice(84, 98)
         assert FeatureIndex.TRUE_OFI == 84
-        assert FeatureIndex.SCHEMA_VERSION_FEATURE == 97
+        assert FeatureIndex.SCHEMA_VERSION == 97
 
 
 class TestCriticalIndices:
@@ -133,7 +133,7 @@ class TestSignalIndex:
         """SignalIndex values should match FeatureIndex."""
         assert SignalIndex.TRUE_OFI == FeatureIndex.TRUE_OFI
         assert SignalIndex.BOOK_VALID == FeatureIndex.BOOK_VALID
-        assert SignalIndex.SCHEMA_VERSION == FeatureIndex.SCHEMA_VERSION_FEATURE
+        assert SignalIndex.SCHEMA_VERSION == FeatureIndex.SCHEMA_VERSION
     
     def test_signal_index_count(self):
         """SignalIndex should have 14 members."""

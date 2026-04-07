@@ -44,24 +44,25 @@ from lobtrainer.models.lstm import (
     create_gru,
 )
 
-# Conditional import of lobmodels (external dependency)
-try:
-    from lobmodels import (
-        DeepLOB,
-        DeepLOBConfig,
-        FeatureLayout,
-        # TLOB imports (Berti & Kasneci 2025)
-        TLOB,
-        TLOBConfig,
-    )
-    LOBMODELS_AVAILABLE = True
-except ImportError:
-    LOBMODELS_AVAILABLE = False
-    DeepLOB = None
-    DeepLOBConfig = None
-    FeatureLayout = None
-    TLOB = None
-    TLOBConfig = None
+# lobmodels is a declared dependency (lob-models in pyproject.toml)
+from lobmodels import (
+    DeepLOB,
+    DeepLOBConfig,
+    FeatureLayout,
+    # TLOB imports (Berti & Kasneci 2025)
+    TLOB,
+    TLOBConfig,
+    # LogisticLOB baseline
+    LogisticLOB,
+    LogisticLOBConfig,
+    SequencePooling,
+    # HMHP imports (Hierarchical Multi-Horizon Predictor)
+    HierarchicalMultiHorizonPredictor,
+    HMHPConfig,
+    CascadeMode,
+    StateFusion,
+    create_hmhp,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +83,6 @@ __all__ = [
     "create_model",
     "create_lstm",
     "create_gru",
-    # Availability flags
-    "LOBMODELS_AVAILABLE",
 ]
 
 
@@ -92,144 +91,99 @@ __all__ = [
 # =============================================================================
 
 
-def create_model(config) -> nn.Module:
+def create_model(config, *, sequence_length: int = 100) -> nn.Module:
     """
-    Create a model from configuration.
-    
+    Create a model from configuration using the ModelRegistry.
+
+    The model's architecture-specific parameters come from config.params,
+    which is auto-populated from legacy flat fields in ModelConfig.__post_init__
+    for backward compatibility with existing YAML configs.
+
+    Injected parameters (not in params dict, added automatically):
+        - sequence_length: from data.sequence.window_size
+        - task_type: from train.task_type (for classification vs regression head)
+
     Args:
-        config: ModelConfig or dict with model settings
-    
+        config: ModelConfig with name/model_type and params dict.
+        sequence_length: Temporal dimension of input sequences. Default: 100.
+
     Returns:
-        PyTorch model instance
-    
+        PyTorch model instance.
+
     Raises:
-        ValueError: If model type is not recognized
-        ImportError: If DeepLOB is requested but lobmodels is not installed
-    
-    Example:
-        >>> from lobtrainer.config import ModelConfig, ModelType
-        >>> config = ModelConfig(model_type=ModelType.LSTM, hidden_size=64)
-        >>> model = create_model(config)
-        >>> 
-        >>> # DeepLOB model
-        >>> config = ModelConfig(model_type=ModelType.DEEPLOB)
-        >>> model = create_model(config)
+        ValueError: If model name is not registered.
+        ImportError: If lobmodels package is not installed.
     """
-    from lobtrainer.config import ModelConfig, ModelType, DeepLOBMode
-    
-    # Handle dict input
+    from lobtrainer.config import ModelConfig, ModelType
+    from lobmodels.registry import ModelRegistry
+
     if isinstance(config, dict):
         config = ModelConfig(**config)
-    
-    model_type = config.model_type
-    
-    if model_type == ModelType.LSTM:
-        # Get attention parameter, default to False for backward compatibility
-        attention = getattr(config, 'lstm_attention', False)
-        lstm_config = LSTMConfig(
-            input_size=config.input_size,
-            hidden_size=config.hidden_size,
-            num_layers=config.num_layers,
-            num_classes=config.num_classes,
-            dropout=config.dropout,
-            bidirectional=config.lstm_bidirectional,
-            attention=attention,
-        )
-        model = LSTMClassifier(lstm_config)
-        logger.info(f"Created {model.name}")
-        return model
-    
-    elif model_type == ModelType.GRU:
-        lstm_config = LSTMConfig(
-            input_size=config.input_size,
-            hidden_size=config.hidden_size,
-            num_layers=config.num_layers,
-            num_classes=config.num_classes,
-            dropout=config.dropout,
-            bidirectional=config.lstm_bidirectional,
-        )
-        model = GRUClassifier(lstm_config)
-        logger.info(f"Created {model.name}")
-        return model
-    
-    elif model_type == ModelType.LOGISTIC:
+
+    model_name = config.name
+
+    # HMHP models use their own factory functions (they need sequence_length
+    # in the factory call, not in the config). Delegate to lobmodels factories.
+    if model_name in ("hmhp", "hmhp_regressor"):
+        return _create_hmhp_model(config, sequence_length)
+
+    # All other models: use ModelRegistry
+    try:
+        entry = ModelRegistry.get(model_name)
+    except KeyError:
+        available = ModelRegistry.list_models()
         raise ValueError(
-            "LogisticBaseline uses sklearn interface, not PyTorch. "
-            "Use LogisticBaseline class directly."
+            f"Unknown model '{model_name}'. "
+            f"Available models: {available}"
         )
-    
-    elif model_type == ModelType.XGBOOST:
-        raise NotImplementedError(
-            "XGBoost model not yet implemented in PyTorch trainer. "
-            "Use LogisticBaseline or LSTM for now."
-        )
-    
-    elif model_type == ModelType.TRANSFORMER:
-        raise NotImplementedError(
-            "TransformerClassifier not yet implemented. "
-            "Use LSTM or GRU for now."
-        )
-    
-    elif model_type == ModelType.DEEPLOB:
-        if not LOBMODELS_AVAILABLE:
-            raise ImportError(
-                "lobmodels package is required for DeepLOB. "
-                "Install it with: pip install -e ../lob-models"
-            )
-        
-        # Map lobtrainer DeepLOBMode to lobmodels mode string
-        mode_str = config.deeplob_mode.value  # "benchmark" or "extended"
-        
-        # Create DeepLOBConfig from lobmodels
-        deeplob_config = DeepLOBConfig(
-            mode=mode_str,
-            feature_layout=FeatureLayout.GROUPED,  # Our data uses grouped layout
-            num_levels=config.deeplob_num_levels,
-            sequence_length=100,  # Standard DeepLOB input length
-            num_classes=config.num_classes,
-            conv_filters=config.deeplob_conv_filters,
-            inception_filters=config.deeplob_inception_filters,
-            lstm_hidden=config.deeplob_lstm_hidden,
-            lstm_layers=1,  # Paper uses single layer
-            dropout=config.dropout,
-        )
-        
-        model = DeepLOB(deeplob_config)
-        logger.info(f"Created {model.name}")
-        return model
-    
-    elif model_type == ModelType.TLOB:
-        if not LOBMODELS_AVAILABLE:
-            raise ImportError(
-                "lobmodels package is required for TLOB. "
-                "Install it with: pip install -e ../lob-models"
-            )
-        
-        # Create TLOBConfig from lobmodels
-        # Reference: Berti & Kasneci (2025), "TLOB: A Novel Transformer Model..."
-        tlob_config = TLOBConfig(
-            num_features=config.input_size,
-            sequence_length=100,  # Standard window size from Rust export
-            num_classes=config.num_classes,
-            hidden_dim=config.tlob_hidden_dim,
-            num_layers=config.tlob_num_layers,
-            num_heads=config.tlob_num_heads,
-            mlp_expansion=config.tlob_mlp_expansion,
-            use_sinusoidal_pe=config.tlob_use_sinusoidal_pe,
-            use_bin=config.tlob_use_bin,
-            dropout=config.dropout,
-            dataset_type=config.tlob_dataset_type,
-        )
-        
-        model = TLOB(tlob_config)
+
+    # Build params: start from config.params, inject sequence_length if accepted
+    import inspect
+    params = {**config.params}
+    config_sig = inspect.signature(entry.config_class.__init__)
+    if "sequence_length" in config_sig.parameters and "sequence_length" not in params:
+        params["sequence_length"] = sequence_length
+
+    # LogisticLOB needs SequencePooling enum conversion
+    if model_name == "logistic_lob" and "pooling" in params:
+        if isinstance(params["pooling"], str):
+            params["pooling"] = SequencePooling(params["pooling"])
+
+    # Construct model via registry
+    model_config = entry.config_class(**params)
+    model = entry.model_class(model_config)
+
+    num_params = sum(p.numel() for p in model.parameters())
+    logger.info(f"Created {model_name} via registry ({num_params:,} params)")
+    return model
+
+
+def _create_hmhp_model(config, sequence_length: int) -> nn.Module:
+    """Create HMHP or HMHP-R model via lobmodels factory functions.
+
+    HMHP factories accept individual keyword arguments rather than a config
+    object, so we unpack config.params into the factory call.
+    """
+    params = {**config.params}
+    params["sequence_length"] = sequence_length
+
+    if config.name == "hmhp":
+        # create_hmhp() accepts num_classes as explicit kwarg
+        params["num_classes"] = config.num_classes
+        model = create_hmhp(**params)
         logger.info(
-            f"Created {model.name} with {model.num_parameters:,} parameters "
-            f"(hidden_dim={config.tlob_hidden_dim}, layers={config.tlob_num_layers})"
+            f"Created HMHP via factory ({model.num_parameters:,} params, "
+            f"horizons={config.hmhp_horizons})"
         )
-        return model
-    
     else:
-        raise ValueError(f"Unknown model type: {model_type}")
+        from lobmodels.models.hmhp_regressor import create_hmhp_regressor
+        model = create_hmhp_regressor(**params)
+        logger.info(
+            f"Created HMHP-R via factory ({model.num_parameters:,} params, "
+            f"horizons={config.hmhp_horizons})"
+        )
+
+    return model
 
 
 def get_model_info(model: nn.Module) -> dict:

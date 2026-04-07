@@ -1,0 +1,77 @@
+# =============================================================================
+# LogisticLOB Baseline Experiment
+# =============================================================================
+#
+# Purpose: Establish performance floor with simple linear model
+#
+# This experiment trains a logistic regression model on our full 98-feature
+# dataset to understand what a simple linear model can achieve. Any complex
+# model (DeepLOB, TLOB) should significantly beat this baseline to demonstrate
+# it's learning meaningful non-linear patterns rather than exploiting label
+# autocorrelation.
+#
+# Expected behavior:
+# - Fast training (~seconds per epoch)
+# - Interpretable: feature importance from coefficients
+# - Baseline accuracy to beat: should be > class prior (~33%)
+#
+# Reference: RULE.md §0 (Research-Backed Implementation baseline)
+# =============================================================================
+
+name: "nvda_logistic_baseline_v1"
+description: "LogisticLOB baseline on 98 features with last-timestep pooling"
+
+tags:
+  - "baseline"
+  - "logistic"
+  - "98feat"
+  - "horizon_100"
+
+data:
+  data_dir: "../data/exports/nvda_98feat_v2"
+  feature_count: 98
+  horizon_idx: 3  # H=100 (10 seconds)
+  
+  sequence:
+    window_size: 100
+    stride: 10
+  
+  normalization:
+    strategy: "hybrid"  # Global Z for LOB, per-feature for derived/signals
+    eps: 1e-8
+    clip_value: 10.0
+    exclude_features: [92, 93, 94, 96, 97]  # Safety gates + categorical
+  
+  labeling_strategy: "tlob"
+  num_classes: 3
+  cache_in_memory: true
+
+model:
+  model_type: "logistic"
+  input_size: 98
+  num_classes: 3
+  dropout: 0.0  # No dropout for baseline
+  
+  # Logistic-specific settings
+  logistic_pooling: "last"  # Use last timestep
+  logistic_feature_indices: null  # Use all 98 features
+
+train:
+  batch_size: 256  # Large batch - model is simple
+  learning_rate: 1e-3  # Can use higher LR for linear model
+  weight_decay: 1e-4  # L2 regularization
+  epochs: 50  # Should converge fast
+  early_stopping_patience: 10
+  gradient_clip_norm: null  # Not needed for linear model
+  
+  scheduler: "cosine"
+  num_workers: 4
+  pin_memory: true
+  seed: 42
+  
+  loss_type: "weighted_ce"
+  use_class_weights: true
+  task_type: "multiclass"
+
+output_dir: "outputs/logistic_baseline"
+log_level: "INFO"

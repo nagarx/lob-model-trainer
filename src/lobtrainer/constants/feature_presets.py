@@ -29,7 +29,7 @@ Usage:
 """
 
 from typing import Dict, List, Tuple, Optional
-from lobtrainer.constants.feature_index import FeatureIndex
+from lobtrainer.constants.feature_index import FeatureIndex, ExperimentalFeatureIndex
 
 
 # =============================================================================
@@ -170,6 +170,142 @@ Use case: Extended DeepLOB experiments.
 """
 
 
+# Preset: Short-Term 40 (H10/H20 Optimized)
+PRESET_SHORT_TERM_40: Tuple[int, ...] = (
+    # =========================================================================
+    # L1-L2 Order Book (8 features) - Immediate Liquidity
+    # =========================================================================
+    FeatureIndex.ASK_PRICE_L0,  # 0
+    FeatureIndex.ASK_PRICE_L1,  # 1
+    FeatureIndex.ASK_SIZE_L0,   # 10
+    FeatureIndex.ASK_SIZE_L1,   # 11
+    FeatureIndex.BID_PRICE_L0,  # 20
+    FeatureIndex.BID_PRICE_L1,  # 21
+    FeatureIndex.BID_SIZE_L0,   # 30
+    FeatureIndex.BID_SIZE_L1,   # 31
+    
+    # =========================================================================
+    # Derived Features (7 features) - Book State Summaries
+    # =========================================================================
+    FeatureIndex.MID_PRICE,         # 40: Reference price
+    FeatureIndex.SPREAD,            # 41: Urgency indicator
+    FeatureIndex.SPREAD_BPS,        # 42: Normalized spread
+    FeatureIndex.TOTAL_BID_VOLUME,  # 43: corr -0.08 @ H10
+    FeatureIndex.TOTAL_ASK_VOLUME,  # 44: corr +0.04 @ H10
+    FeatureIndex.VOLUME_IMBALANCE,  # 45: corr -0.25 @ H10 *** HIGH ***
+    FeatureIndex.WEIGHTED_MID_PRICE,  # 46: Microprice (Stoikov)
+    # Note: Excluding PRICE_IMPACT (47) - unsigned, not useful for direction
+    
+    # =========================================================================
+    # Order Flow Dynamics (9 features) - Flow Velocity and Direction
+    # =========================================================================
+    FeatureIndex.ADD_RATE_BID,    # 48: corr +0.07 @ H10
+    FeatureIndex.ADD_RATE_ASK,    # 49: corr -0.07 @ H10
+    FeatureIndex.CANCEL_RATE_BID,  # 50
+    FeatureIndex.CANCEL_RATE_ASK,  # 51
+    FeatureIndex.TRADE_RATE_BID,  # 52: corr -0.14 @ H10 *** MODERATE ***
+    FeatureIndex.TRADE_RATE_ASK,  # 53: corr +0.13 @ H10 *** MODERATE ***
+    FeatureIndex.NET_ORDER_FLOW,  # 54: corr +0.18 @ H10 *** MODERATE ***
+    FeatureIndex.NET_CANCEL_FLOW,  # 55: corr -0.07 @ H10
+    FeatureIndex.NET_TRADE_FLOW,  # 56: corr +0.26 @ H10 *** HIGH ***
+    
+    # =========================================================================
+    # Flow Indicators (3 features) - Conviction and Regime
+    # =========================================================================
+    FeatureIndex.AGGRESSIVE_ORDER_RATIO,  # 57: Conviction indicator
+    FeatureIndex.ORDER_FLOW_VOLATILITY,   # 58: Regime indicator
+    FeatureIndex.FLOW_REGIME_INDICATOR,   # 59: Acceleration indicator
+    
+    # =========================================================================
+    # Primary Trading Signals (8 features) - Core Predictors
+    # =========================================================================
+    FeatureIndex.TRUE_OFI,          # 84: corr +0.24 @ H10 *** HIGH ***
+    FeatureIndex.DEPTH_NORM_OFI,    # 85: corr +0.29 @ H10 *** BEST ***
+    FeatureIndex.EXECUTED_PRESSURE,  # 86: corr +0.20 @ H10 *** HIGH ***
+    FeatureIndex.SIGNED_MP_DELTA_BPS,  # 87: Independent signal cluster
+    FeatureIndex.TRADE_ASYMMETRY,   # 88: corr +0.26 @ H10 *** HIGH ***
+    FeatureIndex.CANCEL_ASYMMETRY,  # 89: corr -0.07 @ H10
+    FeatureIndex.FRAGILITY_SCORE,   # 90: Book vulnerability
+    FeatureIndex.DEPTH_ASYMMETRY,   # 91: corr +0.06 @ H10
+    
+    # =========================================================================
+    # Safety Gates (3 features) - Data Validity
+    # =========================================================================
+    FeatureIndex.BOOK_VALID,   # 92: Required - skip if 0
+    FeatureIndex.TIME_REGIME,  # 93: Categorical - exclude from normalization
+    FeatureIndex.MBO_READY,    # 94: Required - MBO features valid
+    
+    # =========================================================================
+    # Institutional Patience (2 features) - Short-Term Predictive
+    # =========================================================================
+    # Only experimental features with demonstrated correlation at H10
+    ExperimentalFeatureIndex.FILL_PATIENCE_BID,  # 104: corr -0.06 @ H10
+    ExperimentalFeatureIndex.FILL_PATIENCE_ASK,  # 105: corr +0.04 @ H10
+)
+"""
+Short-term optimized features (40 features).
+
+Evidence-based selection for H10/H20 prediction horizons from correlation 
+analysis: lob-dataset-analyzer/analysis/nvda_116_correlation/horizon_correlations.json
+
+Selection criteria:
+- Top 8 trading signals (corr 0.06-0.29 @ H10)
+- Order flow dynamics (corr 0.03-0.18 @ H10)
+- L1-L2 book microstructure for immediate liquidity
+- Key derived features including volume_imbalance (corr -0.25 @ H10)
+- Safety gates for data validity
+- Institutional patience signals (corr 0.04-0.06 @ H10)
+
+Use case: Short-term prediction experiments (H10, H20 horizons).
+Source: Evidence-based feature selection from NVDA 116-feature analysis.
+"""
+
+# Validate SHORT_TERM count
+assert len(PRESET_SHORT_TERM_40) == 40, (
+    f"PRESET_SHORT_TERM_40 should have 40 features, got {len(PRESET_SHORT_TERM_40)}"
+)
+
+
+# Preset: Full 116 features (with experimental, no MLOFI)
+PRESET_FULL_116: Tuple[int, ...] = tuple(range(116))
+"""
+All 116 features (standard + experimental without MLOFI).
+
+Use case: Experiments with experimental groups:
+- Standard 98 features
+- Institutional V2 (98-105)
+- Volatility (106-111)
+- Seasonality (112-115)
+"""
+
+# Preset: Full 128 features (all experimental including MLOFI)
+PRESET_FULL_128: Tuple[int, ...] = tuple(range(128))
+"""
+All 128 features (standard + all experimental including MLOFI).
+
+Includes everything in PRESET_FULL_116 plus:
+- Multi-Level OFI (116-127): total_mlofi, weighted_mlofi, ofi_level_1-10
+  Reference: Kolm, Turiel & Westray (2023), R²_OOS ~0.60 vs ~0.10 for L1 OFI
+"""
+
+# Preset: Analysis-ready 128 features (dead features excluded)
+# Based on FEATURE_SIGNAL_ANALYSIS_REPORT.md Section 1:
+# Dead features (zero variance on XNAS): avg_queue_position(68),
+# queue_size_ahead(69), modification_score(76), iceberg_proxy(77),
+# book_valid(92), mbo_ready(94), invalidity_delta(96),
+# schema_version(97), mod_before_cancel(102)
+_DEAD_FEATURES = frozenset({68, 69, 76, 77, 92, 94, 96, 97, 102})
+PRESET_ANALYSIS_READY_128: Tuple[int, ...] = tuple(
+    i for i in range(128) if i not in _DEAD_FEATURES
+)
+"""
+119 features: all 128 minus 9 dead/constant features.
+
+Use case: Primary training preset for 128-feature exports.
+Excludes features with zero variance identified by the feature analyzer.
+"""
+
+
 # =============================================================================
 # Preset Registry
 # =============================================================================
@@ -178,16 +314,25 @@ FEATURE_PRESETS: Dict[str, Tuple[int, ...]] = {
     "lob_only": PRESET_LOB_ONLY,
     "lob_derived": PRESET_LOB_DERIVED,
     "full": PRESET_FULL,
+    "full_98": PRESET_FULL,  # Alias for clarity
+    "full_116": PRESET_FULL_116,
+    "full_128": PRESET_FULL_128,
+    "analysis_ready_128": PRESET_ANALYSIS_READY_128,
     "signals_core": PRESET_SIGNALS_CORE,
     "signals_full": PRESET_SIGNALS_FULL,
     "lob_signals": PRESET_LOB_SIGNALS,
     "no_meta": PRESET_NO_META,
     "deeplob_extended": PRESET_DEEPLOB_EXTENDED,
+    "short_term_40": PRESET_SHORT_TERM_40,
 }
 """
 Registry of all named presets.
 
 Keys are lowercase identifiers used in configs.
+Common presets:
+- "short_term_40": Evidence-based 40 features for H10/H20 prediction
+- "full_116": All 116 features (standard + experimental)
+- "full" or "full_98": Standard 98 features
 """
 
 
@@ -242,12 +387,15 @@ def describe_preset(name: str) -> str:
     descriptions = {
         "lob_only": "Raw LOB features (40): 10 levels × 4 (ask/bid price/size)",
         "lob_derived": "LOB + derived (48): LOB + spread, microprice, etc.",
-        "full": "All features (98): Complete feature set",
+        "full": "All features (98): Complete standard feature set",
+        "full_98": "All features (98): Complete standard feature set",
+        "full_116": "All features (116): Standard + experimental (institutional, vol, seasonality)",
         "signals_core": "Core signals (8): Most predictive trading signals",
         "signals_full": "All signals (14): Trading signals with validity flags",
         "lob_signals": "LOB + signals (54): Raw LOB + trading signals",
         "no_meta": "No metadata (92): All except validity/schema flags",
         "deeplob_extended": "DeepLOB extended (52): LOB + selected derived + core signals",
+        "short_term_40": "Short-term optimized (40): Evidence-based for H10/H20 prediction",
     }
     return descriptions.get(name.lower(), "No description available")
 

@@ -1,10 +1,13 @@
 # LOB-Model-Trainer: Codebase Technical Reference
 
 > **Version**: 0.4.0  
-> **Last Updated**: January 13, 2026  
+> **Schema**: 2.2 (via `hft-contracts` package)  
+> **Last Updated**: April 6, 2026  
 > **Purpose**: Complete technical reference for LLMs and developers to understand, modify, and extend the codebase.
 >
 > **Scope**: This library focuses solely on **model training**. For dataset analysis, use `lob-dataset-analyzer`.
+>
+> **New in 0.4.0**: Strategy Pattern refactoring — Trainer decomposed from 1,657L to 892L. 4 concrete strategies (Classification, Regression, HMHPClassification, HMHPRegression). Model Registry integration via lob-models. Dead HMHPOutput/HMHPRegressionOutput removed.
 
 ---
 
@@ -48,15 +51,16 @@ Python library for training and evaluating ML models on LOB (Limit Order Book) d
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| **LSTM/GRU Models** | ✅ Complete | Sequence models with optional attention |
-| **DeepLOB** | ✅ Complete | Via `lob-models` package integration |
-| **TLOB** | ✅ Complete | Via `lob-models` package integration |
+| **Strategy Pattern** | ✅ Complete | 4 strategies: Classification, Regression, HMHPClassification, HMHPRegression |
+| **Trainer Orchestrator** | ✅ Complete | 892L (was 1,657L), zero task-branching, delegates to strategy |
+| **All Models via lob-models** | ✅ Complete | 10 registered models (TLOB, DeepLOB, MLPLOB, HMHP, HMHP-R, LSTM, GRU, LogisticLOB, Ridge, GradBoost) |
 | **Strategy-Aware Metrics** | ✅ Complete | MetricsCalculator for TLOB/Triple Barrier/Opportunity |
 | **Focal Loss** | ✅ Complete | For class imbalance handling |
 | **Multi-Horizon Labels** | ✅ Complete | Support for multiple prediction horizons |
+| **HMHP Regression** | ✅ Complete | Regression training with precomputed labels |
 | **Experiment Tracking** | ✅ Complete | ExperimentRegistry, comparison tables |
-| **Monitoring Callbacks** | ✅ Complete | Gradient, LR, diagnostics tracking |
-| **Tests** | ✅ Complete | 15 test modules |
+| **Monitoring Callbacks** | ✅ Complete | Gradient, LR, diagnostics tracking (uses public properties) |
+| **Tests** | ✅ Complete | 556 passed, 15 skipped across 24 test modules |
 
 ### Core Dependencies
 
@@ -91,18 +95,28 @@ src/lobtrainer/
 ├── data/
 │   ├── __init__.py                # Module exports
 │   ├── dataset.py                 # DayData, LOBFlatDataset, LOBSequenceDataset
-│   └── transforms.py              # ZScoreNormalizer, BinaryLabelTransform
+│   ├── feature_selector.py        # FeatureSelector (frozen dataclass, preset/custom indices)
+│   ├── transforms.py              # FeatureStatistics, BinaryLabelTransform, ComposeTransform
+│   └── normalization.py           # HybridNormalizer, GlobalZScoreNormalizer (Welford/Chan streaming)
 │
 ├── models/
-│   ├── __init__.py                # create_model factory, LOBMODELS_AVAILABLE
-│   ├── lstm.py                    # LSTMClassifier, GRUClassifier, LSTMConfig
+│   ├── __init__.py                # create_model (45L, registry-based)
+│   ├── lstm.py                    # LSTMClassifier, GRUClassifier, LSTMConfig (legacy compat)
 │   └── baselines.py               # NaiveClassPrior, NaivePreviousLabel, LogisticBaseline
 │
 ├── training/
-│   ├── __init__.py                # Module exports (30+ symbols)
-│   ├── trainer.py                 # Trainer, TrainingState, create_trainer
+│   ├── __init__.py                # Module exports (40+ symbols)
+│   ├── strategy.py                # TrainingStrategy ABC, BatchResult, create_strategy()
+│   ├── strategies/                # Concrete training strategies (Phase 2)
+│   │   ├── __init__.py            # Exports 4 strategies
+│   │   ├── classification.py      # ClassificationStrategy (criterion + metrics)
+│   │   ├── regression.py          # RegressionStrategy (model.compute_loss)
+│   │   ├── hmhp_classification.py # HMHPClassificationStrategy (per-horizon)
+│   │   └── hmhp_regression.py     # HMHPRegressionStrategy (per-horizon regression)
+│   ├── trainer.py                 # Trainer orchestrator (892L), delegates to strategy
 │   ├── callbacks.py               # EarlyStopping, ModelCheckpoint, MetricLogger
 │   ├── metrics.py                 # MetricsCalculator, ClassificationMetrics
+│   ├── regression_metrics.py     # Thin adapter over hft-metrics (R², IC, MAE, RMSE, DA, PA)
 │   ├── loss.py                    # FocalLoss, BinaryFocalLoss, create_focal_loss
 │   ├── evaluation.py              # BaselineReport, evaluate_model, full_evaluation
 │   └── monitoring.py              # GradientMonitor, TrainingDiagnostics, LRTracker
@@ -112,12 +126,23 @@ src/lobtrainer/
 │   ├── result.py                  # ExperimentResult, ExperimentMetrics
 │   └── registry.py                # ExperimentRegistry, create_comparison_table
 │
+├── calibration/
+│   ├── __init__.py              # Prediction calibration package
+│   └── variance.py              # VarianceCalibrator: post-hoc prediction rescaling (18 tests)
+│
+├── export/
+│   ├── __init__.py              # Signal export public API
+│   ├── exporter.py              # SignalExporter: unified signal export (replaces 3 scripts)
+│   ├── raw_features.py          # RawFeatureExtractor: spread/price from disk via mmap
+│   └── metadata.py              # build_signal_metadata: superset metadata builder
+│
 └── utils/
     ├── __init__.py                # Module exports
     └── reproducibility.py         # set_seed, SeedManager, worker_init_fn
 
 scripts/
 ├── train.py                       # Training CLI
+├── export_signals.py              # Unified signal export CLI (replaces 3 deprecated scripts)
 ├── evaluate_model.py              # Model evaluation CLI
 ├── run_baseline_evaluation.py     # Baseline comparison
 └── validate_export.py             # Dataset validation
@@ -136,17 +161,28 @@ configs/
     ├── nvda_tlob_bigmove_v1.yaml
     └── nvda_tlob_binary_signal_v1.yaml
 
-tests/                             # 14 test modules
+tests/                             # 24 test modules
+├── conftest.py                    # Shared fixtures (rng, day_data_factory, synthetic_export_dir)
 ├── test_baselines.py
+├── test_calibration.py
 ├── test_config.py
 ├── test_deeplob_integration.py
 ├── test_evaluation.py
 ├── test_experiments.py
 ├── test_feature_index.py
 ├── test_feature_presets.py
+├── test_feature_selector.py       # FeatureSelector: presets, validation, selection (25 tests)
 ├── test_integration.py
+├── test_label_shift.py            # Label shift resolution: 4 paths (15 tests)
 ├── test_loss.py
 ├── test_monitoring.py
+├── test_normalization.py          # GlobalZScore, HybridNormalizer, Welford, streaming (32 tests)
+├── test_normalization_integration.py  # Normalizer as dataset transform (5 tests)
+├── test_regression_dataset.py
+├── test_regression_metrics.py
+├── test_regression_training.py
+├── test_signal_export.py          # SignalExporter, RawFeatureExtractor, metadata (18 tests)
+├── test_standard_regression_training.py
 ├── test_strategy_metrics.py
 ├── test_tlob_integration.py
 ├── test_trainer.py
@@ -202,6 +238,14 @@ IMPORTANT: Labels are shifted by +1 in __getitem__ for PyTorch compatibility.
 ---
 
 ## 4. Constants and Feature Indices
+
+> **Important**: As of v0.2.0, all feature index constants are sourced from the
+> `hft-contracts` package (single source of truth). The `lobtrainer/constants/`
+> module is a thin shim that re-exports from `hft_contracts`, preserving backward
+> compatibility for all existing `from lobtrainer.constants import ...` imports.
+>
+> Source of truth: `contracts/pipeline_contract.toml`  
+> Regenerate: `python contracts/generate_python_contract.py`
 
 ### FeatureIndex (src/lobtrainer/constants/feature_index.py)
 
@@ -336,12 +380,16 @@ class DataConfig:
 ```python
 class ModelType(str, Enum):
     LOGISTIC = "logistic"
-    XGBOOST = "xgboost"      # Not implemented
+    XGBOOST = "xgboost"
     LSTM = "lstm"
     GRU = "gru"
     TRANSFORMER = "transformer"  # Not implemented
     DEEPLOB = "deeplob"
     TLOB = "tlob"
+    HMHP = "hmhp"            # Multi-horizon classification (lob-models)
+    HMHP_REGRESSION = "hmhp_regression"  # Multi-horizon regression (lob-models)
+    TEMPORAL_RIDGE = "temporal_ridge"      # sklearn Ridge + temporal features
+    TEMPORAL_GRADBOOST = "temporal_gradboost"  # sklearn GBR + temporal features
 
 @dataclass
 class ModelConfig:
@@ -380,17 +428,21 @@ class LossType(str, Enum):
     CROSS_ENTROPY = "cross_entropy"
     FOCAL = "focal"
     WEIGHTED_CE = "weighted_ce"
+    MSE = "mse"
+    HUBER = "huber"
+    HETEROSCEDASTIC = "heteroscedastic"
 
 class TaskType(str, Enum):
     MULTICLASS = "multiclass"
     BINARY_SIGNAL = "binary_signal"
+    REGRESSION = "regression"
 
 @dataclass
 class TrainConfig:
     batch_size: int = 64
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
-    epochs: int = 50
+    epochs: int = 100
     early_stopping_patience: int = 10
     gradient_clip_norm: Optional[float] = 1.0
     
@@ -421,6 +473,9 @@ class LabelingStrategy(str, Enum):
     
     OPPORTUNITY = "opportunity"
     """Classes: 0=BigDown, 1=NoOpportunity, 2=BigUp"""
+    
+    REGRESSION = "regression"
+    """Continuous bps returns (float64), no discretization"""
 ```
 
 ---
@@ -434,6 +489,7 @@ data/exports/nvda_11month_complete/
 ├── train/
 │   ├── 2025-02-03_sequences.npy    # [N_seq, 100, 98] float32
 │   ├── 2025-02-03_labels.npy       # [N_seq, 4] int8 (multi-horizon)
+│   ├── 2025-02-03_regression_labels.npy  # [N_seq, H] float64 bps (optional, for HMHP regression)
 │   └── ...
 ├── val/
 │   └── ...
@@ -452,6 +508,7 @@ class DayData:
     features: np.ndarray                   # [N, 98] - flat features
     labels: np.ndarray                     # [N_seq] or [N_seq, n_horizons]
     sequences: Optional[np.ndarray] = None # [N_seq, 100, 98]
+    regression_labels: Optional[np.ndarray] = None  # [N_seq, n_horizons] float64 bps - from feature extractor
     metadata: Optional[Dict] = None
     is_aligned: bool = False
     
@@ -484,6 +541,14 @@ from lobtrainer.data import load_split_data, load_day_data, create_dataloaders
 # Load all days in a split
 train_days: List[DayData] = load_split_data(Path("data/exports/nvda_11month_complete"), "train")
 
+# load_day_data accepts regression_labels_path for HMHP regression
+day = load_day_data(
+    split_dir / "2025-02-03_sequences.npy",
+    split_dir / "2025-02-03_labels.npy",
+    regression_labels_path=split_dir / "2025-02-03_regression_labels.npy",  # optional
+)
+
+# load_split_data auto-detects {day}_regression_labels.npy per day
 # Create dataloaders
 loaders = create_dataloaders(
     data_dir="data/exports/nvda_11month_complete",
@@ -491,6 +556,22 @@ loaders = create_dataloaders(
     horizon_idx=0,
 )
 ```
+
+### Contract Validation at Load Time
+
+As of v0.2.0, `load_split_data()` enforces the pipeline contract at data loading
+boundaries using `hft_contracts.validation`:
+
+1. **Metadata mandatory** (aligned format): Raises `FileNotFoundError` if `{date}_metadata.json` is missing
+2. **Contract validation** (first day only): Calls `validate_export_contract()` which checks:
+   - Schema version matches `hft_contracts.SCHEMA_VERSION`
+   - Feature count in `{FEATURE_COUNT, FULL_FEATURE_COUNT}`
+   - Normalization not applied (safe for Python normalization)
+   - Metadata completeness (warns on missing optional fields)
+   - Label encoding matches contract
+   - Provenance present (warns if missing)
+3. **Expected feature count**: Passes `n_features` from metadata to `DayData.validate()`
+4. **Label shift**: Uses `hft_contracts.get_contract(strategy).shift_for_crossentropy` instead of heuristic detection
 
 ---
 
@@ -506,6 +587,9 @@ class LOBSequenceDataset(Dataset):
     Each item is (sequence, label) where:
     - sequence: [seq_len, n_features] tensor
     - label: scalar tensor (shifted to {0, 1, 2})
+    
+    For HMHP regression: use_precomputed_regression=True loads regression_labels.npy
+    from the feature extractor instead of computing on-the-fly.
     """
     
     def __init__(
@@ -514,6 +598,7 @@ class LOBSequenceDataset(Dataset):
         horizon_idx: Optional[int] = 0,
         feature_indices: Optional[List[int]] = None,
         transform: Optional[Callable] = None,
+        use_precomputed_regression: bool = False,  # Use feature extractor's regression_labels.npy
     ): ...
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -553,24 +638,6 @@ class LOBFlatDataset(Dataset):
 
 ## 8. Data Transforms
 
-### ZScoreNormalizer
-
-```python
-class ZScoreNormalizer:
-    """Z-score normalization with feature exclusion."""
-    
-    def __init__(
-        self,
-        eps: float = 1e-8,
-        clip_value: float = 10.0,
-        exclude_features: Optional[List[int]] = None,  # e.g., [93] for TIME_REGIME
-    ): ...
-    
-    def fit(self, data: np.ndarray) -> 'ZScoreNormalizer': ...
-    def transform(self, data: np.ndarray) -> np.ndarray: ...
-    def fit_transform(self, data: np.ndarray) -> np.ndarray: ...
-```
-
 ### BinaryLabelTransform
 
 ```python
@@ -581,6 +648,23 @@ class BinaryLabelTransform:
         """Classes 0 (Down) and 2 (Up) become 1 (Signal)."""
         ...
 ```
+
+### Normalization Module (`lobtrainer.data.normalization`)
+
+The preferred normalization path. Key difference from `transforms.py`: exclusion
+indices are sourced from `hft_contracts.NON_NORMALIZABLE_INDICES` (defined in
+`pipeline_contract.toml`), not hardcoded.
+
+```python
+from lobtrainer.data.normalization import HybridNormalizer
+
+normalizer = HybridNormalizer(exclude_indices=None)  # Uses contract defaults
+# Default excludes: {92, 93, 94, 96, 97, 115} — categorical + counter features
+```
+
+`NON_NORMALIZABLE_INDICES` is a superset of `CATEGORICAL_INDICES`, also including
+`invalidity_delta` (index 96, a counter with reset semantics) and `time_bucket`
+(index 115, a discretized categorical).
 
 ---
 
@@ -619,7 +703,7 @@ class LSTMClassifier(nn.Module):
 ### Model Factory
 
 ```python
-from lobtrainer.models import create_model, LOBMODELS_AVAILABLE
+from lobtrainer.models import create_model
 from lobtrainer.config import ModelConfig, ModelType
 
 # LSTM
@@ -669,6 +753,31 @@ class Trainer:
         """Evaluate model on a data split."""
         ...
 ```
+
+### Training Strategy Pattern (Phase 2)
+
+The Trainer delegates all task-specific logic to a `TrainingStrategy` subclass, selected automatically from the config via `create_strategy()`:
+
+| Strategy | Model Types | Key Behavior |
+|----------|-------------|-------------|
+| `ClassificationStrategy` | TLOB, DeepLOB, MLPLOB, LogisticLOB, LSTM, GRU | Owns criterion (CE/Focal with class weights). Uses `model.compute_loss()` for training, `criterion` for validation. |
+| `RegressionStrategy` | TLOB-R, DeepLOB-R | Uses `model.compute_loss(output, regression_targets=...)`. Computes R², IC, MAE, RMSE, DA. |
+| `HMHPClassificationStrategy` | HMHP | Dict labels `{h: tensor}`. Per-horizon loss, accuracy, agreement, confirmation. |
+| `HMHPRegressionStrategy` | HMHP-R | Dict regression targets. Per-horizon R², IC, MAE. Primary horizon surfaced for early stopping. |
+
+Each strategy implements: `process_batch()`, `aggregate_epoch_metrics()`, `validate()`, `evaluate()`, `predict()`.
+
+The Trainer (892L) handles the outer loop: epochs, callbacks, scheduling, checkpointing. Zero task-branching remains in the Trainer itself.
+
+### ModelConfig (Phase 3)
+
+`ModelConfig` has 7 core fields plus an opaque `params` dict:
+- **Core**: `model_type`, `input_size`, `num_classes`, `params`, `hmhp_horizons`, `hmhp_use_regression`, `deeplob_mode`
+- **`name` property**: Derives registry key from `model_type` (e.g., `ModelType.TLOB` → `"tlob"`)
+- **`params` dict**: Passed through to the model's config class via `ModelRegistry.create()`
+- **Legacy compat**: ~30 flat fields auto-migrate to `params` via `_build_params_from_legacy()` in `__post_init__`
+
+`create_model()` (45L) uses `ModelRegistry.get(name)` for most models, lobmodels factory functions for HMHP.
 
 ### TrainingState
 
@@ -771,6 +880,24 @@ class ProgressCallback(Callback):
 ---
 
 ## 12. Metrics and Evaluation
+
+### Regression Metrics (src/lobtrainer/training/regression_metrics.py)
+
+For HMHP regression models. Wired into trainer validation and evaluation.
+
+```python
+# Individual metrics
+r_squared(y_true, y_pred)           # R² coefficient of determination
+information_coefficient(y_true, y_pred)  # Spearman rank correlation (IC)
+pearson_correlation(y_true, y_pred)
+mean_absolute_error(y_true, y_pred)
+root_mean_squared_error(y_true, y_pred)
+directional_accuracy(y_true, y_pred)     # Fraction where sign matches
+profitable_accuracy(y_true, y_pred, breakeven_bps=5.0)  # Correct direction AND |actual| > threshold
+
+# Wrapper
+compute_all_regression_metrics(y_true, y_pred, breakeven_bps=5.0, prefix="") -> Dict[str, float]
+```
 
 ### MetricsCalculator (src/lobtrainer/training/metrics.py)
 
@@ -1159,11 +1286,13 @@ class TestTrainer:
         assert trainer.config.name == "test"
 ```
 
-### Test Modules (14)
+### Test Modules (24)
 
 | Test File | Coverage |
 |-----------|----------|
 | `test_baselines.py` | NaiveClassPrior, NaivePreviousLabel, LogisticBaseline |
+| `test_regression_metrics.py` | r_squared, IC, MAE, RMSE, directional/profitable accuracy (22 tests) |
+| `test_regression_dataset.py` | DayData.regression_labels, load_day_data, LOBSequenceDataset (8 tests) |
 | `test_config.py` | Configuration loading and validation |
 | `test_deeplob_integration.py` | DeepLOB model creation |
 | `test_evaluation.py` | BaselineReport, evaluate_model |
@@ -1176,7 +1305,14 @@ class TestTrainer:
 | `test_strategy_metrics.py` | MetricsCalculator |
 | `test_tlob_integration.py` | TLOB model creation |
 | `test_trainer.py` | Trainer class |
-| `test_transforms.py` | ZScoreNormalizer, transforms |
+| `test_transforms.py` | FeatureStatistics, compute_statistics |
+| `test_normalization.py` | GlobalZScore, HybridNormalizer, Welford, streaming |
+| `test_normalization_integration.py` | Normalizer as dataset transform, end-to-end |
+| `test_feature_selector.py` | FeatureSelector construction, validation, selection |
+| `test_label_shift.py` | Label shift resolution (4 paths) |
+| `test_regression_training.py` | HMHP regression training pipeline |
+| `test_standard_regression_training.py` | DeepLOB regression training pipeline |
+| `test_calibration.py` | Variance calibration metrics |
 
 ---
 
@@ -1190,13 +1326,9 @@ Labels are shifted from `{-1, 0, 1}` to `{0, 1, 2}` in `__getitem__`:
 label = label + 1  # For PyTorch CrossEntropyLoss
 ```
 
-### Single-Horizon Training
+### Single-Horizon Training (Classification)
 
-While data supports multi-horizon labels, the trainer trains on a single horizon:
-
-```yaml
-horizon_idx: 0  # Use first horizon
-```
+While data supports multi-horizon labels, classification trainers use a single horizon (`horizon_idx: 0`). HMHP_REGRESSION trains on all horizons jointly.
 
 ### num_workers Default
 
@@ -1204,17 +1336,16 @@ DataLoader workers default to 4. Set to 0 if experiencing multiprocessing issues
 
 ### External Model Dependency
 
-DeepLOB and TLOB require the `lob-models` package:
+DeepLOB, TLOB, HMHP, and HMHP_REGRESSION require the `lob-models` package:
 
 ```bash
 pip install -e ../lob-models
 ```
 
-Check availability:
+Verify installation:
 
 ```python
-from lobtrainer.models import LOBMODELS_AVAILABLE
-print(LOBMODELS_AVAILABLE)  # True if installed
+from lobtrainer.models import create_model  # Will ImportError if lob-models missing
 ```
 
 ### TIME_REGIME Exclusion
@@ -1263,5 +1394,5 @@ from lobtrainer.constants import FeatureIndex, get_feature_preset
 
 ---
 
-*Last updated: January 13, 2026*
-*Version: 0.4.0*
+*Last updated: March 20, 2026*
+*Version: 0.2.0*

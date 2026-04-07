@@ -150,7 +150,7 @@ class TestNormalization:
     def test_zscore_normalization(self):
         """Z-score normalization on real data."""
         from lobtrainer.data import load_split_data
-        from lobtrainer.data.transforms import compute_statistics, ZScoreNormalizer
+        from lobtrainer.data.transforms import compute_statistics
         
         days = load_split_data(DATA_DIR, "train", validate=False)[:1]
         features = days[0].features
@@ -245,22 +245,21 @@ class TestSignalValues:
                         )
     
     def test_schema_version_is_valid(self):
-        """Schema version should be 2.0 or 2.1 for all samples (NOT normalized)."""
+        """Schema version should be 2.0, 2.1, or 2.2 for all samples (NOT normalized)."""
         from lobtrainer.data import load_split_data
         from lobtrainer.constants import FeatureIndex, SCHEMA_VERSION
-        
+
         days = load_split_data(DATA_DIR, "train", validate=False)
-        
+
         for day in days:
-            schema_col = day.features[:, FeatureIndex.SCHEMA_VERSION_FEATURE]
+            schema_col = day.features[:, FeatureIndex.SCHEMA_VERSION]
             # SCHEMA_VERSION is excluded from normalization, should be constant
             unique_versions = np.unique(schema_col)
             assert len(unique_versions) == 1, (
                 f"Schema version should be constant, got {unique_versions}"
             )
-            # Accept both v2.0 (old data) and v2.1 (new data after sign fixes)
             version = unique_versions[0]
-            assert version in (2.0, 2.1), (
-                f"Schema version should be 2.0 or 2.1, got {version}"
+            assert version in (2.0, 2.1, 2.2), (
+                f"Schema version should be 2.0, 2.1, or 2.2, got {version}"
             )
 

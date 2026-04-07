@@ -28,12 +28,12 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.optim import Adam, AdamW, SGD
+from torch.optim import AdamW
 from torch.optim.lr_scheduler import (
     CosineAnnealingLR,
     ReduceLROnPlateau,
@@ -41,13 +41,13 @@ from torch.optim.lr_scheduler import (
 )
 from torch.utils.data import DataLoader
 
-from lobtrainer.config import ExperimentConfig, ModelType, TaskType, LossType, NormalizationStrategy
+from lobtrainer.config import ExperimentConfig, NormalizationStrategy, TaskType
 from lobtrainer.data import (
     LOBSequenceDataset,
-    LOBFlatDataset,
     load_split_data,
-    create_dataloaders,
     GlobalZScoreNormalizer,
+    HybridNormalizer,
+    create_feature_selector,
 )
 from lobtrainer.training.callbacks import (
     Callback,
@@ -56,16 +56,9 @@ from lobtrainer.training.callbacks import (
     ModelCheckpoint,
     MetricLogger,
 )
-from lobtrainer.training.metrics import (
-    # Core metrics computation
-    MetricsCalculator,
-    ClassificationMetrics,
-    compute_metrics,
-    compute_accuracy,
-    # Class name mappings for logging
-    get_class_names,
-)
-from lobtrainer.utils.reproducibility import set_seed, create_worker_init_fn
+from lobtrainer.training.metrics import ClassificationMetrics
+from lobtrainer.training.strategy import TrainingStrategy, create_strategy
+from lobtrainer.utils.reproducibility import set_seed
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +154,7 @@ class Trainer:
         self._train_loader: Optional[DataLoader] = None
         self._val_loader: Optional[DataLoader] = None
         self._test_loader: Optional[DataLoader] = None
-        self._criterion: Optional[nn.Module] = None
+        self._strategy: Optional[TrainingStrategy] = None
         
         # Setup output directory
         self.output_dir = Path(config.output_dir)
@@ -175,37 +168,56 @@ class Trainer:
     # =========================================================================
     # Properties
     # =========================================================================
-    
+
     @property
     def model(self) -> nn.Module:
         """Get model (creates if not exists)."""
         if self._model is None:
             self._model = self._create_model()
         return self._model
-    
+
     @model.setter
     def model(self, model: nn.Module) -> None:
         """Set model."""
         self._model = model
-    
+
+    @property
+    def model_initialized(self) -> bool:
+        """True if model has been created (without triggering lazy creation)."""
+        return self._model is not None
+
     @property
     def optimizer(self) -> torch.optim.Optimizer:
         """Get optimizer (creates if not exists)."""
         if self._optimizer is None:
             self._optimizer = self._create_optimizer()
         return self._optimizer
-    
+
+    @property
+    def optimizer_initialized(self) -> bool:
+        """True if optimizer has been created (without triggering lazy creation)."""
+        return self._optimizer is not None
+
     @property
     def scheduler(self) -> Optional[Any]:
         """Get learning rate scheduler."""
         return self._scheduler
-    
+
     @property
-    def criterion(self) -> nn.Module:
-        """Get loss function."""
-        if self._criterion is None:
-            self._criterion = self._create_criterion()
-        return self._criterion
+    def strategy(self) -> Optional[TrainingStrategy]:
+        """Get the training strategy (created during setup)."""
+        return self._strategy
+
+    def get_loader(self, split: str) -> Optional[DataLoader]:
+        """Get the data loader for a split.
+
+        Args:
+            split: 'train', 'val', or 'test'.
+
+        Returns:
+            DataLoader or None if split not available.
+        """
+        return getattr(self, f"_{split}_loader", None)
     
     # =========================================================================
     # Setup Methods
@@ -219,7 +231,8 @@ class Trainer:
         """
         from lobtrainer.models import create_model
         
-        model = create_model(self.config.model)
+        seq_len = getattr(self.config.data.sequence, 'window_size', 100)
+        model = create_model(self.config.model, sequence_length=seq_len)
         model = model.to(self.device)
         
         # Log model info
@@ -275,134 +288,97 @@ class Trainer:
         logger.debug(f"Created scheduler: {cfg.scheduler}")
         return scheduler
     
-    def _create_criterion(self) -> nn.Module:
-        """
-        Create loss function based on configuration.
-        
-        Supports:
-        - cross_entropy: Standard unweighted CE
-        - weighted_ce: CE with inverse-frequency class weights
-        - focal: Focal loss for handling class imbalance
-        
-        For binary_signal task, uses 2 classes instead of 3.
-        """
-        from lobtrainer.training.loss import FocalLoss, BinaryFocalLoss
-        
-        cfg = self.config.train
-        loss_type = getattr(cfg, 'loss_type', LossType.WEIGHTED_CE)
-        task_type = getattr(cfg, 'task_type', TaskType.MULTICLASS)
-        
-        # Determine number of classes based on task type
-        if task_type == TaskType.BINARY_SIGNAL:
-            num_classes = 2
-            class_names = ["NoSignal", "Signal"]
-        else:
-            num_classes = 3
-            class_names = ["Down", "Stable", "Up"]
-        
-        # For unweighted cross-entropy, return immediately
-        if loss_type == LossType.CROSS_ENTROPY:
-            logger.info(f"Using unweighted CrossEntropyLoss ({num_classes} classes)")
-            return nn.CrossEntropyLoss()
-        
-        # Compute class weights from training data for weighted losses
-        class_counts = None
-        try:
-            if self._train_loader is not None:
-                class_counts = torch.zeros(num_classes)
-                for _, labels in self._train_loader:
-                    for c in range(num_classes):
-                        class_counts[c] += (labels == c).sum().item()
-                
-                total = class_counts.sum()
-                if total > 0:
-                    # Log class distribution
-                    for i, name in enumerate(class_names):
-                        pct = class_counts[i] / total * 100
-                        logger.info(f"  Class {name}: {int(class_counts[i]):,} ({pct:.1f}%)")
-        except Exception as e:
-            logger.warning(f"Could not compute class counts: {e}")
-            class_counts = None
-        
-        # Create appropriate loss function
-        if loss_type == LossType.FOCAL:
-            gamma = getattr(cfg, 'focal_gamma', 2.0)
-            
-            # For binary OR multi-class with num_classes output logits, use FocalLoss
-            # (not BinaryFocalLoss which expects single logit for sigmoid)
-            # Note: Our model outputs [batch, num_classes] logits for both binary and multiclass
-            weights = None
-            if class_counts is not None:
-                total = class_counts.sum()
-                if total > 0:
-                    # Inverse frequency weighting
-                    weights = total / (num_classes * class_counts.clamp(min=1))
-                    weights = weights.to(self.device)
-            
-            logger.info(f"Using FocalLoss(gamma={gamma}, alpha={weights})")
-            return FocalLoss(gamma=gamma, alpha=weights)
-        
-        else:  # LossType.WEIGHTED_CE
-            # Compute class weights from training data
-            if class_counts is not None:
-                total = class_counts.sum()
-                if total > 0:
-                    # Inverse frequency weighting
-                    weights = total / (float(num_classes) * class_counts.clamp(min=1))
-                    weights = weights.to(self.device)
-                    
-                    weight_str = ", ".join(
-                        f"{name}={weights[i]:.2f}" for i, name in enumerate(class_names)
-                    )
-                    logger.info(f"Using class weights: {weight_str}")
-                    return nn.CrossEntropyLoss(weight=weights)
-        
-        # Fallback to unweighted loss
-        logger.info("Using unweighted CrossEntropyLoss (fallback)")
-        return nn.CrossEntropyLoss()
-    
     def _create_dataloaders(self) -> Dict[str, DataLoader]:
         """Create data loaders for all splits with proper task configuration."""
         cfg_data = self.config.data
         cfg_train = self.config.train
         cfg_model = self.config.model
         
-        # Note: num_workers > 0 requires picklable worker_init_fn
-        # For simplicity, we use num_workers=0 which is still fast for our dataset size
-        # and avoids multiprocessing complexity
-        num_workers = 0 if cfg_train.num_workers > 0 else 0
-        
-        # Load using the existing infrastructure
-        # horizon_idx selects which prediction horizon to use (0=10 steps, 1=20, etc.)
-        horizon_idx = getattr(cfg_data, 'horizon_idx', 0)
-        
-        # Feature selection for DeepLOB benchmark mode
-        # DeepLOB in benchmark mode uses only the first 40 LOB features
+        num_workers = cfg_train.num_workers
+        # Only force num_workers=0 when using dict-label collation (HMHP)
+        if self._strategy is not None and self._strategy.requires_dict_labels:
+            if num_workers > 0:
+                logger.warning(
+                    f"num_workers={num_workers} requested but HMHP dict-label collation "
+                    f"is incompatible with multiprocessing. Falling back to num_workers=0."
+                )
+                num_workers = 0
+
+        # Horizon selection: strategy determines if we return all or one
+        if self._strategy is not None:
+            horizon_idx = self._strategy.horizon_idx
+        else:
+            horizon_idx = getattr(cfg_data, 'horizon_idx', 0)
+
+        # Feature selection configuration
+        # Priority: 1. Config preset, 2. Config indices, 3. DeepLOB benchmark, 4. None (all)
         feature_indices = None
+        feature_selector = None
+
         from lobtrainer.config import ModelType, DeepLOBMode
-        if cfg_model.model_type == ModelType.DEEPLOB:
+
+        feature_preset = getattr(cfg_data, 'feature_preset', None)
+        config_feature_indices = getattr(cfg_data, 'feature_indices', None)
+
+        if feature_preset is not None or config_feature_indices is not None:
+            feature_selector = create_feature_selector(
+                preset=feature_preset,
+                indices=config_feature_indices,
+                source_feature_count=cfg_data.feature_count,
+            )
+            if feature_selector is not None:
+                feature_indices = list(feature_selector.indices)
+                logger.info(
+                    f"Feature selection from config: {feature_selector.name} "
+                    f"({feature_selector.output_size} features from {cfg_data.feature_count})"
+                )
+
+                if cfg_model.input_size != feature_selector.output_size:
+                    raise ValueError(
+                        f"Model input_size ({cfg_model.input_size}) does not match "
+                        f"selected feature count ({feature_selector.output_size}). "
+                        f"Set model.input_size: {feature_selector.output_size} in config."
+                    )
+
+        elif cfg_model.model_type == ModelType.DEEPLOB:
             deeplob_mode = getattr(cfg_model, 'deeplob_mode', DeepLOBMode.BENCHMARK)
             if deeplob_mode == DeepLOBMode.BENCHMARK:
-                # First 40 features are LOB: bid_prices(10), ask_prices(10), 
-                # bid_sizes(10), ask_sizes(10) in GROUPED layout
                 from lobtrainer.constants import LOB_FEATURE_COUNT
-                feature_indices = list(range(LOB_FEATURE_COUNT))  # [0, 1, ..., 39]
+                feature_indices = list(range(LOB_FEATURE_COUNT))
                 logger.info(
                     f"DeepLOB benchmark mode: selecting first {LOB_FEATURE_COUNT} LOB features"
                 )
-        
-        # Determine label transform based on task type
+
+        # Label transform for binary signal detection (task_type driven, not strategy)
         label_transform = None
         num_classes = 3
         task_type = getattr(cfg_train, 'task_type', TaskType.MULTICLASS)
-        
+
         if task_type == TaskType.BINARY_SIGNAL:
             from lobtrainer.data import BinaryLabelTransform
-            label_transform = BinaryLabelTransform()  # Down,Up → Signal; Stable → NoSignal
+            label_transform = BinaryLabelTransform()
             num_classes = 2
-            logger.info("Binary signal detection mode: converting 3-class → 2-class labels")
-        
-        # Create dataloaders with proper configuration
+            logger.info("Binary signal detection mode: converting 3-class -> 2-class labels")
+
+        # Strategy-driven data format properties
+        return_labels_as_dict = (
+            self._strategy.requires_dict_labels if self._strategy is not None else False
+        )
+        return_regression_targets = (
+            self._strategy.requires_regression_targets if self._strategy is not None else False
+        )
+
+        if return_labels_as_dict:
+            logger.info(
+                f"HMHP mode: returning all horizons as dict labels "
+                f"(horizons={cfg_model.hmhp_horizons})"
+            )
+
+        # Labeling strategy from config
+        labeling_strategy = getattr(cfg_data, 'labeling_strategy', None)
+        if hasattr(labeling_strategy, 'value'):
+            labeling_strategy = labeling_strategy.value
+
         loaders = self._create_dataloaders_with_transform(
             data_dir=cfg_data.data_dir,
             batch_size=cfg_train.batch_size,
@@ -412,8 +388,11 @@ class Trainer:
             feature_indices=feature_indices,
             label_transform=label_transform,
             num_classes=num_classes,
+            return_labels_as_dict=return_labels_as_dict,
+            labeling_strategy=labeling_strategy,
+            return_regression_targets=return_regression_targets,
         )
-        
+
         return loaders
     
     def _create_dataloaders_with_transform(
@@ -422,26 +401,99 @@ class Trainer:
         batch_size: int,
         num_workers: int,
         pin_memory: bool,
-        horizon_idx: int,
+        horizon_idx: Optional[int],
         feature_indices: Optional[List[int]],
         label_transform: Optional[callable],
         num_classes: int,
+        return_labels_as_dict: bool = False,
+        labeling_strategy: Optional[str] = None,
+        return_regression_targets: bool = False,
     ) -> Dict[str, DataLoader]:
         """
         Create dataloaders with custom label transform support.
         
-        Handles global_zscore normalization matching official TLOB repository:
-        1. Load training data first
-        2. Compute global mean/std for prices and sizes
-        3. Apply same normalization to train/val/test
+        Memory-efficient approach:
+        1. Create/load cached normalization stats FIRST (without loading all data)
+        2. Then load data with lazy/mmap mode for memory efficiency
+        3. Apply cached normalization during training
+        
+        This allows training on datasets that don't fit in RAM.
         """
         loaders = {}
         all_days = {}
         
-        # Load all splits first (needed for global normalization)
+        # Create feature transform based on normalization strategy
+        # IMPORTANT: Do this BEFORE loading all data to avoid OOM
+        feature_transform = None
+        norm_strategy = self.config.data.normalization.strategy
+        
+        if norm_strategy == NormalizationStrategy.GLOBAL_ZSCORE:
+            # Global Z-score matching TLOB repository
+            num_features = self.config.data.feature_count
+            stats_path = Path(data_dir) / "normalization_stats.json"
+            
+            if stats_path.exists():
+                # Fast path: load cached stats
+                from lobtrainer.data.normalization import GlobalNormalizationStats
+                logger.info(f"Loading cached normalization stats from {stats_path}")
+                stats = GlobalNormalizationStats.load(stats_path)
+                feature_transform = GlobalZScoreNormalizer(
+                    stats, 
+                    eps=self.config.data.normalization.eps
+                )
+            else:
+                # Slow path: compute stats (uses streaming internally)
+                logger.info(f"Computing GlobalZScoreNormalizer stats for {num_features} features...")
+                # Load training data with lazy loading for stats computation
+                train_days_for_stats = load_split_data(data_dir, "train", validate=False, lazy=True)
+                feature_transform = GlobalZScoreNormalizer.from_train_data(
+                    train_days_for_stats,
+                    num_features=num_features,
+                    eps=self.config.data.normalization.eps,
+                )
+                feature_transform.stats.save(stats_path)
+                logger.info(f"Saved normalization stats to {stats_path}")
+                del train_days_for_stats  # Free memory
+        
+        elif norm_strategy == NormalizationStrategy.HYBRID:
+            # Hybrid normalization for 98-feature datasets
+            num_features = self.config.data.feature_count
+            stats_path = Path(data_dir) / "hybrid_normalization_stats.json"
+            
+            if stats_path.exists():
+                # Fast path: load cached stats (instant, no data loading)
+                from lobtrainer.data.normalization import HybridNormalizationStats
+                logger.info(f"Loading cached hybrid normalization stats from {stats_path}")
+                stats = HybridNormalizationStats.load(stats_path)
+                feature_transform = HybridNormalizer(
+                    stats,
+                    eps=self.config.data.normalization.eps,
+                    clip_value=self.config.data.normalization.clip_value,
+                )
+            else:
+                # Slow path: compute stats using memory-efficient streaming
+                logger.info(f"Computing HybridNormalizer stats for {num_features} features...")
+                logger.info("  (This may take a few minutes on first run, cached for future runs)")
+                from lobtrainer.data.normalization import compute_hybrid_stats_streaming
+                stats = compute_hybrid_stats_streaming(
+                    data_dir,
+                    num_features=num_features,
+                    eps=self.config.data.normalization.eps,
+                    clip_value=self.config.data.normalization.clip_value,
+                )
+                feature_transform = HybridNormalizer(
+                    stats,
+                    eps=self.config.data.normalization.eps,
+                    clip_value=self.config.data.normalization.clip_value,
+                )
+                logger.info(f"Cached normalization stats at {stats_path}")
+        
+        # NOW load all splits (after normalization is ready)
+        # Use lazy=False for actual training to get full data access
+        logger.info("Loading training data...")
         for split in ["train", "val", "test"]:
             try:
-                all_days[split] = load_split_data(data_dir, split, validate=True)
+                all_days[split] = load_split_data(data_dir, split, validate=True, lazy=False)
             except FileNotFoundError:
                 logger.info(f"Split '{split}' not found, skipping")
                 continue
@@ -449,27 +501,20 @@ class Trainer:
         if "train" not in all_days:
             raise ValueError("No training data found")
         
-        # Create feature transform based on normalization strategy
-        feature_transform = None
-        norm_strategy = self.config.data.normalization.strategy
+        # Import collate function for HMHP dict labels
+        from lobtrainer.data.dataset import _hmhp_collate_fn
         
-        if norm_strategy == NormalizationStrategy.GLOBAL_ZSCORE:
-            # Global Z-score matching TLOB repository
-            # Compute stats from ALL training data, apply to all splits
-            num_features = self.config.data.feature_count
-            logger.info(f"Creating GlobalZScoreNormalizer for {num_features} features...")
-            feature_transform = GlobalZScoreNormalizer.from_train_data(
-                all_days["train"],
-                num_features=num_features,
-                eps=self.config.data.normalization.eps,
+        # Detect precomputed regression labels
+        use_precomputed = return_regression_targets and any(
+            day.regression_labels is not None
+            for days_list in all_days.values()
+            for day in days_list
+        )
+        if use_precomputed:
+            logger.info(
+                "Using precomputed regression labels from regression_labels.npy"
             )
-            logger.info("Global normalization stats computed from training data")
-            
-            # Optionally save stats for reproducibility
-            stats_path = Path(data_dir) / "normalization_stats.json"
-            if not stats_path.exists():
-                feature_transform.stats.save(stats_path)
-        
+
         # Create datasets with transform
         for split, days in all_days.items():
             dataset = LOBSequenceDataset(
@@ -479,7 +524,14 @@ class Trainer:
                 horizon_idx=horizon_idx,
                 label_transform=label_transform,
                 num_classes=num_classes,
+                return_labels_as_dict=return_labels_as_dict,
+                labeling_strategy=labeling_strategy,
+                return_regression_targets=return_regression_targets,
+                use_precomputed_regression=use_precomputed,
             )
+            
+            # Use custom collate function for HMHP dict labels
+            collate_fn = _hmhp_collate_fn if return_labels_as_dict else None
             
             loaders[split] = DataLoader(
                 dataset,
@@ -488,39 +540,44 @@ class Trainer:
                 num_workers=num_workers,
                 pin_memory=pin_memory,
                 drop_last=(split == "train"),
+                collate_fn=collate_fn,
             )
         
         return loaders
     
     def setup(self) -> None:
         """
-        Full setup: model, optimizer, scheduler, data loaders.
-        
+        Full setup: model, optimizer, scheduler, strategy, data loaders.
+
         Call this explicitly if you want to setup before training,
         otherwise it's called automatically by train().
         """
         # Set seed for reproducibility
         set_seed(self.config.train.seed)
-        
+
         # Create components (lazy properties)
         _ = self.model
         _ = self.optimizer
         self._scheduler = self._create_scheduler(self.optimizer)
-        
-        # Create data loaders BEFORE criterion (criterion needs class counts)
+
+        # Create strategy BEFORE data loaders (strategy properties drive data loading)
+        self._strategy = create_strategy(self.config, self.device)
+
+        # Create data loaders (strategy properties determine label format)
         loaders = self._create_dataloaders()
         self._train_loader = loaders.get('train')
         self._val_loader = loaders.get('val')
         self._test_loader = loaders.get('test')
-        
+
         if self._train_loader is None:
             raise ValueError("No training data found")
-        
-        # Create criterion AFTER data loaders (needs class counts for weights)
-        _ = self.criterion
-        
+
+        # Strategy one-time initialization (e.g., criterion creation for classification)
+        self._strategy.initialize(self._train_loader, self.model)
+
         logger.info(
-            f"Setup complete: train={len(self._train_loader)} batches, "
+            f"Setup complete: strategy={type(self._strategy).__name__}, "
+            f"train={len(self._train_loader)} batches, "
             f"val={len(self._val_loader) if self._val_loader else 0} batches"
         )
     
@@ -614,153 +671,57 @@ class Trainer:
     def _train_epoch(self) -> Dict[str, float]:
         """
         Run one training epoch.
-        
+
+        Delegates batch processing to the strategy while managing the
+        optimization loop (zero_grad, backward, clip, step).
+
         Returns:
-            Dict with training metrics (train_loss, train_accuracy)
+            Dict with training metrics (train_loss, and strategy-specific metrics).
         """
         self.model.train()
         cfg = self.config.train
-        
-        total_loss = 0.0
-        total_correct = 0
+
+        results = []
         total_samples = 0
-        
-        for batch_idx, (features, labels) in enumerate(self._train_loader):
+
+        for batch_idx, batch_data in enumerate(self._train_loader):
             self.callbacks.on_batch_start(batch_idx)
-            
-            # Move to device
-            features = features.to(self.device)
-            labels = labels.to(self.device)
-            
-            # Forward pass
+
             self.optimizer.zero_grad()
-            outputs = self.model(features)
-            loss = self.criterion(outputs, labels)
-            
-            # Backward pass
-            loss.backward()
-            
-            # Gradient clipping
+            result = self._strategy.process_batch(self.model, batch_data)
+            result.loss.backward()
+
             if cfg.gradient_clip_norm is not None:
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(),
                     cfg.gradient_clip_norm,
                 )
-            
+
             self.optimizer.step()
             self.state.global_step += 1
-            
-            # Track metrics
-            total_loss += loss.item() * features.size(0)
-            predictions = outputs.argmax(dim=1)
-            total_correct += (predictions == labels).sum().item()
-            total_samples += features.size(0)
-            
-            # Batch callback
-            batch_metrics = {'loss': loss.item()}
-            self.callbacks.on_batch_end(batch_idx, batch_metrics)
-        
-        # Compute epoch metrics
-        avg_loss = total_loss / total_samples
-        accuracy = total_correct / total_samples
-        
-        return {
-            'train_loss': avg_loss,
-            'train_accuracy': accuracy,
-        }
+
+            results.append(result)
+            total_samples += result.batch_size
+
+            self.callbacks.on_batch_end(batch_idx, {'loss': result.loss.item()})
+
+        if total_samples == 0:
+            return {'train_loss': 0.0}
+
+        return self._strategy.aggregate_epoch_metrics(results, total_samples)
     
-    @torch.no_grad()
     def _validate(self) -> Dict[str, float]:
         """
-        Run validation with strategy-aware metrics.
-        
+        Run validation via strategy.
+
+        Delegates to self._strategy.validate(). Kept as a method for
+        backward compatibility with tests that call _validate() directly.
+
         Returns:
-            Dict with validation metrics. The specific metrics depend on the
-            labeling_strategy configured in the experiment:
-            
-            For TRIPLE_BARRIER:
-            - val_loss, val_accuracy, val_macro_f1
-            - stoploss_precision, timeout_precision, profittarget_precision
-            - profit_target_precision, stop_loss_precision (trading-specific)
-            - decisive_prediction_rate, true_win_rate, predicted_trade_win_rate
-            
-            For OPPORTUNITY:
-            - val_loss, val_accuracy, val_macro_f1
-            - bigdown_precision, noopportunity_precision, bigup_precision
-            - directional_accuracy, opportunity_prediction_rate
-            
-            For TLOB:
-            - val_loss, val_accuracy, val_macro_f1
-            - down_precision, stable_precision, up_precision
-            - directional_accuracy, signal_rate
+            Dict with 'val_loss' and strategy-specific validation metrics.
         """
-        self.model.eval()
-        
-        total_loss = 0.0
-        total_samples = 0
-        
-        # Collect all predictions for metrics
-        all_preds = []
-        all_labels = []
-        
-        for features, labels in self._val_loader:
-            features = features.to(self.device)
-            labels = labels.to(self.device)
-            
-            outputs = self.model(features)
-            loss = self.criterion(outputs, labels)
-            
-            total_loss += loss.item() * features.size(0)
-            predictions = outputs.argmax(dim=1)
-            total_samples += features.size(0)
-            
-            # Collect for metrics
-            all_preds.append(predictions.cpu())
-            all_labels.append(labels.cpu())
-        
-        avg_loss = total_loss / total_samples
-        
-        # Concatenate all predictions and labels
-        y_pred = torch.cat(all_preds)
-        y_true = torch.cat(all_labels)
-        
-        # Get labeling strategy from config (default to opportunity for backward compat)
-        strategy = getattr(self.config.data, 'labeling_strategy', 'opportunity')
-        if hasattr(strategy, 'value'):
-            strategy = strategy.value
-        
-        num_classes = self.config.data.num_classes
-        
-        # Compute strategy-aware metrics
-        metrics_calculator = MetricsCalculator(strategy, num_classes)
-        metrics = metrics_calculator.compute(y_pred, y_true, loss=avg_loss)
-        
-        # Build result dict with val_ prefix
-        result = {
-            'val_loss': avg_loss,
-            'val_accuracy': metrics.accuracy,
-            'val_macro_f1': metrics.macro_f1,
-        }
-        
-        # Add per-class precision with class names (lowercase)
-        for class_id, precision in metrics.per_class_precision.items():
-            if class_id < len(metrics.class_names):
-                name = metrics.class_names[class_id].lower()
-                result[f'val_{name}_precision'] = precision
-        
-        # Add strategy-specific metrics with val_ prefix
-        for key, value in metrics.strategy_metrics.items():
-            result[f'val_{key}'] = value
-        
-        # Backward compatibility: add directional metrics for TLOB and OPPORTUNITY
-        if strategy in ('tlob', 'opportunity'):
-            if 'directional_accuracy' in metrics.strategy_metrics:
-                result['val_directional_accuracy'] = metrics.strategy_metrics['directional_accuracy']
-            if 'signal_rate' in metrics.strategy_metrics:
-                result['val_signal_rate'] = metrics.strategy_metrics['signal_rate']
-        
-        return result
-    
+        return self._strategy.validate(self.model, self._val_loader)
+
     # =========================================================================
     # Evaluation
     # =========================================================================
@@ -770,107 +731,53 @@ class Trainer:
         self,
         split: str = 'test',
         loader: Optional[DataLoader] = None,
-    ) -> ClassificationMetrics:
+    ) -> Union[ClassificationMetrics, Dict[str, Any]]:
         """
-        Evaluate model on a data split.
-        
+        Evaluate model on a data split via strategy.
+
         Args:
             split: Data split to evaluate ('train', 'val', 'test')
             loader: Optional custom DataLoader (uses split if None)
-        
+
         Returns:
-            ClassificationMetrics with full evaluation
+            ClassificationMetrics for classification strategies, or Dict for
+            regression strategies with per-horizon regression metrics.
         """
-        # Get loader
         if loader is None:
-            if split == 'train':
-                loader = self._train_loader
-            elif split == 'val':
-                loader = self._val_loader
-            elif split == 'test':
-                loader = self._test_loader
-            else:
-                raise ValueError(f"Unknown split: {split}")
-        
+            loader = self.get_loader(split)
+
         if loader is None:
-            # Try to load
             if self._train_loader is None:
                 self.setup()
-            loader = getattr(self, f'_{split}_loader')
-        
+            loader = self.get_loader(split)
+
         if loader is None:
             raise ValueError(f"No data available for split: {split}")
-        
-        self.model.eval()
-        
-        all_predictions = []
-        all_labels = []
-        
-        for features, labels in loader:
-            features = features.to(self.device)
-            outputs = self.model(features)
-            predictions = outputs.argmax(dim=1).cpu().numpy()
-            
-            all_predictions.append(predictions)
-            all_labels.append(labels.numpy())
-        
-        y_pred = np.concatenate(all_predictions)
-        y_true = np.concatenate(all_labels)
-        
-        # Use MetricsCalculator for strategy-aware metrics
-        metrics_calculator = MetricsCalculator(
-            labeling_strategy=self.config.data.labeling_strategy,
-            num_classes=self.config.model.num_classes,
-        )
-        metrics = metrics_calculator.compute(y_pred, y_true)
-        
-        # Log key metrics
-        logger.info(
-            f"Evaluation [{split}]: accuracy={metrics.accuracy:.4f}, "
-            f"macro_f1={metrics.macro_f1:.4f}"
-        )
-        
-        # Log strategy-specific metrics
-        if metrics.strategy_metrics:
-            strategy_str = ", ".join(
-                f"{k}={v:.4f}" for k, v in list(metrics.strategy_metrics.items())[:5]
-            )
-            logger.info(f"  Strategy metrics: {strategy_str}")
-        
-        return metrics
-    
+
+        return self._strategy.evaluate(self.model, loader, split)
+
     def predict(
         self,
         features: Union[np.ndarray, torch.Tensor],
         return_proba: bool = False,
     ) -> np.ndarray:
         """
-        Make predictions on new data.
-        
+        Make predictions on new data via strategy.
+
         Args:
             features: Feature array [batch, seq_len, features] or [batch, features]
-            return_proba: If True, return class probabilities
-        
+            return_proba: If True, return class probabilities (classification only)
+
         Returns:
             Predictions [batch] or probabilities [batch, num_classes]
         """
-        self.model.eval()
-        
-        # Convert to tensor if needed
         if isinstance(features, np.ndarray):
             features = torch.from_numpy(features).float()
-        
+
         features = features.to(self.device)
-        
+
         with torch.no_grad():
-            outputs = self.model(features)
-            
-            if return_proba:
-                proba = torch.softmax(outputs, dim=1)
-                return proba.cpu().numpy()
-            else:
-                predictions = outputs.argmax(dim=1)
-                return predictions.cpu().numpy()
+            return self._strategy.predict(self.model, features, return_proba)
     
     # =========================================================================
     # Checkpoint Management

@@ -29,8 +29,6 @@ from lobtrainer.data.dataset import (
     get_dataset_info,
 )
 from lobtrainer.data.transforms import (
-    Normalizer,
-    ZScoreNormalizer,
     compute_statistics,
     BinaryLabelTransform,
     ComposeTransform,
@@ -38,7 +36,15 @@ from lobtrainer.data.transforms import (
 from lobtrainer.data.normalization import (
     GlobalZScoreNormalizer,
     GlobalNormalizationStats,
+    HybridNormalizer,
+    HybridNormalizationStats,
     compute_and_save_normalization_stats,
+    compute_hybrid_stats_streaming,
+    load_or_compute_hybrid_stats,
+)
+from lobtrainer.data.feature_selector import (
+    FeatureSelector,
+    create_feature_selector,
 )
 
 __all__ = [
@@ -54,8 +60,6 @@ __all__ = [
     "create_dataloaders",
     "get_dataset_info",
     # Transforms (per-sample)
-    "Normalizer",
-    "ZScoreNormalizer",
     "compute_statistics",
     "BinaryLabelTransform",
     "ComposeTransform",
@@ -63,4 +67,12 @@ __all__ = [
     "GlobalZScoreNormalizer",
     "GlobalNormalizationStats",
     "compute_and_save_normalization_stats",
+    # Hybrid normalization (98-feature datasets)
+    "HybridNormalizer",
+    "HybridNormalizationStats",
+    "compute_hybrid_stats_streaming",
+    "load_or_compute_hybrid_stats",
+    # Feature selection
+    "FeatureSelector",
+    "create_feature_selector",
 ]

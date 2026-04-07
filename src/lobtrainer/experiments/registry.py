@@ -116,6 +116,7 @@ class ExperimentRegistry:
             'name': result.name,
             'model_type': result.model_type,
             'labeling_strategy': result.labeling_strategy,
+            'task_type': getattr(result.config, 'task_type', 'multiclass') if result.config else 'unknown',
             'tags': result.tags,
             'created_at': result.created_at,
             'best_epoch': result.best_epoch,
@@ -126,6 +127,10 @@ class ExperimentRegistry:
             'test_directional_accuracy': result.test_metrics.directional_accuracy if result.test_metrics else None,
             'test_signal_rate': result.test_metrics.signal_rate if result.test_metrics else None,
             'test_predicted_trade_win_rate': result.test_metrics.predicted_trade_win_rate if result.test_metrics else None,
+            # Regression metrics (None for classification experiments)
+            'test_r2': result.test_metrics.extra_metrics.get('r2', None) if result.test_metrics and result.test_metrics.extra_metrics else None,
+            'test_ic': result.test_metrics.extra_metrics.get('ic', None) if result.test_metrics and result.test_metrics.extra_metrics else None,
+            'test_mae': result.test_metrics.extra_metrics.get('mae', None) if result.test_metrics and result.test_metrics.extra_metrics else None,
             'model_params': result.model_params,
             'training_time_seconds': result.training_time_seconds,
         }

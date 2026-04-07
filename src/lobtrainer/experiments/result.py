@@ -23,7 +23,10 @@ import json
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
+
+if TYPE_CHECKING:
+    from lobtrainer.training.regression_evaluation import RegressionMetrics
 import hashlib
 
 
@@ -106,6 +109,28 @@ class ExperimentMetrics:
         result.decisive_prediction_rate = strategy_metrics.get('decisive_prediction_rate', 0.0)
         
         return result
+    
+    @classmethod
+    def from_regression_metrics(cls, metrics: "RegressionMetrics") -> "ExperimentMetrics":
+        """Create from regression metrics (R2, IC, MAE, etc.)."""
+        return cls(
+            accuracy=0.0,
+            macro_f1=0.0,
+            macro_precision=0.0,
+            macro_recall=0.0,
+            directional_accuracy=metrics.directional_accuracy,
+            signal_rate=0.0,
+            predicted_trade_win_rate=0.0,
+            decisive_prediction_rate=0.0,
+            extra_metrics={
+                "r2": metrics.r2,
+                "ic": metrics.ic,
+                "pearson": metrics.pearson,
+                "mae": metrics.mae,
+                "rmse": metrics.rmse,
+                "profitable_accuracy": metrics.profitable_accuracy,
+            },
+        )
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -310,9 +335,18 @@ class ExperimentResult:
         if best_checkpoint.exists():
             result.checkpoint_path = str(best_checkpoint)
         
-        # Test metrics
+        # Test metrics — task-aware dispatch
         if test_metrics is not None:
-            result.test_metrics = ExperimentMetrics.from_classification_metrics(test_metrics)
+            from lobtrainer.training.regression_evaluation import RegressionMetrics as RegMetrics
+            if isinstance(test_metrics, RegMetrics):
+                result.test_metrics = ExperimentMetrics.from_regression_metrics(test_metrics)
+            elif isinstance(test_metrics, dict):
+                result.test_metrics = ExperimentMetrics(
+                    extra_metrics=test_metrics,
+                    directional_accuracy=test_metrics.get('directional_accuracy', 0.0),
+                )
+            else:
+                result.test_metrics = ExperimentMetrics.from_classification_metrics(test_metrics)
         
         return result
     
@@ -411,5 +445,13 @@ class ExperimentResult:
                     f"  Predicted Trade Win Rate: {self.test_metrics.predicted_trade_win_rate:.4f}",
                     f"  Decisive Prediction Rate: {self.test_metrics.decisive_prediction_rate:.4f}",
                 ])
+            
+            if self.test_metrics.extra_metrics:
+                em = self.test_metrics.extra_metrics
+                if 'r2' in em:
+                    lines.append(f"  R-squared:       {em['r2']:.6f}")
+                    lines.append(f"  IC:              {em.get('ic', 0):.6f}")
+                    lines.append(f"  MAE (bps):       {em.get('mae', 0):.2f}")
+                    lines.append(f"  RMSE (bps):      {em.get('rmse', 0):.2f}")
         
         return "\n".join(lines)

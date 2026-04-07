@@ -75,11 +75,18 @@ data:
 # =============================================================================
 # Model Configuration (TLOB)
 # =============================================================================
+#
+# IMPORTANT: Official TLOB repository uses NO DROPOUT in the model.
+# The original TLOB/models/tlob.py, TLOB/models/mlplob.py, and
+# TLOB/models/bin.py do not include dropout layers.
+#
+# Setting dropout: 0.0 to match official implementation exactly.
+# =============================================================================
 model:
   model_type: tlob
   input_size: 40  # CRITICAL: 40 features, not 98
   num_classes: 3
-  dropout: 0.1
+  dropout: 0.0    # CRITICAL: Match official TLOB repo (no dropout)
   
   # TLOB Architecture Parameters (Berti & Kasneci 2025)
   tlob_hidden_dim: 64

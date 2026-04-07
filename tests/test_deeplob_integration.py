@@ -163,8 +163,8 @@ class TestDeepLOBForwardPass:
         x = synthetic_lob_sequences
         
         with torch.no_grad():
-            logits = model(x)
-        
+            logits = model(x).logits
+
         assert logits.shape == (x.shape[0], 3), f"Expected (16, 3), got {logits.shape}"
         assert torch.isfinite(logits).all(), "Output contains NaN or Inf"
     
@@ -183,8 +183,8 @@ class TestDeepLOBForwardPass:
         x_lob = x_full[:, :, LOB_ALL]  # First 40 features
         
         with torch.no_grad():
-            logits = model(x_lob)
-        
+            logits = model(x_lob).logits
+
         assert logits.shape == (x_full.shape[0], 3)
         assert torch.isfinite(logits).all()
     
@@ -201,15 +201,15 @@ class TestDeepLOBForwardPass:
         
         with torch.no_grad():
             # Process full batch
-            full_output = model(x)
-            
+            full_output = model(x).logits
+
             # Process individual samples
             individual_outputs = []
             for i in range(x.shape[0]):
-                out = model(x[i:i+1])
+                out = model(x[i:i+1]).logits
                 individual_outputs.append(out)
             individual_outputs = torch.cat(individual_outputs, dim=0)
-        
+
         # Outputs should match (within floating point tolerance)
         torch.testing.assert_close(full_output, individual_outputs, rtol=1e-4, atol=1e-5)
     
@@ -227,9 +227,9 @@ class TestDeepLOBForwardPass:
         x = synthetic_lob_sequences
         
         with torch.no_grad():
-            output1 = model(x)
-            output2 = model(x)
-        
+            output1 = model(x).logits
+            output2 = model(x).logits
+
         torch.testing.assert_close(output1, output2)
 
 
@@ -254,7 +254,7 @@ class TestDeepLOBTraining:
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
         
         # Forward pass
-        logits = model(synthetic_lob_sequences)
+        logits = model(synthetic_lob_sequences).logits
         loss = criterion(logits, synthetic_labels)
         
         # Check loss is valid
@@ -292,20 +292,20 @@ class TestDeepLOBTraining:
         
         # Record initial loss
         with torch.no_grad():
-            initial_logits = model(x)
+            initial_logits = model(x).logits
             initial_loss = criterion(initial_logits, y).item()
-        
+
         # Train for several steps
         for _ in range(50):
             optimizer.zero_grad()
-            logits = model(x)
+            logits = model(x).logits
             loss = criterion(logits, y)
             loss.backward()
             optimizer.step()
-        
+
         # Check final loss
         with torch.no_grad():
-            final_logits = model(x)
+            final_logits = model(x).logits
             final_loss = criterion(final_logits, y).item()
         
         # Loss should decrease (or at least not explode)
@@ -326,7 +326,7 @@ class TestDeepLOBTraining:
         criterion = nn.CrossEntropyLoss()
         
         # Forward + backward
-        logits = model(synthetic_lob_sequences)
+        logits = model(synthetic_lob_sequences).logits
         loss = criterion(logits, synthetic_labels)
         loss.backward()
         
@@ -368,8 +368,8 @@ class TestFeatureSelection:
         x = torch.randn(2, 100, 40)
         with torch.no_grad():
             model.eval()
-            output = model(x)
-        
+            output = model(x).logits
+
         assert output.shape == (2, 3)
     
     def test_feature_slicing_pattern(self, seed, synthetic_sequences):
@@ -415,9 +415,9 @@ class TestDatasetIntegration:
         all_outputs = []
         with torch.no_grad():
             for batch_x, batch_y in dataloader:
-                output = model(batch_x)
+                output = model(batch_x).logits
                 all_outputs.append(output)
-        
+
         # All batches processed successfully
         total_samples = sum(o.shape[0] for o in all_outputs)
         assert total_samples == 100
@@ -473,8 +473,8 @@ class TestModelOutputProperties:
         model.eval()
         
         with torch.no_grad():
-            logits = model(synthetic_lob_sequences)
-        
+            logits = model(synthetic_lob_sequences).logits
+
         # Logits don't need to sum to 1
         sums = logits.exp().sum(dim=-1)  # Would sum to 1 if softmax was applied
         
@@ -495,7 +495,7 @@ class TestModelOutputProperties:
         model.eval()
         
         with torch.no_grad():
-            logits = model(synthetic_lob_sequences)
+            logits = model(synthetic_lob_sequences).logits
             probs = F.softmax(logits, dim=-1)
         
         # Probabilities should:
@@ -551,8 +551,8 @@ class TestWithRealData:
         model.eval()
         
         with torch.no_grad():
-            logits = model(batch_x)
-        
+            logits = model(batch_x).logits
+
         assert logits.shape == (batch_size, 3)
         assert torch.isfinite(logits).all()
     
@@ -591,7 +591,7 @@ class TestWithRealData:
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
         
         optimizer.zero_grad()
-        logits = model(batch_x)
+        logits = model(batch_x).logits
         loss = criterion(logits, batch_y)
         loss.backward()
         optimizer.step()

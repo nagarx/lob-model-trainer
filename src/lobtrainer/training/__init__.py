@@ -65,6 +65,23 @@ from lobtrainer.training.trainer import (
     create_trainer,
 )
 
+from lobtrainer.training.strategy import (
+    TrainingStrategy,
+    BatchResult,
+    create_strategy,
+)
+
+from lobtrainer.training.strategies import (
+    ClassificationStrategy,
+    RegressionStrategy,
+    HMHPClassificationStrategy,
+    HMHPRegressionStrategy,
+)
+
+from lobtrainer.training.regression_evaluation import (
+    RegressionMetrics,
+)
+
 from lobtrainer.training.loss import (
     FocalLoss,
     BinaryFocalLoss,
@@ -86,6 +103,8 @@ __all__ = [
     "Trainer",
     "TrainingState",
     "create_trainer",
+    # Regression Evaluation
+    "RegressionMetrics",
     # Loss Functions
     "FocalLoss",
     "BinaryFocalLoss",
@@ -127,4 +146,12 @@ __all__ = [
     "HealthCheckResult",
     "PerClassMetricsTracker",
     "create_standard_monitoring",
+    # Strategy Pattern (Phase 2)
+    "TrainingStrategy",
+    "BatchResult",
+    "create_strategy",
+    "ClassificationStrategy",
+    "RegressionStrategy",
+    "HMHPClassificationStrategy",
+    "HMHPRegressionStrategy",
 ]

@@ -103,7 +103,7 @@ def get_predictions(model, dataset, device, batch_size=64):
     for features, labels in loader:
         features = features.to(device)
         outputs = model(features)
-        preds = outputs.argmax(dim=1).cpu().numpy()
+        preds = outputs.logits.argmax(dim=1).cpu().numpy()
         
         all_preds.append(preds)
         all_labels.append(labels.numpy())

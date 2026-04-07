@@ -1,0 +1,84 @@
+# =============================================================================
+# TLOB Regression: H10, 128 Features, Point-to-Point Labels
+# =============================================================================
+#
+# CRITICAL DIFFERENCE from nvda_tlob_128feat_regression_h10.yaml:
+#   Data uses return_type = "point_return" (NOT smoothed_return)
+#
+# Point-return: r = (m_{t+k} - m_t) / m_t * 10000
+# This is the EXACT tradeable return. No smoothing.
+#
+# Motivation: Smoothed labels achieved R²=0.464 but 38% backtest win rate.
+# Point-return labels should align training with execution.
+#
+# =============================================================================
+
+name: TLOB_NVDA_128feat_PointReturn_H10
+description: |
+  TLOB regression with point-to-point labels (execution-aligned).
+  Same architecture as smoothed experiment for direct comparison.
+
+data:
+  data_dir: "../data/exports/nvda_xnas_128feat_regression_pointreturn"
+  feature_count: 128
+  labeling_strategy: regression
+  num_classes: 3
+  horizon_idx: 0
+
+  sequence:
+    window_size: 100
+    stride: 10
+
+  normalization:
+    strategy: hybrid
+    eps: 1.0e-8
+    clip_value: 10.0
+    exclude_features: [93, 115]
+
+model:
+  model_type: tlob
+  input_size: 128
+  num_classes: 3
+  dropout: 0.1
+
+  task_type: regression
+  regression_loss_type: huber
+  regression_loss_delta: 5.0
+
+  tlob_hidden_dim: 32
+  tlob_num_layers: 2
+  tlob_num_heads: 2
+  tlob_mlp_expansion: 4.0
+  tlob_use_sinusoidal_pe: true
+  tlob_use_bin: true
+  tlob_dataset_type: nvda
+
+train:
+  task_type: regression
+  loss_type: huber
+  use_class_weights: false
+
+  batch_size: 128
+  learning_rate: 5.0e-4
+  weight_decay: 0.01
+  epochs: 15
+  early_stopping_patience: 10
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 0
+  pin_memory: false
+  seed: 42
+  mixed_precision: false
+
+output_dir: outputs/experiments/nvda_tlob_128feat_regression_pointreturn_h10
+log_level: INFO
+
+tags:
+  - nvda
+  - xnas
+  - tlob
+  - regression
+  - point-return
+  - 128-features
+  - h10
+  - execution-aligned

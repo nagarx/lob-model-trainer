@@ -62,6 +62,18 @@ class NormalizationStrategy(str, Enum):
     
     ROBUST = "robust"
     """Robust scaling using median and IQR."""
+    
+    HYBRID = "hybrid"
+    """
+    Hybrid normalization for 98-feature datasets.
+    
+    Applies different strategies to different feature groups:
+    - Raw LOB (0-39): Global Z-score (prices pooled, sizes pooled)
+    - Derived/MBO/Signals (40-91, 95): Per-feature Z-score
+    - Categorical/Binary (92-94, 96-97): No normalization
+    
+    Use this for full 98-feature datasets where features have heterogeneous scales.
+    """
 
 
 class LabelEncoding(str, Enum):
@@ -114,15 +126,25 @@ class LabelingStrategy(str, Enum):
     Reference: Zhang et al. (2019), "DeepLOB"
     """
 
+    REGRESSION = "regression"
+    """
+    Regression: continuous forward returns in basis points.
+    No discrete classes. Output is float64 bps at each horizon.
+    Goal: Predict return magnitude, not just direction.
+    """
+
 
 class TaskType(str, Enum):
-    """Classification task type."""
+    """Task type for training."""
     
     MULTICLASS = "multiclass"
     """Standard 3-class classification: Down/Stable/Up."""
     
     BINARY_SIGNAL = "binary_signal"
     """Binary signal detection: Signal (Up or Down) vs NoSignal (Stable)."""
+    
+    REGRESSION = "regression"
+    """Continuous return prediction: predict bps forward return."""
 
 
 class LossType(str, Enum):
@@ -136,6 +158,18 @@ class LossType(str, Enum):
     
     WEIGHTED_CE = "weighted_ce"
     """Cross-entropy with inverse-frequency class weights."""
+    
+    MSE = "mse"
+    """Mean squared error (for regression)."""
+    
+    HUBER = "huber"
+    """Huber loss (robust regression, less sensitive to outliers)."""
+    
+    HETEROSCEDASTIC = "heteroscedastic"
+    """Heteroscedastic regression: jointly predicts mean and variance."""
+
+    GMADL = "gmadl"
+    """Generalized Mean Absolute Directional Loss (Michankov et al. 2024)."""
 
 
 class ModelType(str, Enum):
@@ -161,6 +195,41 @@ class ModelType(str, Enum):
     
     TLOB = "tlob"
     """TLOB (Transformer LOB with dual attention). Berti & Kasneci 2025."""
+    
+    HMHP = "hmhp"
+    """Hierarchical Multi-Horizon Predictor (classification)."""
+    
+    HMHP_REGRESSION = "hmhp_regression"
+    """Hierarchical Multi-Horizon Regressor — pure regression variant.
+    Predicts continuous bps returns instead of class probabilities.
+    Same SharedEncoder and cascading architecture as HMHP.
+    
+    Original HMHP docstring:
+    Hierarchical Multi-Horizon Predictor.
+    
+    Cascading multi-horizon model where shorter-horizon predictions inform
+    and confirm longer-horizon predictions. Outputs for all horizons simultaneously.
+    
+    Key features:
+    - Shared encoder (TLOB-based or linear)
+    - Per-horizon decoders with state passing
+    - Confirmation module for cross-horizon agreement
+    - Multi-task loss with per-horizon weights
+    
+    Reference: docs/HMHP_ARCHITECTURE.md
+    """
+
+    TEMPORAL_RIDGE = "temporal_ridge"
+    """Ridge regression on hand-crafted temporal features.
+    Non-PyTorch (sklearn). Achieves IC=0.616 (91% of TLOB).
+    Uses lobmodels.models.simple.TemporalRidge.
+    """
+
+    TEMPORAL_GRADBOOST = "temporal_gradboost"
+    """GradientBoosting on hand-crafted temporal features.
+    Non-PyTorch (sklearn). Achieves R²=0.397 (85.6% of TLOB).
+    Uses lobmodels.models.simple.TemporalGradBoost.
+    """
 
 
 # =============================================================================
@@ -232,10 +301,10 @@ class NormalizationConfig:
             raise ValueError(f"eps must be > 0, got {self.eps}")
         if self.clip_value is not None and self.clip_value <= 0:
             raise ValueError(f"clip_value must be > 0, got {self.clip_value}")
-        # Default: exclude time_regime (categorical)
-        if not self.exclude_features:
-            from lobtrainer.constants import FeatureIndex
-            self.exclude_features = [FeatureIndex.TIME_REGIME]
+        # Note: exclude_features should be explicitly set in the config
+        # for datasets with >93 features (to exclude TIME_REGIME).
+        # For 40-feature datasets (LOB only), no categorical features exist.
+        # The default empty list is intentional to avoid out-of-bounds errors.
 
 
 @dataclass
@@ -257,7 +326,19 @@ class DataConfig:
     """
     
     feature_count: int = 98
-    """Number of features per sample. Must match Rust export."""
+    """
+    Number of features per sample. Must match Rust export AND model.input_size.
+    
+    Supported configurations:
+    - 40: Raw LOB only (official TLOB repo, DeepLOB benchmark)
+          Features: 10 levels × 4 (ask_price, ask_size, bid_price, bid_size)
+    - 48: LOB + derived features (FI-2010 style)
+    - 76: LOB + derived + MBO features
+    - 98: Full feature set (LOB + derived + MBO + signals)
+    - 116: Full + experimental (98 + institutional_v2 + volatility + seasonality)
+    
+    IMPORTANT: Changing this requires also changing model.input_size.
+    """
     
     sequence: SequenceConfig = field(default_factory=SequenceConfig)
     """Sequence construction configuration."""
@@ -289,7 +370,7 @@ class DataConfig:
     cache_in_memory: bool = True
     """Whether to cache all data in memory. Faster but uses more RAM."""
     
-    horizon_idx: int = 0
+    horizon_idx: Optional[int] = 0
     """
     Which prediction horizon to use for multi-horizon datasets.
     
@@ -301,18 +382,100 @@ class DataConfig:
         - horizon_idx=3 → 100 samples ahead (~10 seconds)
         - horizon_idx=4 → 200 samples ahead (~20 seconds)
     
-    Set to None to return all horizons (advanced: multi-task learning).
+    Set to None to return all horizons (required for HMHP multi-horizon training).
+    When None, the dataset returns a dict of labels: {horizon_value: label, ...}
+    """
+    
+    feature_preset: Optional[str] = None
+    """
+    Named feature preset for feature selection (optional).
+    
+    If specified, only the selected features are passed to the model.
+    Requires model.input_size to match the preset's feature count.
+    
+    Available presets:
+    - "short_term_40": 40 features optimized for H10/H20 prediction
+    - "full_116": All 116 features (standard + experimental)
+    - "full" or "full_98": Standard 98 features
+    - "lob_only": Raw LOB features (40)
+    - "lob_derived": LOB + derived (48)
+    - "signals_core": Core trading signals (8)
+    
+    Note: Either feature_preset OR feature_indices can be set, not both.
+    """
+    
+    feature_indices: Optional[List[int]] = None
+    """
+    Custom feature indices for selection (optional).
+    
+    If specified, only these feature indices are passed to the model.
+    Requires model.input_size to match len(feature_indices).
+    
+    Example: [84, 85, 86, 87, 88] to select only signal features.
+    
+    Note: Either feature_preset OR feature_indices can be set, not both.
     """
     
     def __post_init__(self) -> None:
-        if self.feature_count != 98:
+        # Validate feature_count is reasonable
+        # Supported configurations:
+        # - 40: Raw LOB only (official TLOB repo, DeepLOB benchmark)
+        # - 48: LOB + derived (FI-2010 style)
+        # - 76: LOB + derived + MBO
+        # - 98: Full feature set (extended)
+        # - 116: Full + experimental features (no MLOFI)
+        # - 128: Full + all experimental including MLOFI (Kolm 2023)
+        VALID_FEATURE_COUNTS = {40, 48, 76, 98, 116, 128}
+        
+        if self.feature_count < 1:
             raise ValueError(
-                f"feature_count must be 98 for current schema, got {self.feature_count}"
+                f"feature_count must be >= 1, got {self.feature_count}"
             )
-        if self.horizon_idx < 0:
+        if self.feature_count > 200:
             raise ValueError(
-                f"horizon_idx must be >= 0, got {self.horizon_idx}"
+                f"feature_count must be <= 200, got {self.feature_count}"
             )
+        if self.feature_count not in VALID_FEATURE_COUNTS:
+            import warnings
+            warnings.warn(
+                f"feature_count={self.feature_count} is not a standard configuration. "
+                f"Expected one of: {sorted(VALID_FEATURE_COUNTS)}. "
+                "Proceeding anyway, but ensure your export matches this count."
+            )
+        
+        # horizon_idx validation: None is valid for multi-horizon mode
+        if self.horizon_idx is not None and self.horizon_idx < 0:
+            raise ValueError(
+                f"horizon_idx must be >= 0 or None, got {self.horizon_idx}"
+            )
+        
+        # Feature selection validation: only one of preset or indices can be set
+        if self.feature_preset is not None and self.feature_indices is not None:
+            raise ValueError(
+                "Cannot specify both 'feature_preset' and 'feature_indices'. "
+                "Use one or the other for feature selection."
+            )
+        
+        # Validate preset exists (import here to avoid circular imports)
+        if self.feature_preset is not None:
+            from lobtrainer.constants import FEATURE_PRESETS
+            preset_lower = self.feature_preset.lower()
+            if preset_lower not in FEATURE_PRESETS:
+                available = sorted(FEATURE_PRESETS.keys())
+                raise ValueError(
+                    f"Unknown feature_preset: '{self.feature_preset}'. "
+                    f"Available presets: {available}"
+                )
+        
+        # Validate feature_indices if provided
+        if self.feature_indices is not None:
+            if len(self.feature_indices) == 0:
+                raise ValueError("feature_indices cannot be empty")
+            if len(self.feature_indices) != len(set(self.feature_indices)):
+                raise ValueError("feature_indices contains duplicate values")
+            if any(idx < 0 for idx in self.feature_indices):
+                raise ValueError("feature_indices contains negative values")
+            # Note: Upper bound checked at runtime when we know source_feature_count
 
 
 # =============================================================================
@@ -334,142 +497,263 @@ class DeepLOBMode(str, Enum):
 class ModelConfig:
     """
     Configuration for model architecture.
-    
-    Architecture-specific parameters are in nested dataclasses or dicts.
+
+    New format (Phase 3): 7 named fields + opaque params dict.
+    Old format (pre-Phase 3): 37 flat fields with model-prefixed names.
+
+    The __post_init__ auto-migrates old flat format to new format, so existing
+    YAML configs and test code continue to work without modification.
+
+    New YAML format::
+
+        model:
+          name: tlob
+          input_size: 98
+          num_classes: 3
+          params:
+            hidden_dim: 64
+            num_layers: 4
+            dropout: 0.2
+
+    Old YAML format (auto-migrated)::
+
+        model:
+          model_type: tlob
+          input_size: 98
+          num_classes: 3
+          tlob_hidden_dim: 64
+          tlob_num_layers: 4
+          dropout: 0.2
     """
-    
+
+    # =========================================================================
+    # Core fields (accessed by trainer/strategies outside create_model)
+    # =========================================================================
+
     model_type: ModelType = ModelType.LSTM
-    """Model architecture type."""
-    
+    """Model architecture type. Use 'name' for new configs; model_type is
+    preserved for backward compatibility with existing YAML files."""
+
     input_size: int = 98
-    """Input feature dimension. Must match DataConfig.feature_count."""
-    
-    hidden_size: int = 64
-    """Hidden layer size for sequence models."""
-    
-    num_layers: int = 2
-    """Number of layers for sequence models."""
-    
-    dropout: float = 0.2
-    """Dropout probability. Range: [0, 1]."""
-    
+    """Input feature dimension. MUST match data.feature_count."""
+
     num_classes: int = 3
     """Number of output classes."""
-    
-    # Architecture-specific parameters
+
+    params: dict = field(default_factory=dict)
+    """Architecture-specific parameters passed through to the model's config class.
+    Keys map directly to the model's config dataclass fields (e.g., TLOBConfig).
+    Injected automatically at creation time: num_features, num_classes, sequence_length, task_type."""
+
+    # HMHP-specific (needed by strategies)
+    hmhp_horizons: Optional[List[int]] = None
+    """Prediction horizons for HMHP models. None for non-HMHP."""
+
+    hmhp_use_regression: bool = False
+    """Whether HMHP classification uses dual regression heads."""
+
+    # DeepLOB-specific (needed by data pipeline)
+    deeplob_mode: str = "benchmark"
+    """DeepLOB mode: 'benchmark' (40 LOB features) or 'extended' (all features)."""
+
+    # =========================================================================
+    # Legacy fields (auto-migrated to params in __post_init__)
+    # These exist ONLY for backward compatibility with existing YAML configs.
+    # New configs should use the 'params' dict directly.
+    # =========================================================================
+
+    # Shared legacy fields
+    hidden_size: int = 64
+    num_layers: int = 2
+    dropout: float = 0.2
+    task_type: str = "classification"
+    regression_loss_type: str = "huber"
+    regression_loss_delta: float = 10.0
+
+    # LSTM/GRU legacy
     lstm_bidirectional: bool = False
-    """Use bidirectional LSTM/GRU. Doubles hidden dimension for classifier."""
-    
     lstm_attention: bool = False
-    """Use self-attention over LSTM sequence outputs before classification."""
-    
+
+    # Transformer legacy
     transformer_num_heads: int = 4
-    """Number of attention heads for Transformer."""
-    
     transformer_dim_feedforward: int = 256
-    """Feedforward dimension for Transformer."""
-    
-    # DeepLOB-specific parameters (Zhang et al. 2019)
-    deeplob_mode: DeepLOBMode = DeepLOBMode.BENCHMARK
-    """
-    DeepLOB operational mode:
-    - benchmark: Original paper architecture, uses first 40 LOB features
-    - extended: Adapted for all 98 features (experimental)
-    """
-    
+
+    # DeepLOB legacy
     deeplob_conv_filters: int = 32
-    """Number of filters in DeepLOB convolutional blocks. Paper default: 32."""
-    
     deeplob_inception_filters: int = 64
-    """Number of filters per Inception branch. Paper default: 64."""
-    
     deeplob_lstm_hidden: int = 64
-    """LSTM hidden size in DeepLOB. Paper default: 64."""
-    
     deeplob_num_levels: int = 10
-    """Number of LOB levels to use. Paper default: 10."""
-    
-    # =========================================================================
-    # TLOB-specific parameters (Berti & Kasneci 2025)
-    # =========================================================================
-    
+
+    # TLOB legacy
     tlob_hidden_dim: int = 64
-    """
-    TLOB embedding/hidden dimension. Paper uses 40 for FI-2010.
-    
-    For 98 features, recommended values: 64-128.
-    Must be >= 4 (for final block reduction) and even (for sinusoidal PE).
-    """
-    
     tlob_num_layers: int = 4
-    """
-    Number of TLOB blocks (each has temporal + feature attention).
-    Paper default: 4. More layers = more capacity but slower training.
-    """
-    
     tlob_num_heads: int = 1
-    """
-    Number of attention heads. Paper uses 1.
-    More heads may help but increases computation.
-    """
-    
     tlob_mlp_expansion: float = 4.0
-    """
-    MLP hidden dimension expansion factor.
-    MLP hidden = hidden_dim * expansion. Paper default: 4.0.
-    """
-    
     tlob_use_sinusoidal_pe: bool = True
-    """
-    Use fixed sinusoidal positional encoding (True) or learned (False).
-    Sinusoidal generalizes better to different sequence lengths.
-    """
-    
     tlob_use_bin: bool = True
-    """
-    Use Bilinear Normalization (BiN) layer.
-    Critical for handling non-stationarity in financial data.
-    Reference: Tran et al. (2021), ICPR.
-    """
-    
     tlob_dataset_type: str = "nvda"
-    """
-    Dataset type for TLOB preprocessing: 'fi2010', 'lobster', or 'nvda'.
-    Affects internal handling (e.g., LOBSTER has order type embedding).
-    """
-    
+    tlob_use_cvml: bool = False
+    tlob_cvml_out_channels: int = 0
+    gmadl_a: float = 10.0
+    gmadl_b: float = 1.5
+
+    # Logistic legacy
+    logistic_pooling: str = "last"
+    logistic_feature_indices: Optional[List[int]] = None
+
+    # HMHP legacy (architecture params — migrate to params dict)
+    hmhp_cascade_mode: str = "full"
+    hmhp_state_fusion: str = "gate"
+    hmhp_cascade_connections: Optional[List[Tuple[int, int]]] = None
+    hmhp_encoder_type: str = "tlob"
+    hmhp_encoder_hidden_dim: int = 64
+    hmhp_num_encoder_layers: int = 2
+    hmhp_decoder_hidden_dim: int = 32
+    hmhp_state_dim: int = 32
+    hmhp_use_confirmation: bool = True
+    hmhp_regression_loss_type: str = "huber"
+    hmhp_optimal_features_by_horizon: Optional[dict] = None
+    hmhp_loss_weights: Optional[dict] = None
+
     def __post_init__(self) -> None:
+        # Set default horizons
+        if self.hmhp_horizons is None:
+            self.hmhp_horizons = [10, 20, 50, 100, 200]
+
+        # Validate core fields that stay on ModelConfig
+        if self.input_size < 1:
+            raise ValueError(f"input_size must be >= 1, got {self.input_size}")
+        if self.num_classes < 2:
+            raise ValueError(f"num_classes must be >= 2, got {self.num_classes}")
         if self.dropout < 0 or self.dropout > 1:
             raise ValueError(f"dropout must be in [0, 1], got {self.dropout}")
-        if self.hidden_size < 1:
-            raise ValueError(f"hidden_size must be >= 1, got {self.hidden_size}")
-        if self.num_layers < 1:
-            raise ValueError(f"num_layers must be >= 1, got {self.num_layers}")
-        if self.deeplob_conv_filters < 1:
-            raise ValueError(f"deeplob_conv_filters must be >= 1, got {self.deeplob_conv_filters}")
-        if self.deeplob_inception_filters < 1:
-            raise ValueError(f"deeplob_inception_filters must be >= 1, got {self.deeplob_inception_filters}")
-        if self.deeplob_lstm_hidden < 1:
-            raise ValueError(f"deeplob_lstm_hidden must be >= 1, got {self.deeplob_lstm_hidden}")
-        if self.deeplob_num_levels < 1:
-            raise ValueError(f"deeplob_num_levels must be >= 1, got {self.deeplob_num_levels}")
-        # TLOB validation
-        if self.tlob_hidden_dim < 4:
-            raise ValueError(f"tlob_hidden_dim must be >= 4, got {self.tlob_hidden_dim}")
-        if self.tlob_use_sinusoidal_pe and self.tlob_hidden_dim % 2 != 0:
-            raise ValueError(
-                f"tlob_hidden_dim must be even for sinusoidal PE, got {self.tlob_hidden_dim}"
-            )
-        if self.tlob_num_layers < 1:
-            raise ValueError(f"tlob_num_layers must be >= 1, got {self.tlob_num_layers}")
-        if self.tlob_num_heads < 1:
-            raise ValueError(f"tlob_num_heads must be >= 1, got {self.tlob_num_heads}")
-        if self.tlob_mlp_expansion <= 0:
-            raise ValueError(f"tlob_mlp_expansion must be > 0, got {self.tlob_mlp_expansion}")
-        if self.tlob_dataset_type not in ("fi2010", "lobster", "nvda"):
-            raise ValueError(
-                f"tlob_dataset_type must be 'fi2010', 'lobster', or 'nvda', got {self.tlob_dataset_type}"
-            )
+
+        # Auto-migrate legacy flat fields into params dict if params is empty.
+        # This ensures old YAML configs (with flat tlob_hidden_dim etc.) work
+        # seamlessly — the legacy fields populate params for create_model().
+        if not self.params:
+            self.params = self._build_params_from_legacy()
+
+    @property
+    def name(self) -> str:
+        """Registry key for this model (derived from model_type)."""
+        _MODEL_TYPE_TO_NAME = {
+            "lstm": "lstm",
+            "gru": "gru",
+            "logistic": "logistic_lob",
+            "deeplob": "deeplob",
+            "tlob": "tlob",
+            "hmhp": "hmhp",
+            "hmhp_regression": "hmhp_regressor",
+            "mlplob": "mlplob",
+            "temporal_ridge": "temporal_ridge",
+            "temporal_gradboost": "temporal_gradboost",
+        }
+        mt = self.model_type.value if isinstance(self.model_type, Enum) else str(self.model_type)
+        return _MODEL_TYPE_TO_NAME.get(mt, mt)
+
+    def _build_params_from_legacy(self) -> dict:
+        """Extract architecture params from legacy flat fields.
+
+        Maps model_type-prefixed fields to the params dict that will be
+        passed to the model's config class via ModelRegistry.
+        """
+        mt = self.model_type.value if isinstance(self.model_type, Enum) else str(self.model_type)
+
+        if mt in ("lstm", "gru"):
+            return {
+                "input_size": self.input_size,
+                "hidden_size": self.hidden_size,
+                "num_layers": self.num_layers,
+                "num_classes": self.num_classes,
+                "dropout": self.dropout,
+                "bidirectional": self.lstm_bidirectional,
+                "attention": self.lstm_attention if mt == "lstm" else False,
+            }
+
+        elif mt == "logistic":
+            return {
+                "num_features": self.input_size,
+                "num_classes": self.num_classes,
+                "pooling": self.logistic_pooling,
+                "dropout": self.dropout,
+                "feature_indices": self.logistic_feature_indices,
+            }
+
+        elif mt == "deeplob":
+            return {
+                "mode": self.deeplob_mode if isinstance(self.deeplob_mode, str) else self.deeplob_mode.value,
+                "feature_layout": "grouped",
+                "num_levels": self.deeplob_num_levels,
+                "num_classes": self.num_classes,
+                "conv_filters": self.deeplob_conv_filters,
+                "inception_filters": self.deeplob_inception_filters,
+                "lstm_hidden": self.deeplob_lstm_hidden,
+                "lstm_layers": 1,
+                "dropout": self.dropout,
+                "task_type": self.task_type,
+                "regression_loss_type": self.regression_loss_type,
+                "regression_loss_delta": self.regression_loss_delta,
+            }
+
+        elif mt == "tlob":
+            return {
+                "num_features": self.input_size,
+                "num_classes": self.num_classes,
+                "hidden_dim": self.tlob_hidden_dim,
+                "num_layers": self.tlob_num_layers,
+                "num_heads": self.tlob_num_heads,
+                "mlp_expansion": self.tlob_mlp_expansion,
+                "use_sinusoidal_pe": self.tlob_use_sinusoidal_pe,
+                "use_bin": self.tlob_use_bin,
+                "dropout": self.dropout,
+                "dataset_type": self.tlob_dataset_type,
+                "task_type": self.task_type,
+                "regression_loss_type": self.regression_loss_type,
+                "regression_loss_delta": self.regression_loss_delta,
+                "use_cvml": self.tlob_use_cvml,
+                "cvml_out_channels": self.tlob_cvml_out_channels,
+                "gmadl_a": self.gmadl_a,
+                "gmadl_b": self.gmadl_b,
+            }
+
+        elif mt in ("hmhp", "hmhp_regression"):
+            # Note: num_classes is passed to create_hmhp() as explicit kwarg
+            # but create_hmhp_regressor() hardcodes it. We include it here
+            # and let _create_hmhp_model handle the per-factory logic.
+            p = {
+                "num_features": self.input_size,
+                "horizons": self.hmhp_horizons,
+                "encoder_type": self.hmhp_encoder_type,
+                "hidden_dim": self.hmhp_encoder_hidden_dim,
+                "num_encoder_layers": self.hmhp_num_encoder_layers,
+                "decoder_hidden_dim": self.hmhp_decoder_hidden_dim,
+                "state_dim": self.hmhp_state_dim,
+                "state_fusion": self.hmhp_state_fusion,
+                "cascade_mode": self.hmhp_cascade_mode,
+                "dropout": self.dropout,
+            }
+            if mt == "hmhp":
+                p["cascade_connections"] = self.hmhp_cascade_connections
+                p["optimal_features_by_horizon"] = self.hmhp_optimal_features_by_horizon
+                p["use_confirmation"] = self.hmhp_use_confirmation
+                p["use_regression"] = self.hmhp_use_regression
+                if self.hmhp_loss_weights is not None:
+                    p["loss_weights"] = self.hmhp_loss_weights
+            if mt == "hmhp_regression":
+                # create_hmhp_regressor() kwarg is 'loss_type', not 'default_loss_type'
+                p["loss_type"] = self.hmhp_regression_loss_type
+            return p
+
+        else:
+            # Unknown model type — return shared fields as params
+            return {
+                "input_size": self.input_size,
+                "hidden_size": self.hidden_size,
+                "num_layers": self.num_layers,
+                "num_classes": self.num_classes,
+                "dropout": self.dropout,
+            }
 
 
 # =============================================================================
@@ -635,6 +919,52 @@ class ExperimentConfig:
     tags: List[str] = field(default_factory=list)
     """Tags for experiment tracking."""
     
+    def __post_init__(self) -> None:
+        """Validate cross-config consistency."""
+        # Determine expected model input size based on feature selection config
+        expected_input_size = self.data.feature_count
+        
+        if self.data.feature_preset is not None:
+            # Feature preset specified - model input must match preset size
+            from lobtrainer.constants import get_feature_preset
+            preset_indices = get_feature_preset(self.data.feature_preset)
+            expected_input_size = len(preset_indices)
+            
+        elif self.data.feature_indices is not None:
+            # Custom feature indices - model input must match indices count
+            expected_input_size = len(self.data.feature_indices)
+        
+        # CRITICAL: model.input_size must match expected feature count
+        # This prevents dimension mismatch errors at runtime
+        if self.model.input_size != expected_input_size:
+            if self.data.feature_preset is not None:
+                raise ValueError(
+                    f"Config mismatch: model.input_size ({self.model.input_size}) "
+                    f"must equal feature_preset '{self.data.feature_preset}' size ({expected_input_size}). "
+                    f"Set model.input_size: {expected_input_size}"
+                )
+            elif self.data.feature_indices is not None:
+                raise ValueError(
+                    f"Config mismatch: model.input_size ({self.model.input_size}) "
+                    f"must equal len(feature_indices) ({expected_input_size}). "
+                    f"Set model.input_size: {expected_input_size}"
+                )
+            else:
+                raise ValueError(
+                    f"Config mismatch: data.feature_count ({self.data.feature_count}) "
+                    f"must equal model.input_size ({self.model.input_size}). "
+                    f"Ensure both are set to match your exported data."
+                )
+        
+        # Validate exclude_features are within bounds of SOURCE data
+        for idx in self.data.normalization.exclude_features:
+            if idx >= self.data.feature_count:
+                raise ValueError(
+                    f"normalization.exclude_features contains index {idx}, "
+                    f"but feature_count is only {self.data.feature_count}. "
+                    f"Remove or adjust exclude_features for your dataset."
+                )
+    
     def to_dict(self) -> dict:
         """Convert config to dictionary for serialization."""
         def _convert(obj: Any) -> Any:
@@ -662,12 +992,21 @@ class ExperimentConfig:
     
     @classmethod
     def from_dict(cls, data: dict) -> "ExperimentConfig":
-        """Create config from dictionary."""
+        """
+        Create config from dictionary.
+        
+        Uses dacite with type casting for robust parsing of YAML/JSON input.
+        Handles common parsing issues like scientific notation strings.
+        """
         from dacite import from_dict, Config as DaciteConfig
+        
+        # Preprocess data to handle YAML parsing quirks
+        data = _normalize_config_types(data)
+        
         return from_dict(
             data_class=cls,
             data=data,
-            config=DaciteConfig(cast=[Enum, Path]),
+            config=DaciteConfig(cast=[Enum, Path, float, int, bool]),
         )
     
     @classmethod
@@ -683,6 +1022,63 @@ class ExperimentConfig:
         with open(path) as f:
             data = json.load(f)
         return cls.from_dict(data)
+
+
+# =============================================================================
+# Config Normalization Utilities
+# =============================================================================
+
+
+def _normalize_config_types(data: dict) -> dict:
+    """
+    Recursively normalize config data to handle YAML parsing quirks.
+    
+    YAML parsers can sometimes parse scientific notation (1e-8) as strings
+    instead of floats. This function detects and converts such values.
+    
+    This is a long-term fix that handles edge cases in YAML parsing across
+    different Python versions and YAML library versions.
+    
+    Args:
+        data: Dictionary from YAML/JSON parsing
+        
+    Returns:
+        Normalized dictionary with proper types
+    """
+    import re
+    
+    # Pattern to match scientific notation strings like "1e-8", "1E-8", "1.5e-10"
+    SCIENTIFIC_NOTATION_PATTERN = re.compile(r'^-?[0-9]+\.?[0-9]*[eE][+-]?[0-9]+$')
+    
+    def _normalize_value(value):
+        """Normalize a single value."""
+        if isinstance(value, dict):
+            return {k: _normalize_value(v) for k, v in value.items()}
+        elif isinstance(value, list):
+            return [_normalize_value(v) for v in value]
+        elif isinstance(value, str):
+            # Check if string looks like scientific notation
+            if SCIENTIFIC_NOTATION_PATTERN.match(value):
+                try:
+                    return float(value)
+                except ValueError:
+                    return value
+            # Check if string is "true"/"false" (YAML boolean edge cases)
+            if value.lower() == 'true':
+                return True
+            if value.lower() == 'false':
+                return False
+            # Check if string is a plain integer
+            if value.isdigit() or (value.startswith('-') and value[1:].isdigit()):
+                try:
+                    return int(value)
+                except ValueError:
+                    return value
+            return value
+        else:
+            return value
+    
+    return {k: _normalize_value(v) for k, v in data.items()}
 
 
 # =============================================================================

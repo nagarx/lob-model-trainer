@@ -1,0 +1,126 @@
+# =============================================================================
+# TLOB Regression: H10, 128 Features, Huber Loss (delta=5.0 bps)
+# =============================================================================
+#
+# FIRST REGRESSION EXPERIMENT.  Validates the full regression pipeline:
+#   feature-extractor → regression_labels.npy → TLOB regression head → Huber loss → R²/IC metrics
+#
+# MODEL: TLOB (Berti & Kasneci 2025) with regression head
+#   - Dual attention (temporal + feature) learns which features/timesteps matter
+#   - BiN normalization for non-stationarity
+#   - Regression head: shared trunk → Linear(total_dim, 1)
+#   - Huber loss with delta=5.0 bps (calibrated from REGRESSION_ANALYSIS_REPORT.md §8)
+#
+# DATA: nvda_xnas_128feat_regression export
+#   - 233 trading days, 266,608 sequences [N, 100, 128]
+#   - Regression labels [N, 3] float64 (H10, H60, H300)
+#   - Using horizon_idx=0 (H10: strongest signal, R²=9.85%, IC=0.319)
+#
+# STATISTICAL CALIBRATION (from REGRESSION_ANALYSIS_REPORT.md):
+#   - H10 return std: 6.73 bps (train), 4.69 bps (test)
+#   - H10 kurtosis: 49.69 (extreme → Huber over MSE)
+#   - Huber delta: 5.0 bps (IQR-based, §8.1)
+#   - Signal half-life: 5 timesteps (attention should learn this)
+#   - Walk-forward IC stability: 8.07 (signal is structural)
+#
+# BASELINES (from compute_regression_baselines.py):
+#   - Persistence R² = -0.377 (persistence hurts at H10)
+#   - Linear Ridge R² = 0.170 (multi-feature linear ceiling)
+#   - Single-feature R² = 0.107 (DEPTH_NORM_OFI alone)
+#
+# SUCCESS CRITERIA:
+#   - Test R² > 0.170 (beat linear Ridge)
+#   - Test IC > 0.30 (near single-feature IC of 0.335)
+#   - val_loss decreasing (learning signal exists)
+#   - Pipeline executes end-to-end without errors
+#
+# =============================================================================
+
+name: TLOB_NVDA_128feat_Regression_H10
+description: |
+  First regression experiment. TLOB predicts continuous bps returns at H10.
+  Huber loss (delta=5.0) calibrated from empirical return distribution.
+  Target: beat linear Ridge R²=0.170 baseline.
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  data_dir: "../data/exports/nvda_xnas_128feat_regression"
+  feature_count: 128
+  labeling_strategy: regression
+  num_classes: 3
+
+  # H10 = index 0 in horizons [10, 60, 300]
+  horizon_idx: 0
+
+  sequence:
+    window_size: 100
+    stride: 10
+
+  normalization:
+    strategy: hybrid
+    eps: 1.0e-8
+    clip_value: 10.0
+    exclude_features: [93, 115]
+
+# =============================================================================
+# Model Configuration (TLOB Regression)
+# =============================================================================
+model:
+  model_type: tlob
+  input_size: 128
+  num_classes: 3
+  dropout: 0.1
+
+  # Regression
+  task_type: regression
+  regression_loss_type: huber
+  regression_loss_delta: 5.0
+
+  # TLOB architecture -- compact config (693K params, tested on CPU)
+  # Reduced from hidden=64/layers=4/heads=4 (5M params, caused OOM)
+  tlob_hidden_dim: 32
+  tlob_num_layers: 2
+  tlob_num_heads: 2
+  tlob_mlp_expansion: 4.0
+  tlob_use_sinusoidal_pe: true
+  tlob_use_bin: true
+  tlob_dataset_type: nvda
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+train:
+  task_type: regression
+  loss_type: huber
+  use_class_weights: false
+
+  batch_size: 128
+  learning_rate: 5.0e-4
+  weight_decay: 0.01
+  epochs: 50
+  early_stopping_patience: 10
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 0
+  pin_memory: false
+  seed: 42
+  mixed_precision: false
+
+# =============================================================================
+# Output
+# =============================================================================
+output_dir: outputs/experiments/nvda_tlob_128feat_regression_h10
+log_level: INFO
+
+tags:
+  - nvda
+  - xnas
+  - tlob
+  - regression
+  - 128-features
+  - h10
+  - huber-loss
+  - delta-5bps
+  - first-regression-experiment

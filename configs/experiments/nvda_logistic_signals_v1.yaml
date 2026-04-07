@@ -1,0 +1,87 @@
+# =============================================================================
+# LogisticLOB Signals-Only Experiment
+# =============================================================================
+#
+# Purpose: Test if trading signals alone have predictive power
+#
+# This experiment trains logistic regression using ONLY the 8 core trading
+# signals (indices 84-91) to test:
+# 1. Whether signals capture useful information for prediction
+# 2. Signal feature importance ranking
+# 3. Minimal viable feature set for prediction
+#
+# Signals used:
+#   84: TRUE_OFI (True Order Flow Imbalance)
+#   85: DEPTH_NORM_OFI (Depth-Normalized OFI)
+#   86: EXECUTED_PRESSURE
+#   87: SIGNED_MP_DELTA_BPS (Signed Mid-Price Delta in BPS)
+#   88: TRADE_ASYMMETRY
+#   89: CANCEL_ASYMMETRY
+#   90: FRAGILITY_SCORE
+#   91: DEPTH_ASYMMETRY
+#
+# Expected behavior:
+# - Very fast training (only 8 features)
+# - Clear feature importance ranking
+# - If signals have NO predictive power, complex models won't help
+#
+# Reference: Correlation analysis showed depth_norm_ofi (85) has r=0.295 at H0
+# =============================================================================
+
+name: "nvda_logistic_signals_v1"
+description: "LogisticLOB using only 8 core trading signals"
+
+tags:
+  - "baseline"
+  - "logistic"
+  - "signals_only"
+  - "horizon_100"
+
+data:
+  data_dir: "../data/exports/nvda_98feat_v2"
+  feature_count: 98
+  horizon_idx: 3  # H=100 (10 seconds)
+  
+  sequence:
+    window_size: 100
+    stride: 10
+  
+  normalization:
+    strategy: "hybrid"
+    eps: 1e-8
+    clip_value: 10.0
+    exclude_features: [92, 93, 94, 96, 97]
+  
+  labeling_strategy: "tlob"
+  num_classes: 3
+  cache_in_memory: true
+
+model:
+  model_type: "logistic"
+  input_size: 98  # Full input, but we select subset
+  num_classes: 3
+  dropout: 0.0
+  
+  # Use only core trading signals
+  logistic_pooling: "last"
+  logistic_feature_indices: [84, 85, 86, 87, 88, 89, 90, 91]
+
+train:
+  batch_size: 512  # Very small model, can use larger batch
+  learning_rate: 1e-2  # Higher LR for 8-feature model
+  weight_decay: 1e-4
+  epochs: 30  # Will converge very fast
+  early_stopping_patience: 10
+  gradient_clip_norm: null
+  
+  scheduler: "cosine"
+  num_workers: 4
+  pin_memory: true
+  seed: 42
+  
+  loss_type: "weighted_ce"
+  use_class_weights: true
+  task_type: "multiclass"
+
+output_dir: "outputs/logistic_signals"
+log_level: "INFO"

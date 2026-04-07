@@ -1,0 +1,79 @@
+# =============================================================================
+# LogisticLOB Baseline - Horizon 10 (Short-Term)
+# =============================================================================
+#
+# Purpose: Test logistic baseline at the SHORTEST horizon where signals
+# have the STRONGEST predictive power according to correlation analysis.
+#
+# Key insight from correlation analysis:
+#   - depth_norm_ofi: r=+0.295 at H0 (10 samples) vs r=+0.075 at H3 (100 samples)
+#   - trade_asymmetry: r=+0.278 at H0 vs r=+0.060 at H3
+#   - Signals lose ~75% predictive power from H0 to H3
+#
+# This experiment tests whether the poor H=100 performance is due to
+# horizon mismatch or fundamental data/preprocessing issues.
+#
+# Expected outcome:
+#   - If accuracy >> 40%, horizon mismatch was the issue
+#   - If accuracy ~35%, problem is in preprocessing/normalization
+#
+# Reference: RULE.md §0 (Research-Backed Implementation)
+# =============================================================================
+
+name: "nvda_logistic_baseline_h10"
+description: "LogisticLOB baseline on 98 features at H=10 (shortest horizon)"
+
+tags:
+  - "baseline"
+  - "logistic"
+  - "98feat"
+  - "horizon_10"
+  - "short_term"
+
+data:
+  data_dir: "../data/exports/nvda_98feat_v2"
+  feature_count: 98
+  horizon_idx: 0  # H=10 (1 second ahead) - STRONGEST signal correlation
+  
+  sequence:
+    window_size: 100
+    stride: 10
+  
+  normalization:
+    strategy: "hybrid"
+    eps: 1e-8
+    clip_value: 10.0
+    exclude_features: [92, 93, 94, 96, 97]
+  
+  labeling_strategy: "tlob"
+  num_classes: 3
+  cache_in_memory: true
+
+model:
+  model_type: "logistic"
+  input_size: 98
+  num_classes: 3
+  dropout: 0.0
+  
+  logistic_pooling: "last"
+  logistic_feature_indices: null  # Use all 98 features
+
+train:
+  batch_size: 256
+  learning_rate: 1e-3
+  weight_decay: 1e-4
+  epochs: 30  # Shorter - linear model converges fast
+  early_stopping_patience: 10
+  gradient_clip_norm: null
+  
+  scheduler: "cosine"
+  num_workers: 4
+  pin_memory: true
+  seed: 42
+  
+  loss_type: "weighted_ce"
+  use_class_weights: true
+  task_type: "multiclass"
+
+output_dir: "outputs/logistic_baseline_h10"
+log_level: "INFO"

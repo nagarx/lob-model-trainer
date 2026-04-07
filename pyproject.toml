@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lobtrainer"
-version = "0.2.0"
+version = "0.4.0"
 description = "LOB Model Trainer: ML experimentation for limit order book price prediction"
 readme = "README.md"
 license = "MIT"
@@ -15,6 +15,15 @@ authors = [
 keywords = ["hft", "lob", "limit-order-book", "machine-learning", "trading"]
 
 dependencies = [
+    # Pipeline contracts (single source of truth for feature indices)
+    "hft-contracts",
+
+    # Shared metrics library (IC, R², regression metrics with NaN safety)
+    "hft-metrics",
+
+    # Model architectures (local: pip install -e ../lob-models)
+    "lob-models",
+    
     # Core ML
     "torch>=2.0",
     "numpy>=1.24",  # Compatible with installed version
@@ -44,10 +53,6 @@ dependencies = [
     # Utilities
     "tqdm>=4.65",
 ]
-
-# Note: lobmodels is a local dependency from ../lob-models
-# Install in development mode with: pip install -e ../lob-models
-# Or use: uv pip install -e ../lob-models
 
 [project.optional-dependencies]
 dev = [

@@ -1,0 +1,58 @@
+# =============================================================================
+# Temporal GradientBoosting: H10, 53 Temporal Features
+# =============================================================================
+#
+# Simple model achieving R²=0.397 (85.6% of TLOB's 0.464) with 200 trees.
+#
+# From ablation findings (ABLATION_FINDINGS_2026_03_16.md):
+#   L3 GradBoost:  R²=0.397, IC=0.617, DA=0.723
+#   TLOB T=100:    R²=0.464, IC=0.677, DA=0.749
+#
+# =============================================================================
+
+name: TemporalGradBoost_NVDA_H10
+description: |
+  GradientBoosting on 53 temporal features. Nonlinear alternative to Ridge.
+
+data:
+  data_dir: "../data/exports/nvda_xnas_128feat_regression"
+  feature_count: 128
+  labeling_strategy: regression
+  horizon_idx: 0
+
+  sequence:
+    window_size: 100
+    stride: 10
+
+model:
+  model_type: temporal_gradboost
+  n_estimators: 200
+  max_depth: 5
+  learning_rate: 0.05
+  subsample: 0.8
+  min_samples_leaf: 50
+  loss_type: huber
+  huber_delta: 0.9
+  max_train_samples: 50000
+
+  features:
+    signal_indices: [85, 84, 86, 56, 45]
+    top_k_signals: 3
+    rolling_windows: [5, 10, 20]
+    include_volatility: true
+    include_momentum: true
+
+train:
+  task_type: regression
+
+output_dir: outputs/experiments/nvda_temporal_gradboost_h10
+log_level: INFO
+
+tags:
+  - nvda
+  - xnas
+  - temporal-gradboost
+  - regression
+  - 53-features
+  - h10
+  - simple-model

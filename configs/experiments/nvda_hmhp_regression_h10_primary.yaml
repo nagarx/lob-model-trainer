@@ -1,0 +1,100 @@
+# =============================================================================
+# HMHP-R Regression: Multi-Horizon [10, 60, 300], H10 Primary
+# =============================================================================
+#
+# Phase 3: Multi-horizon regression following successful TLOB single-horizon.
+#
+# TLOB single-horizon achieved:
+#   Test R²=0.464, IC=0.677, DA=0.749 at H10 (vs linear Ridge R²=0.170)
+#
+# HMHP-R adds:
+#   - Multi-horizon prediction (H10, H60, H300 simultaneously)
+#   - Cascading state from short to long horizon
+#   - Confirmation module for cross-horizon agreement
+#   - Per-horizon Huber loss with H10-primary weighting
+#
+# Statistical calibration:
+#   - H10: Huber delta=5 bps, weight=0.50 (strongest signal)
+#   - H60: Huber delta=10 bps, weight=0.25
+#   - H300: Huber delta=24 bps, weight=0.15
+#   - Consistency: weight=0.10
+#
+# =============================================================================
+
+name: HMHP_NVDA_Regression_H10_Primary
+description: |
+  Multi-horizon regression: HMHP-R predicts continuous bps returns at H10/H60/H300.
+  H10-primary weighting per signal strength analysis.
+
+data:
+  data_dir: "../data/exports/nvda_xnas_128feat_regression"
+  feature_count: 128
+  labeling_strategy: regression
+  num_classes: 3
+  horizon_idx: 0
+
+  sequence:
+    window_size: 100
+    stride: 10
+
+  normalization:
+    strategy: hybrid
+    eps: 1.0e-8
+    clip_value: 10.0
+    exclude_features: [93, 115]
+
+model:
+  model_type: hmhp_regression
+  input_size: 128
+  num_classes: 3
+  dropout: 0.1
+
+  hmhp_horizons:
+    - 10
+    - 60
+    - 300
+
+  hmhp_cascade_mode: full
+  hmhp_state_fusion: gate
+  hmhp_encoder_type: tlob
+  hmhp_encoder_hidden_dim: 64
+  hmhp_num_encoder_layers: 2
+  hmhp_decoder_hidden_dim: 32
+  hmhp_state_dim: 32
+  hmhp_use_confirmation: true
+  hmhp_regression_loss_type: huber
+
+  hmhp_loss_weights:
+    H10: 0.50
+    H60: 0.25
+    H300: 0.15
+    consistency: 0.10
+
+train:
+  task_type: regression
+  loss_type: huber
+  use_class_weights: false
+
+  batch_size: 128
+  learning_rate: 5.0e-4
+  weight_decay: 0.01
+  epochs: 20
+  early_stopping_patience: 8
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 0
+  pin_memory: false
+  seed: 42
+  mixed_precision: false
+
+output_dir: outputs/experiments/nvda_hmhp_regression_h10_primary
+log_level: INFO
+
+tags:
+  - nvda
+  - xnas
+  - hmhp-regression
+  - multi-horizon
+  - 128-features
+  - h10-primary
+  - huber-loss

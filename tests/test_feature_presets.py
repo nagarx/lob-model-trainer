@@ -191,13 +191,20 @@ class TestPresetValidity:
     
     @pytest.mark.parametrize("preset_name", FEATURE_PRESETS.keys())
     def test_indices_in_valid_range(self, preset_name):
-        """All preset indices should be in [0, 97]."""
+        """All preset indices should be in valid range for the preset type."""
         indices = FEATURE_PRESETS[preset_name]
         
+        # Presets with experimental features can have indices beyond 97
+        # Standard presets are limited to 0-97 (stable feature range)
+        extended_presets = {"full_116", "short_term_40", "full_128", "analysis_ready_128"}
+        max_valid = 147 if preset_name in extended_presets else 97
+        
         for idx in indices:
-            assert 0 <= idx <= 97, (
+            # Handle both int and FeatureIndex enum values
+            idx_val = int(idx) if hasattr(idx, '__int__') else idx
+            assert 0 <= idx_val <= max_valid, (
                 f"Preset '{preset_name}' has invalid index {idx}. "
-                f"Valid range is 0-97."
+                f"Valid range is 0-{max_valid}."
             )
     
     @pytest.mark.parametrize("preset_name", FEATURE_PRESETS.keys())

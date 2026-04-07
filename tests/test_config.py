@@ -52,10 +52,10 @@ class TestNormalizationConfig:
         config = NormalizationConfig()
         assert config.strategy == NormalizationStrategy.ZSCORE_PER_DAY
     
-    def test_default_excludes_time_regime(self):
-        """Time regime (93) should be excluded by default."""
+    def test_default_exclude_features_empty(self):
+        """Default exclude_features is empty (avoids out-of-bounds on 40-feature data)."""
         config = NormalizationConfig()
-        assert 93 in config.exclude_features  # TIME_REGIME index
+        assert config.exclude_features == []
     
     def test_invalid_eps(self):
         """Eps must be > 0."""

@@ -1,0 +1,65 @@
+# =============================================================================
+# E5 Phase 2: TLOB + CVML Regression — 60s bins, H10 (10 min), Huber
+# =============================================================================
+# Tests whether CVML cross-feature mixing improves over baseline TLOB.
+# CVML: 98 → 49 features via 5 dilated causal Conv1D layers.
+# Li et al. ICLR 2025: +244.9% R² on MPRF benchmark.
+# =============================================================================
+
+name: E5_60s_Huber_CVML
+description: |
+  E5 Phase 2 CVML test: TLOB + CVML on 60s data at H10 (10 min).
+  Tests if CVML feature mixing improves IC/DA over no-CVML baseline.
+
+data:
+  data_dir: "../data/exports/e5_timebased_60s"
+  feature_count: 98
+  labeling_strategy: regression
+  num_classes: 3
+  horizon_idx: 0
+  sequence:
+    window_size: 20
+    stride: 1
+  normalization:
+    strategy: hybrid
+    eps: 1.0e-8
+    clip_value: 10.0
+    exclude_features: [93]
+
+model:
+  model_type: tlob
+  input_size: 98
+  num_classes: 3
+  dropout: 0.1
+  task_type: regression
+  regression_loss_type: huber
+  regression_loss_delta: 12.6
+  tlob_hidden_dim: 32
+  tlob_num_layers: 2
+  tlob_num_heads: 2
+  tlob_mlp_expansion: 4.0
+  tlob_use_sinusoidal_pe: true
+  tlob_use_bin: true
+  tlob_dataset_type: nvda
+  tlob_use_cvml: true
+  tlob_cvml_out_channels: 49
+
+train:
+  task_type: regression
+  loss_type: huber
+  use_class_weights: false
+  batch_size: 128
+  learning_rate: 5.0e-4
+  weight_decay: 0.01
+  epochs: 30
+  early_stopping_patience: 5
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 0
+  pin_memory: false
+  seed: 42
+  mixed_precision: false
+
+output_dir: outputs/experiments/e5_60s_huber_cvml
+log_level: INFO
+tags: [e5, nvda, regression, h10, 60s, huber, cvml]

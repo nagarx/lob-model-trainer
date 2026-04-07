@@ -1,0 +1,88 @@
+# =============================================================================
+# TLOB Regression: Fine-Grained (event_count=200), H10 Point-Return
+# =============================================================================
+#
+# Research-driven experiment: finer sampling to align with OFI effective horizon.
+# H10 = 200 events = ~0.46 seconds (vs 10,000 events = ~23s in prior experiments).
+#
+# Baselines (point-return, fine-grained):
+#   Persistence R² = -0.99 (useless)
+#   Linear Ridge R² = -0.001, IC = 0.074
+#   Single feature R² = 0.002, IC = 0.045
+#
+# NOTE: Signal is weak at this granularity with point-return labels.
+# This experiment tests whether TLOB can extract nonlinear signal beyond
+# the linear baseline IC of 0.074.
+#
+# =============================================================================
+
+name: TLOB_NVDA_128feat_Finegrained_H10
+description: |
+  Fine-grained point-return regression. event_count=200, H10=200 events (~0.46s).
+  Tests the Kolm et al. 2023 hypothesis that OFI signal exists at short horizons.
+
+data:
+  data_dir: "../data/exports/nvda_xnas_128feat_regression_finegrained"
+  feature_count: 128
+  labeling_strategy: regression
+  num_classes: 3
+  horizon_idx: 0
+
+  sequence:
+    window_size: 100
+    stride: 5
+
+  normalization:
+    strategy: hybrid
+    eps: 1.0e-8
+    clip_value: 10.0
+    exclude_features: [93, 115]
+
+model:
+  model_type: tlob
+  input_size: 128
+  num_classes: 3
+  dropout: 0.1
+
+  task_type: regression
+  regression_loss_type: huber
+  regression_loss_delta: 1.0
+
+  tlob_hidden_dim: 32
+  tlob_num_layers: 2
+  tlob_num_heads: 2
+  tlob_mlp_expansion: 4.0
+  tlob_use_sinusoidal_pe: true
+  tlob_use_bin: true
+  tlob_dataset_type: nvda
+
+train:
+  task_type: regression
+  loss_type: huber
+  use_class_weights: false
+
+  batch_size: 512
+  learning_rate: 5.0e-4
+  weight_decay: 0.01
+  epochs: 5
+  early_stopping_patience: 5
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 0
+  pin_memory: false
+  seed: 42
+  mixed_precision: false
+
+output_dir: outputs/experiments/nvda_tlob_128feat_regression_finegrained_h10
+log_level: INFO
+
+tags:
+  - nvda
+  - xnas
+  - tlob
+  - regression
+  - fine-grained
+  - point-return
+  - event-count-200
+  - h10
+  - research-driven

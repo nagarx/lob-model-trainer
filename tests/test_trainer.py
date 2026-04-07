@@ -564,8 +564,8 @@ class TestModelFactory:
         from lobtrainer.config import ModelConfig, ModelType
         
         config = ModelConfig(model_type=ModelType.TRANSFORMER)
-        
-        with pytest.raises(NotImplementedError):
+
+        with pytest.raises(ValueError, match="Unknown model"):
             create_model(config)
 
 

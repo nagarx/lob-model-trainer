@@ -23,7 +23,7 @@ python scripts/train.py --config configs/experiments/nvda_tlob_triple_barrier_11
 ```
 configs/
 ├── README_configs.md                      # This file (complete reference)
-├── experiments/                           # ✅ ACTIVE configs (3)
+├── experiments/                           # ✅ ACTIVE configs (34)
 │   ├── nvda_tlob_h10_v1.yaml             # TLOB H=10 (short-term)
 │   ├── nvda_tlob_h100_v1.yaml            # TLOB H=100 (paper benchmark)
 │   └── nvda_tlob_triple_barrier_11mo_v1.yaml  # Triple Barrier
@@ -57,7 +57,7 @@ configs/
 
 ---
 
-## Active Experiment Configs (3)
+## Active Experiment Configs (34)
 
 These are ready to run on the current 234-day dataset.
 
@@ -119,10 +119,15 @@ data:
 
 | `model_type` | Architecture | Features Used | Reference |
 |--------------|--------------|---------------|-----------|
-| `tlob` | Transformer with dual attention | All 98 | Berti & Kasneci (2025) |
-| `deeplob` | CNN + Inception + LSTM | First 40 (LOB only) | Zhang et al. (2019) |
-| `lstm` | Stacked LSTM | All 98 | Hochreiter & Schmidhuber (1997) |
-| `gru` | Stacked GRU | All 98 | Cho et al. (2014) |
+| `tlob` | Transformer with dual attention | All 98-148 | Berti & Kasneci (2025) |
+| `deeplob` | CNN + Inception + LSTM | First 40 (LOB only) or all | Zhang et al. (2019) |
+| `lstm` | Stacked LSTM | All 98-148 | Hochreiter & Schmidhuber (1997) |
+| `gru` | Stacked GRU | All 98-148 | Cho et al. (2014) |
+| `hmhp` | Hierarchical Multi-Horizon | All 98-148, multi-horizon classification | Custom |
+| `hmhp_regression` | HMHP Regressor | All 98-148, multi-horizon regression | Custom |
+| `logistic` | Logistic Regression | Single snapshot | sklearn |
+| `temporal_ridge` | Ridge + temporal features | 53 temporal features | sklearn |
+| `temporal_gradboost` | GradientBoosting + temporal features | 53 temporal features | sklearn |
 
 ---
 
@@ -130,9 +135,10 @@ data:
 
 | `labeling_strategy` | Classes | Class Meanings | Best For |
 |---------------------|---------|----------------|----------|
-| `tlob` | 3 | 0=Down, 1=Stable, 2=Up | Trend prediction |
+| `tlob` | 3 | 0=Down, 1=Stable, 2=Up | Trend prediction (classification) |
 | `triple_barrier` | 3 | 0=StopLoss, 1=Timeout, 2=ProfitTarget | Trading decisions |
 | `opportunity` | 3 | 0=BigDown, 1=NoOpportunity, 2=BigUp | Big move detection |
+| `regression` | continuous | Forward returns in bps (float64) | Regression (point-return, smoothed) |
 
 ---
 
@@ -143,6 +149,9 @@ data:
 | `cross_entropy` | Balanced classes | None |
 | `weighted_ce` | Imbalanced classes | Inverse frequency weights |
 | `focal` | Severely imbalanced | Down-weights easy examples |
+| `mse` | Regression | N/A |
+| `huber` | Regression (robust to outliers) | N/A (delta parameter) |
+| `heteroscedastic` | Regression with uncertainty | N/A (learns variance) |
 
 ```yaml
 # Focal loss example
@@ -180,7 +189,7 @@ data:
   feature_count: 98
   
   # Labeling strategy (must match dataset)
-  labeling_strategy: tlob  # Options: tlob, triple_barrier
+  labeling_strategy: tlob  # Options: tlob, triple_barrier, opportunity, regression
   num_classes: 3
   
   # Horizon selection (see mapping above)
@@ -202,7 +211,7 @@ data:
 # Model Configuration
 # =============================================================================
 model:
-  model_type: tlob  # Options: tlob, deeplob, lstm, gru
+  model_type: tlob  # Options: tlob, deeplob, lstm, gru, hmhp, hmhp_regression, temporal_ridge, temporal_gradboost, logistic
   input_size: 98
   num_classes: 3
   dropout: 0.1
@@ -232,9 +241,9 @@ train:
   seed: 42
   
   # Loss configuration
-  loss_type: weighted_ce  # Options: cross_entropy, weighted_ce, focal
+  loss_type: weighted_ce  # Options: cross_entropy, weighted_ce, focal, mse, huber, heteroscedastic
   use_class_weights: true
-  task_type: multiclass   # Options: multiclass, binary_signal
+  task_type: multiclass   # Options: multiclass, binary_signal, regression
 
 # =============================================================================
 # Output
@@ -294,7 +303,7 @@ python scripts/train.py --config configs/experiments/nvda_tlob_h20_v1.yaml
 
 ---
 
-## Dataset Schema (v2.1)
+## Dataset Schema (v2.2)
 
 All datasets follow this contract:
 - **Features**: 98 per timestep
