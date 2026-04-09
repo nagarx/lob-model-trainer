@@ -143,7 +143,7 @@ class ClassificationStrategy(TrainingStrategy):
         labels = labels.to(self.device)
 
         output = model(features)
-        loss, _ = model.compute_loss(output, labels=labels)
+        loss = self._criterion(output.logits, labels)
 
         logits = output.logits
         predictions = logits.argmax(dim=1)

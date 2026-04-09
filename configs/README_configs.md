@@ -23,7 +23,7 @@ python scripts/train.py --config configs/experiments/nvda_tlob_triple_barrier_11
 ```
 configs/
 ├── README_configs.md                      # This file (complete reference)
-├── experiments/                           # ✅ ACTIVE configs (34)
+├── experiments/                           # ✅ ACTIVE configs (40)
 │   ├── nvda_tlob_h10_v1.yaml             # TLOB H=10 (short-term)
 │   ├── nvda_tlob_h100_v1.yaml            # TLOB H=100 (paper benchmark)
 │   └── nvda_tlob_triple_barrier_11mo_v1.yaml  # Triple Barrier

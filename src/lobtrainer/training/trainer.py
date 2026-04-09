@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.optim import AdamW
+from torch.optim import Adam, AdamW, SGD
 from torch.optim.lr_scheduler import (
     CosineAnnealingLR,
     ReduceLROnPlateau,
@@ -246,18 +246,26 @@ class Trainer:
         return model
     
     def _create_optimizer(self) -> torch.optim.Optimizer:
-        """Create optimizer from configuration."""
+        """Create optimizer from configuration.
+
+        Supports: 'adamw' (default), 'adam', 'sgd'.
+        Configured via config.train.optimizer string field.
+        """
         params = self.model.parameters()
         cfg = self.config.train
-        
-        # Use AdamW by default (better weight decay handling)
-        optimizer = AdamW(
-            params,
-            lr=cfg.learning_rate,
-            weight_decay=cfg.weight_decay,
-        )
-        
-        logger.debug(f"Created optimizer: AdamW(lr={cfg.learning_rate}, wd={cfg.weight_decay})")
+
+        if cfg.optimizer == "adamw":
+            optimizer = AdamW(params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
+        elif cfg.optimizer == "adam":
+            optimizer = Adam(params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
+        elif cfg.optimizer == "sgd":
+            optimizer = SGD(params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay, momentum=0.9)
+        else:
+            raise ValueError(
+                f"Unknown optimizer '{cfg.optimizer}'. Options: 'adamw', 'adam', 'sgd'"
+            )
+
+        logger.debug(f"Created optimizer: {cfg.optimizer}(lr={cfg.learning_rate}, wd={cfg.weight_decay})")
         return optimizer
     
     def _create_scheduler(self, optimizer: torch.optim.Optimizer) -> Optional[Any]:

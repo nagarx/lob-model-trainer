@@ -94,14 +94,17 @@ lob-model-trainer/
 │       └── reproducibility.py   # set_seed, SeedManager
 ├── scripts/
 │   ├── train.py                 # Training CLI
-│   ├── evaluate_model.py        # Model evaluation CLI
-│   ├── run_baseline_evaluation.py  # Baseline comparison
-│   └── validate_export.py       # Dataset validation
+│   ├── export_signals.py        # Unified signal export CLI
+│   ├── run_simple_training.py   # SimpleModelTrainer CLI
+│   ├── validate_export.py       # Dataset validation
+│   └── analysis/                # Analysis and evaluation scripts
+│       ├── evaluate_model.py    # Model evaluation from checkpoint
+│       └── run_baseline_evaluation.py  # Baseline comparison
 ├── configs/
 │   ├── README_configs.md        # Complete config reference
-│   ├── experiments/             # Active experiment configs (3)
+│   ├── experiments/             # Active experiment configs (40)
 │   └── archive/                 # Reference configs (6)
-└── tests/                       # 24 test modules
+└── tests/                       # 31 test modules (656 passed)
 ```
 
 ---
@@ -340,7 +343,7 @@ pytest tests/ -v
 pytest tests/test_trainer.py -v
 ```
 
-**Test Coverage**: 24 test modules covering all core functionality (classification + regression).
+**Test Coverage**: 31 test modules (656 passed) covering strategies, models, data pipeline, metrics, signal export.
 
 ---
 
@@ -348,10 +351,12 @@ pytest tests/test_trainer.py -v
 
 | Script | Purpose |
 |--------|---------|
-| `train.py` | Training CLI entry point |
-| `evaluate_model.py` | Model evaluation |
-| `run_baseline_evaluation.py` | Baseline comparison |
-| `validate_export.py` | Validate dataset export |
+| `scripts/train.py` | Training CLI entry point |
+| `scripts/export_signals.py` | Unified signal export CLI |
+| `scripts/run_simple_training.py` | SimpleModelTrainer CLI (Ridge/GradBoost) |
+| `scripts/validate_export.py` | Validate dataset export |
+| `scripts/analysis/evaluate_model.py` | Model evaluation from checkpoint |
+| `scripts/analysis/run_baseline_evaluation.py` | Baseline comparison |
 
 ```bash
 # Train with config
@@ -388,7 +393,7 @@ python scripts/analysis/run_baseline_evaluation.py --data-dir ../data/exports/nv
 
 | Version | Schema | Changes |
 |---------|--------|---------|
-| **0.4.0** | 2.1 | Monitoring callbacks, experiment tracking, feature presets, config cleanup |
+| **0.4.0** | 2.2 | Strategy Pattern refactoring, ModelRegistry, config unification, 656 tests |
 | 0.3.0 | 2.1 | Strategy-aware metrics, Focal Loss, TLOB support |
 | 0.2.0 | 2.1 | Training infrastructure, multi-horizon support |
 | 0.1.0 | 2.0 | Initial release |

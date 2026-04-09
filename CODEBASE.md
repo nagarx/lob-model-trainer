@@ -7,7 +7,7 @@
 >
 > **Scope**: This library focuses solely on **model training**. For dataset analysis, use `lob-dataset-analyzer`.
 >
-> **New in 0.4.0**: Strategy Pattern refactoring — Trainer decomposed from 1,657L to 892L. 4 concrete strategies (Classification, Regression, HMHPClassification, HMHPRegression). Model Registry integration via lob-models. Dead HMHPOutput/HMHPRegressionOutput removed.
+> **New in 0.4.0**: Strategy Pattern refactoring — Trainer decomposed from 1,657L to 900L. 4 concrete strategies (Classification, Regression, HMHPClassification, HMHPRegression). Model Registry integration via lob-models. Dead HMHPOutput/HMHPRegressionOutput removed.
 
 ---
 
@@ -52,7 +52,7 @@ Python library for training and evaluating ML models on LOB (Limit Order Book) d
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Strategy Pattern** | ✅ Complete | 4 strategies: Classification, Regression, HMHPClassification, HMHPRegression |
-| **Trainer Orchestrator** | ✅ Complete | 892L (was 1,657L), zero task-branching, delegates to strategy |
+| **Trainer Orchestrator** | ✅ Complete | 900L (was 1,657L), zero task-branching, delegates to strategy |
 | **All Models via lob-models** | ✅ Complete | 10 registered models (TLOB, DeepLOB, MLPLOB, HMHP, HMHP-R, LSTM, GRU, LogisticLOB, Ridge, GradBoost) |
 | **Strategy-Aware Metrics** | ✅ Complete | MetricsCalculator for TLOB/Triple Barrier/Opportunity |
 | **Focal Loss** | ✅ Complete | For class imbalance handling |
@@ -60,7 +60,7 @@ Python library for training and evaluating ML models on LOB (Limit Order Book) d
 | **HMHP Regression** | ✅ Complete | Regression training with precomputed labels |
 | **Experiment Tracking** | ✅ Complete | ExperimentRegistry, comparison tables |
 | **Monitoring Callbacks** | ✅ Complete | Gradient, LR, diagnostics tracking (uses public properties) |
-| **Tests** | ✅ Complete | 556 passed, 15 skipped across 24 test modules |
+| **Tests** | ✅ Complete | 656 passed, 15 skipped across 31 test modules |
 
 ### Core Dependencies
 
@@ -113,13 +113,17 @@ src/lobtrainer/
 │   │   ├── regression.py          # RegressionStrategy (model.compute_loss)
 │   │   ├── hmhp_classification.py # HMHPClassificationStrategy (per-horizon)
 │   │   └── hmhp_regression.py     # HMHPRegressionStrategy (per-horizon regression)
-│   ├── trainer.py                 # Trainer orchestrator (892L), delegates to strategy
+│   ├── trainer.py                 # Trainer orchestrator (900L), delegates to strategy
 │   ├── callbacks.py               # EarlyStopping, ModelCheckpoint, MetricLogger
 │   ├── metrics.py                 # MetricsCalculator, ClassificationMetrics
 │   ├── regression_metrics.py     # Thin adapter over hft-metrics (R², IC, MAE, RMSE, DA, PA)
+│   ├── regression_evaluation.py  # RegressionMetrics dataclass (from_arrays, summary, to_dict)
+│   ├── simple_trainer.py          # SimpleModelTrainer for sklearn-style models (TemporalRidge, GradBoost)
 │   ├── loss.py                    # FocalLoss, BinaryFocalLoss, create_focal_loss
 │   ├── evaluation.py              # BaselineReport, evaluate_model, full_evaluation
 │   └── monitoring.py              # GradientMonitor, TrainingDiagnostics, LRTracker
+│
+├── cli.py                         # CLI entry point: train_command, evaluate_command, apply_overrides
 │
 ├── experiments/
 │   ├── __init__.py                # Module exports
@@ -143,46 +147,53 @@ src/lobtrainer/
 scripts/
 ├── train.py                       # Training CLI
 ├── export_signals.py              # Unified signal export CLI (replaces 3 deprecated scripts)
-├── evaluate_model.py              # Model evaluation CLI
-├── run_baseline_evaluation.py     # Baseline comparison
-└── validate_export.py             # Dataset validation
+├── run_simple_training.py         # SimpleModelTrainer CLI (TemporalRidge, GradBoost)
+├── run_simple_model_ablation.py   # Ablation experiments for simple models
+├── e4_baselines.py                # E4 time-based experiment baselines
+├── e5_baselines.py                # E5 60s-bin experiment baselines
+├── precompute_norm_stats.py       # Pre-compute normalization statistics cache
+├── validate_export.py             # Dataset validation
+├── export_hmhp_signals.py         # HMHP signal export (deprecated, use export_signals.py)
+├── export_regression_signals.py   # Regression export (deprecated, use export_signals.py)
+├── export_tlob_regression_signals.py  # TLOB regression export (deprecated)
+└── analysis/                      # Analysis and evaluation scripts
+    ├── evaluate_model.py          # Model evaluation from checkpoint
+    └── run_baseline_evaluation.py # Baseline comparison
 
 configs/
 ├── README_configs.md              # Complete config reference
-├── experiments/                   # Active experiment configs (3)
-│   ├── nvda_tlob_h10_v1.yaml
-│   ├── nvda_tlob_h100_v1.yaml
-│   └── nvda_tlob_triple_barrier_11mo_v1.yaml
+├── experiments/                   # Active experiment configs (40)
 └── archive/                       # Reference configs (6)
-    ├── baseline_lstm.yaml
-    ├── deeplob_benchmark.yaml
-    ├── lstm_attn_bidir_h20.yaml
-    ├── nvda_bigmove_opportunity_v1.yaml
-    ├── nvda_tlob_bigmove_v1.yaml
-    └── nvda_tlob_binary_signal_v1.yaml
 
-tests/                             # 24 test modules
+tests/                             # 31 test modules (656 passed, 15 skipped)
 ├── conftest.py                    # Shared fixtures (rng, day_data_factory, synthetic_export_dir)
 ├── test_baselines.py
 ├── test_calibration.py
 ├── test_config.py
+├── test_create_dataloaders.py     # Feature selection cascade, num_workers override, strategy routing (11 tests)
 ├── test_deeplob_integration.py
 ├── test_evaluation.py
 ├── test_experiments.py
 ├── test_feature_index.py
 ├── test_feature_presets.py
 ├── test_feature_selector.py       # FeatureSelector: presets, validation, selection (25 tests)
+├── test_hmhp_collate.py           # _hmhp_collate_fn: 2/3-tuple dict-label collation (7 tests)
 ├── test_integration.py
 ├── test_label_shift.py            # Label shift resolution: 4 paths (15 tests)
 ├── test_loss.py
 ├── test_monitoring.py
 ├── test_normalization.py          # GlobalZScore, HybridNormalizer, Welford, streaming (32 tests)
 ├── test_normalization_integration.py  # Normalizer as dataset transform (5 tests)
+├── test_optimizer_scheduler.py    # Optimizer dispatch (adamw/adam/sgd), scheduler dispatch (8 tests)
 ├── test_regression_dataset.py
+├── test_regression_evaluation.py  # RegressionMetrics: from_arrays, to_dict, summary (8 tests)
 ├── test_regression_metrics.py
 ├── test_regression_training.py
-├── test_signal_export.py          # SignalExporter, RawFeatureExtractor, metadata (18 tests)
+├── test_signal_export.py          # RawFeatureExtractor, metadata, file contracts (18 tests)
+├── test_signal_export_inference.py # SignalExporter 4 inference paths: shapes, dtypes, dispatch (17 tests)
+├── test_simple_trainer.py         # SimpleModelTrainer: _load_split, train, export, alignment (15 tests)
 ├── test_standard_regression_training.py
+├── test_strategies.py             # All 4 strategies: process_batch, validate, evaluate, predict (35 tests)
 ├── test_strategy_metrics.py
 ├── test_tlob_integration.py
 ├── test_trainer.py
@@ -446,13 +457,15 @@ class TrainConfig:
     early_stopping_patience: int = 10
     gradient_clip_norm: Optional[float] = 1.0
     
-    scheduler: str = "cosine"
+    optimizer: str = "adamw"       # Options: "adamw", "adam", "sgd"
+    scheduler: str = "cosine"      # Options: "cosine", "step", "plateau", "none"
     num_workers: int = 4
     pin_memory: bool = True
     seed: int = 42
+    mixed_precision: bool = False
     
     # Loss configuration
-    loss_type: LossType = LossType.WEIGHTED_CE
+    loss_type: LossType = LossType.WEIGHTED_CE  # Also: CROSS_ENTROPY, FOCAL, MSE, HUBER, HETEROSCEDASTIC, GMADL
     use_class_weights: bool = True
     task_type: TaskType = TaskType.MULTICLASS
     
@@ -760,14 +773,14 @@ The Trainer delegates all task-specific logic to a `TrainingStrategy` subclass, 
 
 | Strategy | Model Types | Key Behavior |
 |----------|-------------|-------------|
-| `ClassificationStrategy` | TLOB, DeepLOB, MLPLOB, LogisticLOB, LSTM, GRU | Owns criterion (CE/Focal with class weights). Uses `model.compute_loss()` for training, `criterion` for validation. |
+| `ClassificationStrategy` | TLOB, DeepLOB, MLPLOB, LogisticLOB, LSTM, GRU | Owns criterion (CE/Focal with class weights). Uses `self._criterion(output.logits, labels)` for BOTH training and validation. Does NOT call `model.compute_loss()`. |
 | `RegressionStrategy` | TLOB-R, DeepLOB-R | Uses `model.compute_loss(output, regression_targets=...)`. Computes R², IC, MAE, RMSE, DA. |
 | `HMHPClassificationStrategy` | HMHP | Dict labels `{h: tensor}`. Per-horizon loss, accuracy, agreement, confirmation. |
 | `HMHPRegressionStrategy` | HMHP-R | Dict regression targets. Per-horizon R², IC, MAE. Primary horizon surfaced for early stopping. |
 
 Each strategy implements: `process_batch()`, `aggregate_epoch_metrics()`, `validate()`, `evaluate()`, `predict()`.
 
-The Trainer (892L) handles the outer loop: epochs, callbacks, scheduling, checkpointing. Zero task-branching remains in the Trainer itself.
+The Trainer (900L) handles the outer loop: epochs, callbacks, scheduling, checkpointing. Zero task-branching remains in the Trainer itself.
 
 ### ModelConfig (Phase 3)
 
@@ -1238,9 +1251,11 @@ python scripts/train.py --config configs/experiments/nvda_tlob_h10_v1.yaml \
 
 | Script | Purpose |
 |--------|---------|
-| `evaluate_model.py` | Evaluate trained model checkpoint |
-| `run_baseline_evaluation.py` | Compare against naive baselines |
-| `validate_export.py` | Validate exported dataset integrity |
+| `scripts/export_signals.py` | Unified signal export CLI (replaces 3 deprecated scripts) |
+| `scripts/run_simple_training.py` | SimpleModelTrainer CLI for TemporalRidge/GradBoost |
+| `scripts/validate_export.py` | Validate exported dataset integrity |
+| `scripts/analysis/evaluate_model.py` | Evaluate trained model checkpoint |
+| `scripts/analysis/run_baseline_evaluation.py` | Compare against naive baselines |
 
 ---
 
@@ -1248,7 +1263,7 @@ python scripts/train.py --config configs/experiments/nvda_tlob_h10_v1.yaml \
 
 See `configs/README_configs.md` for complete configuration reference including:
 
-- Active experiment configs (3)
+- Active experiment configs (40)
 - Archived reference configs (6)
 - Horizon index mapping
 - Model type options
@@ -1388,11 +1403,11 @@ from lobtrainer.constants import FeatureIndex, get_feature_preset
 | Batch size | 64 |
 | Hidden size | 64 |
 | Learning rate | 1e-4 |
-| Epochs | 50 |
+| Epochs | 100 |
 | Patience | 10 |
 | Seed | 42 |
 
 ---
 
-*Last updated: March 20, 2026*
-*Version: 0.2.0*
+*Last updated: April 9, 2026*
+*Version: 0.4.0*

@@ -785,6 +785,9 @@ class TrainConfig:
     gradient_clip_norm: Optional[float] = 1.0
     """Gradient clipping norm. Set to None to disable."""
     
+    optimizer: str = "adamw"
+    """Optimizer: 'adamw', 'adam', or 'sgd'."""
+
     scheduler: str = "cosine"
     """Learning rate scheduler: 'cosine', 'step', 'plateau', or 'none'."""
     
