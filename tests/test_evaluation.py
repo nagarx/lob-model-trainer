@@ -422,7 +422,52 @@ class TestEvaluationEdgeCases:
         
         model = NaiveClassPrior()
         model.fit(features, labels)
-        
+
         metrics = evaluate_model(model, features, labels)
-        
+
         assert metrics.accuracy == 1.0
+
+
+# =============================================================================
+# Test compute_trading_metrics argument order (regression test for TP4 bug)
+# =============================================================================
+
+
+class TestComputeTradingMetrics:
+    """Tests for compute_trading_metrics argument order.
+
+    TP4 bug: call sites passed (labels, predictions) instead of
+    (predictions, labels). signal_rate was reporting label distribution,
+    precision was reporting recall.
+    """
+
+    def test_signal_rate_reflects_predictions_not_labels(self):
+        """signal_rate must count model signals (predictions != 1), not label signals."""
+        from lobtrainer.training.metrics import compute_trading_metrics
+
+        # Predictions: all stable (class 1) — signal_rate should be 0.0
+        predictions = np.array([1, 1, 1, 1, 1])
+        # Labels: all up (class 2) — label signal_rate would be 1.0
+        labels = np.array([2, 2, 2, 2, 2])
+
+        result = compute_trading_metrics(predictions, labels)
+        assert result["signal_rate"] == 0.0, (
+            f"signal_rate should be 0.0 (no predicted signals), "
+            f"got {result['signal_rate']}. "
+            f"If 1.0, arguments are swapped (TP4 bug)."
+        )
+
+    def test_up_precision_is_precision_not_recall(self):
+        """up_precision = TP / (TP + FP), not TP / (TP + FN)."""
+        from lobtrainer.training.metrics import compute_trading_metrics
+
+        # Predictions: 3 predict up (class 2)
+        predictions = np.array([2, 2, 2, 1, 1])
+        # Labels: only first 2 are actually up
+        labels = np.array([2, 2, 1, 2, 1])
+
+        result = compute_trading_metrics(predictions, labels)
+        # Precision = 2 correct up / 3 predicted up = 0.667
+        assert abs(result["up_precision"] - 2.0 / 3.0) < 1e-6, (
+            f"up_precision should be 2/3 (precision), got {result['up_precision']}"
+        )

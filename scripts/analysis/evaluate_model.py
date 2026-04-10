@@ -159,8 +159,8 @@ def main():
     # Compute metrics
     # Note: Labels are in {0, 1, 2} after dataset shift
     metrics = compute_classification_report(y_true, y_pred, labels=[0, 1, 2])
-    trading = compute_trading_metrics(y_true, y_pred)
-    transitions = compute_transition_accuracy(y_true, y_pred)
+    trading = compute_trading_metrics(y_pred, y_true)
+    transitions = compute_transition_accuracy(y_pred, y_true)
     
     # Print results
     print("\n" + "=" * 60)

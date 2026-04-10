@@ -36,7 +36,8 @@ from lobtrainer.models.baselines import (
     LogisticBaseline,
     LogisticBaselineConfig,
 )
-from lobtrainer.models.lstm import (
+# LSTM/GRU from lobmodels (supersedes old lobtrainer/models/lstm.py)
+from lobmodels.models.rnn import (
     LSTMClassifier,
     GRUClassifier,
     LSTMConfig,

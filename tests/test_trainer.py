@@ -444,7 +444,7 @@ class TestLSTMModel:
     
     def test_lstm_forward_shape(self):
         """Test LSTM model output shape."""
-        from lobtrainer.models.lstm import LSTMClassifier, LSTMConfig
+        from lobmodels.models.rnn import LSTMClassifier, LSTMConfig
         
         config = LSTMConfig(
             input_size=98,
@@ -458,11 +458,11 @@ class TestLSTMModel:
         x = torch.randn(32, 100, 98)
         output = model(x)
         
-        assert output.shape == (32, 3), f"Expected shape (32, 3), got {output.shape}"
+        assert output.logits.shape == (32, 3), f"Expected logits shape (32, 3), got {output.logits.shape}"
     
     def test_lstm_bidirectional(self):
         """Test bidirectional LSTM."""
-        from lobtrainer.models.lstm import LSTMClassifier, LSTMConfig
+        from lobmodels.models.rnn import LSTMClassifier, LSTMConfig
         
         config = LSTMConfig(
             input_size=98,
@@ -476,11 +476,11 @@ class TestLSTMModel:
         x = torch.randn(16, 50, 98)
         output = model(x)
         
-        assert output.shape == (16, 3)
+        assert output.logits.shape == (16, 3)
     
     def test_gru_forward_shape(self):
         """Test GRU model output shape."""
-        from lobtrainer.models.lstm import GRUClassifier, LSTMConfig
+        from lobmodels.models.rnn import GRUClassifier, LSTMConfig
         
         config = LSTMConfig(
             input_size=98,
@@ -493,11 +493,11 @@ class TestLSTMModel:
         x = torch.randn(32, 100, 98)
         output = model(x)
         
-        assert output.shape == (32, 3)
+        assert output.logits.shape == (32, 3)
     
     def test_model_deterministic(self):
         """Test that model is deterministic given same seed."""
-        from lobtrainer.models.lstm import LSTMClassifier, LSTMConfig
+        from lobmodels.models.rnn import LSTMClassifier, LSTMConfig
         
         config = LSTMConfig(input_size=10, hidden_size=16, num_layers=1, num_classes=3)
         
@@ -511,7 +511,7 @@ class TestLSTMModel:
         x = torch.randn(4, 10, 10)
         out2 = model2(x)
         
-        assert torch.allclose(out1, out2, atol=1e-6), "Same seed should give same outputs"
+        assert torch.allclose(out1.logits, out2.logits, atol=1e-6), "Same seed should give same outputs"
 
 
 # =============================================================================

@@ -314,11 +314,11 @@ def full_evaluation(
     # Standard metrics using strategy-aware calculator
     classification = compute_metrics(y_pred, y, strategy=strategy, num_classes=num_classes)
     
-    # Trading metrics
-    trading = compute_trading_metrics(y, y_pred)
-    
-    # Transition analysis
-    transitions = compute_transition_accuracy(y, y_pred)
+    # Trading metrics (signature: predictions first, labels second)
+    trading = compute_trading_metrics(y_pred, y)
+
+    # Transition analysis (signature: predictions first, labels second)
+    transitions = compute_transition_accuracy(y_pred, y)
     
     # Baseline comparison
     baseline_report = create_baseline_report(model, X, y, split, strategy=strategy, num_classes=num_classes)
