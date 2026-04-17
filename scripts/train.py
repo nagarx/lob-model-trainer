@@ -33,6 +33,20 @@ from typing import Optional
 # Add parent directory to path for local development
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+# Phase 1.4: emit a deprecation warning when invoked directly (not via hft-ops).
+# The warning is suppressed when HFT_OPS_ORCHESTRATED=1 is set in the env
+# (hft-ops sets this before invoking trainer subprocesses).
+sys.path.insert(0, str(Path(__file__).parent))  # for _hft_ops_compat
+from _hft_ops_compat import warn_if_not_orchestrated
+warn_if_not_orchestrated(
+    script_name="train.py",
+    suggestion=(
+        "Use 'hft-ops run <manifest>' to launch experiments. The manifest "
+        "should reference this trainer config via stages.training.config "
+        "(legacy) or stages.training.trainer_config (inline)."
+    ),
+)
+
 from lobtrainer import create_trainer, set_seed
 from lobtrainer.config import load_config, ExperimentConfig, save_config
 from lobtrainer.training import (

@@ -127,9 +127,11 @@ class Trainer:
         model: Optional[nn.Module] = None,
         callbacks: Optional[List[Callback]] = None,
         device: Optional[torch.device] = None,
+        preloaded_days: Optional[Dict[str, List["DayData"]]] = None,
     ):
         self.config = config
         self._model = model
+        self._preloaded_days = preloaded_days  # T11: bypass disk loading for CV folds
         
         # Setup callbacks
         self.callbacks = CallbackList(callbacks or [])
@@ -312,21 +314,88 @@ class Trainer:
                 )
                 num_workers = 0
 
-        # Horizon selection: strategy determines if we return all or one
+        # Horizon selection: strategy determines if we return all or one.
+        # T9: TrainingStrategy.horizon_idx reads from labels.primary_horizon_idx.
         if self._strategy is not None:
             horizon_idx = self._strategy.horizon_idx
         else:
-            horizon_idx = getattr(cfg_data, 'horizon_idx', 0)
+            horizon_idx = cfg_data.labels.primary_horizon_idx
 
         # Feature selection configuration
-        # Priority: 1. Config preset, 2. Config indices, 3. DeepLOB benchmark, 4. None (all)
+        # Priority order (post-Phase-4-Batch-4c): mutual-exclusion enforced
+        # in DataConfig.__post_init__; at most one of the four fields set.
+        # The code below turns whichever is set into an `effective_indices`
+        # list that the downstream FeatureSelector path uses uniformly.
         feature_indices = None
         feature_selector = None
 
         from lobtrainer.config import ModelType, DeepLOBMode
 
+        feature_set_name = getattr(cfg_data, 'feature_set', None)
         feature_preset = getattr(cfg_data, 'feature_preset', None)
         config_feature_indices = getattr(cfg_data, 'feature_indices', None)
+
+        # Phase 4 Batch 4c.2: resolve `feature_set` → indices BEFORE the
+        # existing preset/indices path. The resolver populates the
+        # DataConfig private cache so downstream stages (signal export,
+        # ledger record) can retrieve the `FeatureSetRef` without
+        # re-resolving. After this block, `config_feature_indices` acts
+        # as the single effective-indices conduit — the existing path
+        # below handles validation + FeatureSelector construction.
+        if feature_set_name is not None:
+            if cfg_data.sources is not None:
+                raise ValueError(
+                    "feature_set is not supported with multi-source mode "
+                    "(data.sources). Use per-source feature_indices on "
+                    "each SourceConfig instead. (T12 + Phase 4 boundary)"
+                )
+            from lobtrainer.data.feature_set_resolver import (
+                find_feature_sets_dir,
+                resolve_feature_set,
+            )
+            # Phase 4 Batch 4c hardening: (1) explicit .resolve() on
+            # data_dir so find_feature_sets_dir's implicit CWD anchoring
+            # is never load-bearing; (2) honor user-override via
+            # cfg_data.feature_sets_dir; (3) pass expected_contract_version
+            # from hft_contracts SSoT so contract-version drift between
+            # producer and consumer is caught deterministically rather
+            # than depending on source_feature_count as an indirect guard.
+            if cfg_data.feature_sets_dir is not None:
+                registry_dir = Path(cfg_data.feature_sets_dir).resolve()
+            else:
+                registry_dir = find_feature_sets_dir(
+                    Path(cfg_data.data_dir).resolve()
+                )
+            from hft_contracts import SCHEMA_VERSION as _CURRENT_CONTRACT_VERSION
+            resolved = resolve_feature_set(
+                name=feature_set_name,
+                registry_dir=registry_dir,
+                expected_source_feature_count=cfg_data.feature_count,
+                expected_contract_version=_CURRENT_CONTRACT_VERSION,
+            )
+            # Populate the DataConfig private cache. Propagates to
+            # signal_metadata.json + ExperimentRecord in Batch 4c.4.
+            cfg_data._feature_indices_resolved = list(resolved.feature_indices)
+            cfg_data._feature_set_ref_resolved = (
+                resolved.name, resolved.content_hash,
+            )
+            # Thread through the existing indices-driven flow.
+            config_feature_indices = list(resolved.feature_indices)
+            logger.info(
+                f"FeatureSet resolved: '{resolved.name}' → "
+                f"{len(resolved.feature_indices)} / "
+                f"{resolved.source_feature_count} features "
+                f"(contract_version={resolved.contract_version}, "
+                f"content_hash={resolved.content_hash[:16]}...)"
+            )
+
+        # T12: forbid single-source feature selection in multi-source mode
+        if cfg_data.sources is not None and (feature_preset is not None or config_feature_indices is not None):
+            raise ValueError(
+                "feature_preset and feature_indices are not supported with "
+                "multi-source mode (data.sources). Use DayBundle.to_fused_day_data "
+                "with per-source feature_indices instead."
+            )
 
         if feature_preset is not None or config_feature_indices is not None:
             feature_selector = create_feature_selector(
@@ -382,10 +451,20 @@ class Trainer:
                 f"(horizons={cfg_model.hmhp_horizons})"
             )
 
-        # Labeling strategy from config
-        labeling_strategy = getattr(cfg_data, 'labeling_strategy', None)
-        if hasattr(labeling_strategy, 'value'):
-            labeling_strategy = labeling_strategy.value
+        # Labeling strategy: derive from LabelsConfig.task for label-shift dispatch.
+        # T9: labels_config.task replaces legacy cfg_data.labeling_strategy.
+        labels_task = cfg_data.labels.task
+        if labels_task == "regression":
+            labeling_strategy = "regression"
+        elif labels_task == "classification":
+            labeling_strategy = getattr(cfg_data, 'labeling_strategy', None)
+            if hasattr(labeling_strategy, 'value'):
+                labeling_strategy = labeling_strategy.value
+        else:
+            # task="auto": let _determine_label_shift_from_metadata resolve
+            labeling_strategy = getattr(cfg_data, 'labeling_strategy', None)
+            if hasattr(labeling_strategy, 'value'):
+                labeling_strategy = labeling_strategy.value
 
         loaders = self._create_dataloaders_with_transform(
             data_dir=cfg_data.data_dir,
@@ -434,7 +513,32 @@ class Trainer:
         # IMPORTANT: Do this BEFORE loading all data to avoid OOM
         feature_transform = None
         norm_strategy = self.config.data.normalization.strategy
-        
+
+        # T11: warn about normalization approximation in CV mode
+        if (
+            self._preloaded_days is not None
+            and norm_strategy != NormalizationStrategy.NONE
+        ):
+            logger.warning(
+                "CV mode: using cached normalization stats from %s. "
+                "For exact per-fold normalization, set "
+                "normalization.strategy: none",
+                data_dir,
+            )
+
+        # T12: multi-source mode requires normalization: none
+        # (stats from single-source dir are wrong for fused feature tensor)
+        if (
+            self.config.data.sources is not None
+            and norm_strategy != NormalizationStrategy.NONE
+        ):
+            raise ValueError(
+                f"Multi-source mode (data.sources) requires "
+                f"normalization.strategy='none', got '{norm_strategy.value}'. "
+                f"Per-source normalization is not yet supported for fused "
+                f"tensors. Set data.normalization.strategy: none in your config."
+            )
+
         if norm_strategy == NormalizationStrategy.GLOBAL_ZSCORE:
             # Global Z-score matching TLOB repository
             num_features = self.config.data.feature_count
@@ -453,7 +557,11 @@ class Trainer:
                 # Slow path: compute stats (uses streaming internally)
                 logger.info(f"Computing GlobalZScoreNormalizer stats for {num_features} features...")
                 # Load training data with lazy loading for stats computation
-                train_days_for_stats = load_split_data(data_dir, "train", validate=False, lazy=True)
+                train_days_for_stats = load_split_data(
+                    data_dir, "train",
+                    labels_config=self.config.data.labels,
+                    validate=False, lazy=True,
+                )
                 feature_transform = GlobalZScoreNormalizer.from_train_data(
                     train_days_for_stats,
                     num_features=num_features,
@@ -497,14 +605,48 @@ class Trainer:
                 logger.info(f"Cached normalization stats at {stats_path}")
         
         # NOW load all splits (after normalization is ready)
-        # Use lazy=False for actual training to get full data access
-        logger.info("Loading training data...")
-        for split in ["train", "val", "test"]:
-            try:
-                all_days[split] = load_split_data(data_dir, split, validate=True, lazy=False)
-            except FileNotFoundError:
-                logger.info(f"Split '{split}' not found, skipping")
-                continue
+        # T11: preloaded_days bypass — for CV, days are pre-split by CVTrainer.
+        if self._preloaded_days is not None:
+            all_days = dict(self._preloaded_days)
+            logger.info(
+                "Using preloaded days (CV mode): %s",
+                {k: len(v) for k, v in all_days.items()},
+            )
+        elif self.config.data.sources is not None:
+            # T12: Multi-source fusion — load from multiple sources
+            from lobtrainer.data.bundle import load_split_bundles
+            from lobtrainer.data.sources import DataSource
+
+            t12_sources = [
+                DataSource(name=s.name, data_dir=s.data_dir, role=s.role)
+                for s in self.config.data.sources
+            ]
+            logger.info(
+                "Multi-source mode: %s",
+                [(s.name, s.role) for s in t12_sources],
+            )
+            for split in ["train", "val", "test"]:
+                try:
+                    all_days[split] = load_split_bundles(
+                        t12_sources, split,
+                        labels_config=self.config.data.labels,
+                    )
+                except (FileNotFoundError, ValueError) as e:
+                    logger.info(f"Split '{split}' not available: {e}")
+                    continue
+        else:
+            # Standard single-source path: load from disk for each split
+            logger.info("Loading training data...")
+            for split in ["train", "val", "test"]:
+                try:
+                    all_days[split] = load_split_data(
+                        data_dir, split,
+                        labels_config=self.config.data.labels,
+                        validate=True, lazy=False,
+                    )
+                except FileNotFoundError:
+                    logger.info(f"Split '{split}' not found, skipping")
+                    continue
         
         if "train" not in all_days:
             raise ValueError("No training data found")
@@ -523,6 +665,13 @@ class Trainer:
                 "Using precomputed regression labels from regression_labels.npy"
             )
 
+        # T10: check if sample weights should be returned (train split only)
+        _has_weights = any(
+            day.sample_weights is not None
+            for days_list in all_days.values()
+            for day in days_list
+        )
+
         # Create datasets with transform
         for split, days in all_days.items():
             dataset = LOBSequenceDataset(
@@ -536,6 +685,7 @@ class Trainer:
                 labeling_strategy=labeling_strategy,
                 return_regression_targets=return_regression_targets,
                 use_precomputed_regression=use_precomputed,
+                return_sample_weights=(_has_weights and split == "train"),
             )
             
             # Use custom collate function for HMHP dict labels

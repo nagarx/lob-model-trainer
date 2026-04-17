@@ -110,7 +110,8 @@ class ClassificationStrategy(TrainingStrategy):
         """Count samples per class from training data."""
         try:
             class_counts = torch.zeros(num_classes)
-            for _, labels in train_loader:
+            for batch in train_loader:
+                labels = batch[1]  # works for both 2-tuple and 3-tuple (T10)
                 for c in range(num_classes):
                     class_counts[c] += (labels == c).sum().item()
 
@@ -133,17 +134,44 @@ class ClassificationStrategy(TrainingStrategy):
 
         Args:
             model: Model in train mode.
-            batch_data: (features [B,T,F], labels [B]).
+            batch_data: (features [B,T,F], labels [B]) or
+                (features [B,T,F], labels [B], sample_weights [B]).
 
         Returns:
             BatchResult with cross-entropy loss and correct count.
         """
-        features, labels = batch_data
-        features = features.to(self.device)
-        labels = labels.to(self.device)
+        if len(batch_data) == 3:
+            features, labels, sample_weights = batch_data
+            features = features.to(self.device)
+            labels = labels.to(self.device)
+            sample_weights = sample_weights.to(self.device)
 
-        output = model(features)
-        loss = self._criterion(output.logits, labels)
+            output = model(features)
+            # Per-sample loss: use criterion's own forward with reduction='none'
+            # to preserve both class weights AND focal gamma when applicable.
+            from lobtrainer.training.loss import FocalLoss
+            if isinstance(self._criterion, FocalLoss):
+                # FocalLoss natively supports reduction='none'
+                saved_reduction = self._criterion.reduction
+                self._criterion.reduction = "none"
+                loss_unreduced = self._criterion(output.logits, labels)
+                self._criterion.reduction = saved_reduction
+            else:
+                # CrossEntropyLoss: extract class weight and compute per-sample
+                import torch.nn.functional as _F
+                _class_weight = getattr(self._criterion, "weight", None)
+                loss_unreduced = _F.cross_entropy(
+                    output.logits, labels,
+                    weight=_class_weight, reduction="none",
+                )
+            loss = (loss_unreduced * sample_weights).mean()
+        else:
+            features, labels = batch_data
+            features = features.to(self.device)
+            labels = labels.to(self.device)
+
+            output = model(features)
+            loss = self._criterion(output.logits, labels)
 
         logits = output.logits
         predictions = logits.argmax(dim=1)

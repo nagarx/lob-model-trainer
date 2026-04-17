@@ -68,22 +68,40 @@ class HMHPClassificationStrategy(TrainingStrategy):
         Returns:
             BatchResult with total loss, per-horizon losses, accuracy, agreement.
         """
-        if len(batch_data) == 3:
-            features, labels, regression_targets = batch_data
-            regression_targets = {
-                h: t.to(self.device) for h, t in regression_targets.items()
-            }
-        else:
-            features, labels = batch_data
-            regression_targets = None
+        # T10: detect sample weights (scalar tensor) vs regression targets (dict)
+        sample_weights = None
+        regression_targets = None
+        if len(batch_data) >= 3:
+            # Element 2 is regression targets (dict) or sample weight (tensor)
+            third = batch_data[2]
+            if isinstance(third, dict):
+                regression_targets = {
+                    h: t.to(self.device) for h, t in third.items()
+                }
+            elif isinstance(third, torch.Tensor) and third.ndim == 1:
+                sample_weights = third
+        if len(batch_data) >= 4:
+            # Element 3 is sample weight when regression targets are at [2]
+            fourth = batch_data[3]
+            if isinstance(fourth, torch.Tensor) and fourth.ndim == 1:
+                sample_weights = fourth
+        if len(batch_data) < 3:
+            pass  # just (features, labels)
+
+        features = batch_data[0]
+        labels = batch_data[1]
 
         features = features.to(self.device)
         labels = {h: l.to(self.device) for h, l in labels.items()}
+        if sample_weights is not None:
+            sample_weights = sample_weights.to(self.device)
 
         output = model(features)
         total_batch_loss, loss_components = model.compute_loss(
             output, labels, regression_targets=regression_targets
         )
+        if sample_weights is not None:
+            total_batch_loss = total_batch_loss * sample_weights.mean()
 
         batch_size = features.size(0)
 

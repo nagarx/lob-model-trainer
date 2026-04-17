@@ -43,17 +43,32 @@ class RegressionStrategy(TrainingStrategy):
 
         Args:
             model: Model in train mode.
-            batch_data: (features [B,T,F], regression_target [B]).
+            batch_data: (features [B,T,F], regression_target [B]) or
+                (features [B,T,F], regression_target [B], sample_weights [B]).
 
         Returns:
             BatchResult with regression loss.
         """
-        features, labels = batch_data
-        features = features.to(self.device)
-        regression_target = labels.to(self.device).float()
+        if len(batch_data) == 3:
+            features, labels, sample_weights = batch_data
+            features = features.to(self.device)
+            regression_target = labels.to(self.device).float()
+            sample_weights = sample_weights.to(self.device)
 
-        output = model(features)
-        loss, _ = model.compute_loss(output, regression_targets=regression_target)
+            output = model(features)
+            loss_unreduced, _ = model.compute_loss(
+                output, regression_targets=regression_target, reduction="none"
+            )
+            loss = (loss_unreduced * sample_weights).mean()
+        else:
+            features, labels = batch_data
+            features = features.to(self.device)
+            regression_target = labels.to(self.device).float()
+
+            output = model(features)
+            loss, _ = model.compute_loss(
+                output, regression_targets=regression_target
+            )
 
         return BatchResult(
             loss=loss,

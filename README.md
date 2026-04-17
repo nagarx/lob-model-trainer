@@ -102,9 +102,10 @@ lob-model-trainer/
 │       └── run_baseline_evaluation.py  # Baseline comparison
 ├── configs/
 │   ├── README_configs.md        # Complete config reference
-│   ├── experiments/             # Active experiment configs (40)
-│   └── archive/                 # Reference configs (6)
-└── tests/                       # 31 test modules (656 passed)
+│   ├── bases/                   # 21 axis-partitioned base configs (Phase 3; see bases/README.md)
+│   ├── experiments/             # 42 in-scope YAML configs (25 multi-base + 17 standalone)
+│   └── archive/                 # Legacy reference configs (6)
+└── tests/                       # 43 test modules, 1052 tests pytest-collected (2026-04-15)
 ```
 
 ---
@@ -393,11 +394,11 @@ python scripts/analysis/run_baseline_evaluation.py --data-dir ../data/exports/nv
 
 | Version | Schema | Changes |
 |---------|--------|---------|
-| **0.4.0** | 2.2 | Strategy Pattern refactoring, ModelRegistry, config unification, 656 tests |
+| **0.4.0** | 2.2 | Strategy Pattern refactoring, ModelRegistry, config unification, Phase 3 multi-base `_base:` composition (21 axis-partitioned bases, monolith retired 2026-04-15), Phase 4 Batch 4c FeatureSet registry consumer (DataConfig.feature_set + feature_set_resolver.py + canonical_hash parity lock), 1052 tests |
 | 0.3.0 | 2.1 | Strategy-aware metrics, Focal Loss, TLOB support |
 | 0.2.0 | 2.1 | Training infrastructure, multi-horizon support |
 | 0.1.0 | 2.0 | Initial release |
 
 ---
 
-*Last updated: January 13, 2026*
+*Last updated: 2026-04-15*

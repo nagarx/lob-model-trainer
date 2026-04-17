@@ -214,6 +214,8 @@ class DayData:
     labels: np.ndarray    # [N_seq], [N_labels], or [N_seq, n_horizons]
     sequences: Optional[np.ndarray] = None  # [N_seq, 100, 98] - only for aligned format
     regression_labels: Optional[np.ndarray] = None  # [N_seq, n_horizons] float64 bps - from feature extractor
+    forward_prices: Optional[np.ndarray] = None  # [N, k + max_H + 1] float64 USD (T9)
+    sample_weights: Optional[np.ndarray] = None  # [N] float64 mean=1.0 (T10)
     metadata: Optional[Dict] = None
     is_aligned: bool = False  # True if features are 1:1 with labels
     
@@ -363,39 +365,181 @@ class DayData:
             )
 
 
+# =============================================================================
+# Forward-Prices Label Computation (T9)
+# =============================================================================
+
+
+def _compute_labels_from_forward_prices(
+    forward_prices: np.ndarray,
+    metadata: Dict,
+    labels_config: "LabelsConfig",
+) -> Tuple[Optional[np.ndarray], np.ndarray]:
+    """Compute labels from {day}_forward_prices.npy via LabelFactory.
+
+    Reads smoothing_window EXCLUSIVELY from ForwardPriceContract (enforces
+    Bug B2 fix — user config cannot override k).
+
+    Args:
+        forward_prices: [N, k + max_H + 1] float64 USD array.
+        metadata: Parsed {day}_metadata.json dict.
+        labels_config: LabelsConfig driving return_type / horizons / task.
+
+    Returns:
+        (classification_labels, regression_labels):
+            classification_labels: [N, n_horizons] int8 in canonical {-1, 0, +1}
+                when task is classification, else None. (Downstream
+                ``_labels_need_shift`` handles the +1 shift to {0, 1, 2}
+                uniformly with the legacy path.)
+            regression_labels: [N, n_horizons] float64 bps (always populated).
+
+    Raises:
+        ValueError: Horizon bounds exceeded or non-finite values produced.
+        hft_contracts.validation.ContractError: Missing horizons in metadata.
+        KeyError: forward_prices not exported in metadata.
+    """
+    from hft_contracts import ForwardPriceContract, LabelFactory
+    from hft_contracts.validation import ContractError
+
+    contract = ForwardPriceContract.from_metadata(metadata)
+    contract.validate_shape(forward_prices)
+
+    # CRITICAL: smoothing_window ALWAYS from contract, NEVER from user config.
+    k = contract.smoothing_window_offset
+
+    # Resolve exported horizons — mirror DayData.horizons fallback for consistency.
+    exported_horizons = None
+    if metadata is not None:
+        exported_horizons = metadata.get("horizons")
+        if exported_horizons is None:
+            labeling = metadata.get("labeling", {})
+            if isinstance(labeling, dict):
+                exported_horizons = labeling.get("horizons")
+        if exported_horizons is None:
+            label_config_section = metadata.get("label_config", {})
+            if isinstance(label_config_section, dict):
+                exported_horizons = label_config_section.get("horizons")
+
+    if exported_horizons is None:
+        raise ContractError(
+            "metadata is missing horizons field (checked: "
+            "metadata['horizons'], metadata['labeling']['horizons'], "
+            "metadata['label_config']['horizons']). Cannot compute "
+            "labels from forward_prices without horizon specification."
+        )
+
+    # User horizons: empty list → all exported. Else user's subset/superset.
+    if not labels_config.horizons:
+        horizons = list(exported_horizons)
+    else:
+        horizons = list(labels_config.horizons)
+        for h in horizons:
+            if h not in exported_horizons:
+                logger.info(
+                    "Requested horizon %d not in exported %s; computing via "
+                    "LabelFactory (valid if h + k < n_columns=%d)",
+                    h, list(exported_horizons), contract.n_columns,
+                )
+
+    # Compute regression labels. Pre-T9 validation guards against out-of-bounds.
+    regression = LabelFactory.multi_horizon(
+        forward_prices, horizons, k, labels_config.return_type
+    )
+
+    # Defense in depth — Pre-T9 should catch this, but we defend anyway.
+    if not np.isfinite(regression).all():
+        raise ValueError(
+            f"LabelFactory.multi_horizon produced non-finite values. "
+            f"horizons={horizons}, k={k}, "
+            f"max_horizon={contract.max_horizon}. "
+            f"Verify forward_prices contains no NaN/Inf."
+        )
+
+    # Resolve task.
+    task = labels_config.task
+    if task == "auto":
+        label_strategy_raw = metadata.get("label_strategy")
+        if label_strategy_raw is None:
+            labeling = metadata.get("labeling", {})
+            if isinstance(labeling, dict):
+                label_strategy_raw = labeling.get("strategy")
+
+        if label_strategy_raw is not None:
+            from hft_contracts import is_regression_strategy
+            strategy_key = (
+                label_strategy_raw.lower()
+                if isinstance(label_strategy_raw, str)
+                else label_strategy_raw.value
+            )
+            try:
+                task = (
+                    "regression"
+                    if is_regression_strategy(strategy_key)
+                    else "classification"
+                )
+            except (ValueError, KeyError):
+                task = "regression"
+        else:
+            # Safest default when forward_prices source is active.
+            task = "regression"
+
+    # Compute classification labels when requested. Return canonical {-1, 0, +1}.
+    # Downstream _labels_need_shift handles the CE shift uniformly.
+    classification = None
+    if task == "classification":
+        classification = LabelFactory.classify(
+            regression, labels_config.threshold_bps
+        )
+
+    return classification, regression
+
+
 def load_day_data(
     data_file: Union[str, Path],
     labels_path: Union[str, Path],
     metadata_path: Optional[Union[str, Path]] = None,
     regression_labels_path: Optional[Union[str, Path]] = None,
+    forward_prices_path: Optional[Union[str, Path]] = None,
+    labels_config: Optional["LabelsConfig"] = None,
+    export_stride: int = 1,
     validate: bool = True,
     lazy: bool = False,
     mmap_mode: Optional[str] = None,
 ) -> DayData:
     """
     Load data for a single trading day.
-    
+
     Auto-detects format:
     - *_sequences.npy: 3D aligned format [N_seq, 100, 98]
     - *_features.npy: 2D legacy format [N_samples, 98]
-    
+
+    Label source resolution (T9):
+        1. If labels_config.source == "forward_prices": REQUIRE
+           forward_prices.npy + metadata forward_prices.exported == True.
+           Compute labels via LabelFactory.multi_horizon.
+        2. If labels_config.source == "auto" AND forward_prices.npy exists AND
+           metadata declares exported: compute via LabelFactory.
+        3. Else: load precomputed labels (unchanged legacy path).
+
     Args:
         data_file: Path to data .npy file (sequences or features)
         labels_path: Path to labels .npy file (classification labels).
-            May not exist for pure regression exports.
+            May not exist for pure regression or forward_prices exports.
         metadata_path: Optional path to metadata .json file
         regression_labels_path: Optional path to regression labels .npy file
             (float64 bps). When provided, loads precomputed regression targets.
+        forward_prices_path: Optional path to forward_prices .npy file (T9).
+        labels_config: Optional LabelsConfig driving label source resolution (T9).
         validate: Whether to validate data integrity
         lazy: If True, use memory-mapped arrays (load on-demand)
         mmap_mode: Memory-map mode ('r' for read-only, 'r+' for read/write).
                    If lazy=True and mmap_mode=None, defaults to 'r'.
-    
+
     Returns:
         DayData instance
-    
+
     Raises:
-        FileNotFoundError: If both labels and regression_labels are missing
+        FileNotFoundError: If no label source found (labels, regression, or forward_prices)
         ValueError: If data validation fails
     """
     data_file = Path(data_file)
@@ -408,11 +552,15 @@ def load_day_data(
     has_regression_labels = (
         regression_labels_path is not None and Path(regression_labels_path).exists()
     )
-    
-    if not has_classification_labels and not has_regression_labels:
+    has_forward_prices = (
+        forward_prices_path is not None and Path(forward_prices_path).exists()
+    )
+
+    if not has_classification_labels and not has_regression_labels and not has_forward_prices:
         raise FileNotFoundError(
-            f"No labels found for {data_file.stem}: "
-            f"neither {labels_path} nor regression_labels exist"
+            f"No label source found for {data_file.stem}: "
+            f"neither {labels_path}, regression_labels, "
+            f"nor forward_prices exist"
         )
     
     # Detect format from filename
@@ -469,7 +617,81 @@ def load_day_data(
         if metadata_path.exists():
             with open(metadata_path) as f:
                 metadata = json.load(f)
-    
+
+    # T9: Forward-prices label computation.
+    # Determine label source and optionally compute labels from forward_prices.
+    from lobtrainer.config.schema import LabelsConfig as _LabelsConfig
+    if labels_config is None:
+        labels_config = _LabelsConfig()
+
+    forward_prices_data = None
+    use_forward_prices = False
+
+    meta_declares_fp = (
+        metadata is not None
+        and isinstance(metadata.get("forward_prices"), dict)
+        and metadata["forward_prices"].get("exported", False)
+    )
+
+    if labels_config.source == "forward_prices":
+        if not has_forward_prices:
+            raise FileNotFoundError(
+                f"labels.source='forward_prices' but "
+                f"{forward_prices_path} does not exist. "
+                f"Ensure the export config sets export_forward_prices=true."
+            )
+        if not meta_declares_fp:
+            raise ValueError(
+                f"labels.source='forward_prices' but metadata does not "
+                f"declare forward_prices.exported=True for {data_file.stem}."
+            )
+        use_forward_prices = True
+    elif labels_config.source == "auto" and has_forward_prices and meta_declares_fp:
+        use_forward_prices = True
+
+    if use_forward_prices:
+        forward_prices_data = np.load(
+            forward_prices_path, mmap_mode=effective_mmap
+        )
+        if not lazy:
+            forward_prices_data = forward_prices_data.astype(np.float64)
+
+        # Alignment invariant: forward_prices rows must equal sequence rows
+        if sequences is not None and forward_prices_data.shape[0] != sequences.shape[0]:
+            raise ValueError(
+                f"forward_prices has {forward_prices_data.shape[0]} rows but "
+                f"sequences has {sequences.shape[0]} rows for "
+                f"{data_file.stem}. The export contract requires 1:1 alignment."
+            )
+
+        classification, regression_from_fp = _compute_labels_from_forward_prices(
+            forward_prices_data, metadata, labels_config
+        )
+
+        # Override labels with computed values.
+        if classification is not None:
+            labels = classification.astype(np.int64)
+        else:
+            labels = np.zeros(regression_from_fp.shape, dtype=np.int64)
+        regression_labels = regression_from_fp
+
+    # T10: compute sample weights if requested
+    computed_sample_weights = None
+    if (
+        labels_config is not None
+        and labels_config.sample_weights != "none"
+        and not lazy
+    ):
+        from lobtrainer.data.sample_weights import compute_sample_weights_for_day
+        n_weight_samples = labels.shape[0] if labels.ndim >= 1 and labels.shape[0] > 0 else 0
+        if n_weight_samples > 0:
+            computed_sample_weights = compute_sample_weights_for_day(
+                n_samples=n_weight_samples,
+                metadata=metadata,
+                labels_config=labels_config,
+                stride=export_stride,
+            )
+
     # For lazy aligned format, we need to create features from sequences on access
     if lazy and is_aligned and features is None:
         day_data = DayData(
@@ -478,6 +700,8 @@ def load_day_data(
             labels=labels,
             sequences=sequences,
             regression_labels=regression_labels,
+            forward_prices=forward_prices_data,
+            sample_weights=computed_sample_weights,
             metadata=metadata,
             is_aligned=is_aligned,
             _sequences_path=data_file,
@@ -493,6 +717,8 @@ def load_day_data(
             labels=labels,
             sequences=sequences,
             regression_labels=regression_labels,
+            forward_prices=forward_prices_data,
+            sample_weights=computed_sample_weights,
             metadata=metadata,
             is_aligned=is_aligned,
             _sequences_path=data_file if lazy else None,
@@ -558,48 +784,58 @@ def load_day_metadata_only(
 def load_split_data(
     data_dir: Union[str, Path],
     split: str = "train",
+    labels_config: Optional["LabelsConfig"] = None,
     validate: bool = True,
     lazy: bool = False,
     mmap_mode: Optional[str] = None,
 ) -> List[DayData]:
     """
     Load all data for a split (train/val/test).
-    
+
     Auto-detects format (aligned 3D or legacy 2D).
-    
+
     Args:
         data_dir: Root data directory
         split: Split name ("train", "val", or "test")
+        labels_config: Optional LabelsConfig for label source resolution (T9).
         validate: Whether to validate data integrity
         lazy: If True, use memory-mapped arrays for minimal RAM usage.
               Essential for large datasets that don't fit in memory.
         mmap_mode: Memory-map mode ('r' for read-only). Only used if lazy=True.
-    
+
     Returns:
         List of DayData instances, sorted by date
-    
+
     Raises:
         FileNotFoundError: If split directory doesn't exist
     """
     data_dir = Path(data_dir)
     split_dir = data_dir / split
-    
+
     if not split_dir.exists():
         raise FileNotFoundError(f"Split directory not found: {split_dir}")
-    
+
+    # T10: read export stride from manifest for sample weight computation
+    export_stride = 1  # safe default (time-based exports)
+    manifest_path = data_dir / "dataset_manifest.json"
+    if manifest_path.exists():
+        with open(manifest_path) as _mf:
+            _manifest = json.load(_mf)
+        export_stride = _manifest.get("stride", 1)
+
     # Detect format
     export_format = _detect_export_format(split_dir)
-    
+
     if export_format == 'aligned':
         data_files = sorted(split_dir.glob("*_sequences.npy"))
         suffix = '_sequences'
     else:
         data_files = sorted(split_dir.glob("*_features.npy"))
         suffix = '_features'
-    
+
     if not data_files:
         raise FileNotFoundError(f"No data files found in {split_dir}")
-    
+
     days = []
     contract_validated = False
     expected_feature_count: Optional[int] = None
@@ -608,21 +844,26 @@ def load_split_data(
         date = data_file.stem.replace(suffix, '')
         label_path = split_dir / f"{date}_labels.npy"
         regression_label_path = split_dir / f"{date}_regression_labels.npy"
+        forward_prices_path = split_dir / f"{date}_forward_prices.npy"
         metadata_path = split_dir / f"{date}_metadata.json"
-        
+
         has_class = label_path.exists()
         has_reg = regression_label_path.exists()
-        if not has_class and not has_reg:
+        has_fp = forward_prices_path.exists()
+        if not has_class and not has_reg and not has_fp:
             raise FileNotFoundError(
-                f"Missing labels for {date}: neither {label_path} nor "
-                f"{regression_label_path} exists"
+                f"Missing labels for {date}: no labels.npy, "
+                f"regression_labels.npy, or forward_prices.npy in {split_dir}"
             )
-        
+
         day_data = load_day_data(
             data_file,
             label_path,
             metadata_path if metadata_path.exists() else None,
             regression_labels_path=regression_label_path if has_reg else None,
+            forward_prices_path=forward_prices_path if has_fp else None,
+            labels_config=labels_config,
+            export_stride=export_stride,
             validate=False,
             lazy=lazy,
             mmap_mode=mmap_mode,
@@ -896,10 +1137,11 @@ class LOBSequenceDataset(Dataset):
         use_precomputed_regression: bool = False,
         mid_price_feature_index: int = 40,
         stride: int = 10,
+        return_sample_weights: bool = False,
     ):
         """
         Initialize LOB Sequence Dataset.
-        
+
         Args:
             days: List of DayData instances (must be aligned format)
             transform: Optional transform to apply to sequences
@@ -923,6 +1165,9 @@ class LOBSequenceDataset(Dataset):
                 selection). Default 40 from pipeline_contract.toml.
             stride: Sequence stride in events. Used to convert horizon events to
                 sequence index offsets. Default 10.
+            return_sample_weights: If True and day.sample_weights is not None,
+                return a 3-tuple (sequence, label, weight) instead of 2-tuple.
+                Enable only for the TRAIN split (T10).
         """
         # Verify all days have sequences
         for day in days:
@@ -943,7 +1188,17 @@ class LOBSequenceDataset(Dataset):
         self.use_precomputed_regression = use_precomputed_regression
         self._mid_price_idx = mid_price_feature_index
         self._stride = stride
-        
+        self.return_sample_weights = return_sample_weights
+        if return_sample_weights:
+            for day in days:
+                if day.sample_weights is None:
+                    raise ValueError(
+                        f"return_sample_weights=True but day {day.date} has no "
+                        f"sample_weights. Ensure all days have weights computed "
+                        f"(set sample_weights='concurrent_overlap' in LabelsConfig) "
+                        f"or disable return_sample_weights."
+                    )
+
         if use_precomputed_regression:
             for day in days:
                 if day.regression_labels is None:
@@ -1008,10 +1263,17 @@ class LOBSequenceDataset(Dataset):
     def __len__(self) -> int:
         return len(self._index_map)
     
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, Union[torch.Tensor, Dict[int, torch.Tensor]]]:
+    def __getitem__(self, idx: int):
         day_idx, local_idx = self._index_map[idx]
         day = self.days[day_idx]
-        
+
+        # T10: precompute sample weight tensor (None if disabled)
+        _weight = None
+        if self.return_sample_weights and day.sample_weights is not None:
+            _weight = torch.tensor(
+                day.sample_weights[local_idx], dtype=torch.float32
+            )
+
         # Get full sequence
         sequence = day.sequences[local_idx].copy()
         
@@ -1044,10 +1306,11 @@ class LOBSequenceDataset(Dataset):
                 reg_target = float(reg_row[0])
             else:
                 reg_target = float(reg_row)
-            return (
+            result = (
                 torch.from_numpy(sequence).float(),
                 torch.tensor(reg_target, dtype=torch.float32),
             )
+            return (*result, _weight) if _weight is not None else result
         
         # HMHP dict mode: return {horizon_value: label} dict
         if self.return_labels_as_dict:
@@ -1074,11 +1337,12 @@ class LOBSequenceDataset(Dataset):
                 reg_row = day.regression_labels[local_idx]
                 for i, h in enumerate(horizons):
                     reg_dict[h] = torch.tensor(float(reg_row[i]), dtype=torch.float32)
-                return (
+                result = (
                     torch.from_numpy(sequence).float(),
                     label_dict,
                     reg_dict,
                 )
+                return (*result, _weight) if _weight is not None else result
 
             # Regression targets without precomputed labels: hard error.
             # On-the-fly computation used a different formula (simple point return)
@@ -1094,11 +1358,12 @@ class LOBSequenceDataset(Dataset):
                     "feature extractor config."
                 )
             
-            return (
+            result = (
                 torch.from_numpy(sequence).float(),
                 label_dict,
             )
-        
+            return (*result, _weight) if _weight is not None else result
+
         # Handle label tensor dtype (non-dict mode)
         # Label encoding depends on labeling strategy:
         # - TLOB/Opportunity: {-1, 0, 1} → shift +1 → {0, 1, 2}
@@ -1129,11 +1394,12 @@ class LOBSequenceDataset(Dataset):
         else:
             label_tensor = torch.tensor(label_value, dtype=torch.long)
         
-        return (
+        result = (
             torch.from_numpy(sequence).float(),
             label_tensor,
         )
-    
+        return (*result, _weight) if _weight is not None else result
+
     @property
     def num_features(self) -> int:
         if self.feature_indices is not None:
@@ -1180,22 +1446,44 @@ class LOBSequenceDataset(Dataset):
 def _hmhp_collate_fn(batch):
     """
     Custom collate function for HMHP multi-horizon dict labels.
-    
-    Handles both 2-tuple (sequence, labels) and 3-tuple (sequence, labels, regression_targets).
-    Output is (sequences [B,T,F], {horizon: labels [B]}) or
-              (sequences [B,T,F], {horizon: labels [B]}, {horizon: targets [B]}).
+
+    Handles variable-length tuples:
+        - 2-tuple: (sequence, labels)
+        - 3-tuple: (sequence, labels, regression_targets) OR (sequence, labels, weight)
+        - 4-tuple: (sequence, labels, regression_targets, weight)
+
+    The last element is a weight (scalar tensor) if it's a torch.Tensor with ndim==0.
+    Dict elements are regression targets.
     """
+    n_items = len(batch[0])
     sequences = torch.stack([item[0] for item in batch])
-    
+
     horizons = batch[0][1].keys()
     labels = {h: torch.stack([item[1][h] for item in batch]) for h in horizons}
-    
-    if len(batch[0]) > 2:
+
+    # Detect optional regression targets (dict) and sample weights (scalar tensor)
+    has_reg = n_items >= 3 and isinstance(batch[0][2], dict)
+    # Weight is the last element if it's a scalar tensor
+    last = batch[0][-1] if n_items >= 3 else None
+    has_weight = (
+        last is not None
+        and isinstance(last, torch.Tensor)
+        and last.ndim == 0
+    )
+
+    result = [sequences, labels]
+    if has_reg:
         reg_horizons = batch[0][2].keys()
-        regression_targets = {h: torch.stack([item[2][h] for item in batch]) for h in reg_horizons}
-        return sequences, labels, regression_targets
-    
-    return sequences, labels
+        regression_targets = {
+            h: torch.stack([item[2][h] for item in batch]) for h in reg_horizons
+        }
+        result.append(regression_targets)
+    if has_weight:
+        weight_idx = n_items - 1
+        weights = torch.stack([item[weight_idx] for item in batch])
+        result.append(weights)
+
+    return tuple(result)
 
 
 def create_dataloaders(

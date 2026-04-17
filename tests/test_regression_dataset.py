@@ -98,7 +98,7 @@ class TestLoadDayDataRegression:
     def test_no_labels_at_all_raises(self, tmp_path):
         _create_synthetic_export(tmp_path, include_class_labels=False, include_reg_labels=False)
         split_dir = tmp_path / "train"
-        with pytest.raises(FileNotFoundError, match="No labels found"):
+        with pytest.raises(FileNotFoundError, match="No label"):
             load_day_data(
                 split_dir / "2025-03-01_sequences.npy",
                 split_dir / "2025-03-01_labels.npy",

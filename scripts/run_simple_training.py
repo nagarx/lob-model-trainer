@@ -23,6 +23,17 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+# Phase 1.4 deprecation hook
+sys.path.insert(0, str(Path(__file__).parent))
+from _hft_ops_compat import warn_if_not_orchestrated
+warn_if_not_orchestrated(
+    script_name="run_simple_training.py",
+    suggestion=(
+        "Use 'hft-ops run <manifest>' with a unified manifest referencing "
+        "this simple-trainer config."
+    ),
+)
+
 from lobtrainer.training.simple_trainer import SimpleModelTrainer
 
 

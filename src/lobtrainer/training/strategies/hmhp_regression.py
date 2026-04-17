@@ -66,23 +66,40 @@ class HMHPRegressionStrategy(TrainingStrategy):
         Raises:
             ValueError: If regression targets are missing from batch.
         """
-        if len(batch_data) == 3:
-            features, _labels, regression_targets = batch_data
-            regression_targets = {
-                h: t.to(self.device) for h, t in regression_targets.items()
-            }
-        else:
+        # T10: detect sample weights (scalar tensor) vs regression targets (dict)
+        import torch
+        sample_weights = None
+        regression_targets = None
+        if len(batch_data) >= 3:
+            third = batch_data[2]
+            if isinstance(third, dict):
+                regression_targets = {
+                    h: t.to(self.device) for h, t in third.items()
+                }
+            elif isinstance(third, torch.Tensor) and third.ndim == 1:
+                sample_weights = third
+        if len(batch_data) >= 4:
+            fourth = batch_data[3]
+            if isinstance(fourth, torch.Tensor) and fourth.ndim == 1:
+                sample_weights = fourth
+
+        if regression_targets is None:
             raise ValueError(
                 "HMHP_REGRESSION requires regression targets but batch "
-                "returned only 2 elements. Check dataset return_regression_targets."
+                "has no dict element. Check dataset return_regression_targets."
             )
 
+        features = batch_data[0]
         features = features.to(self.device)
+        if sample_weights is not None:
+            sample_weights = sample_weights.to(self.device)
         output = model(features)
 
         loss, loss_components = model.compute_loss(
             output, regression_targets=regression_targets
         )
+        if sample_weights is not None:
+            loss = loss * sample_weights.mean()
 
         batch_size = features.size(0)
         metrics: Dict[str, float] = {"loss": loss.item()}

@@ -29,6 +29,17 @@ import sys
 import time
 from pathlib import Path
 
+# Phase 1.4 deprecation hook — fires before expensive imports
+sys.path.insert(0, str(Path(__file__).parent))
+from _hft_ops_compat import warn_if_not_orchestrated
+warn_if_not_orchestrated(
+    script_name="run_simple_model_ablation.py",
+    suggestion=(
+        "Use 'hft-ops sweep run experiments/sweeps/simple_model_ablation.yaml' "
+        "once the sweep template is authored (Phase 5)."
+    ),
+)
+
 import numpy as np
 from scipy.stats import spearmanr
 from sklearn.linear_model import Ridge

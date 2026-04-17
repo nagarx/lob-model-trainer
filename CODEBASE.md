@@ -90,18 +90,30 @@ src/lobtrainer/
 │
 ├── config/
 │   ├── __init__.py                # Module exports
-│   └── schema.py                  # ExperimentConfig, DataConfig, ModelConfig, TrainConfig
+│   ├── schema.py                  # ExperimentConfig, DataConfig, ModelConfig, TrainConfig
+│   ├── merge.py                   # deep_merge(), resolve_inheritance(), is_partial_base()
+│   │                              #   Supports _base: str | list[str] multi-base composition (v2, Phase 3).
+│   │                              #   Preserves all v1 invariants byte-identically.
+│   └── archive/merge-v1/          # Archived v1 merge.py (single-string _base: only, 127 LOC)
+│       ├── merge.py               #   Loaded via importlib from tests/test_merge_v1_parity.py
+│       └── ARCHIVE_README.md      #   Parity reference; mirrors feature-extractor archive/monolith-v1/
 │
 ├── data/
 │   ├── __init__.py                # Module exports
 │   ├── dataset.py                 # DayData, LOBFlatDataset, LOBSequenceDataset
 │   ├── feature_selector.py        # FeatureSelector (frozen dataclass, preset/custom indices)
+│   ├── feature_set_resolver.py    # Phase 4 Batch 4c: ResolvedFeatureSet + resolve_feature_set()
+│   │                              #   Loads <name>.json from contracts/feature_sets/, verifies content
+│   │                              #   hash (integrity), contract_version + source_feature_count match.
+│   │                              #   Error hierarchy: FeatureSetResolverError → FeatureSetNotFound/
+│   │                              #   FeatureSetMalformed/FeatureSetIntegrityError/FeatureSetContractMismatch.
+│   │                              #   _compute_content_hash inlined (torch-free; cross-venv independent
+│   │                              #   from hft-ops); byte-parity LOCKED against hft_contracts.canonical_hash.
 │   ├── transforms.py              # FeatureStatistics, BinaryLabelTransform, ComposeTransform
 │   └── normalization.py           # HybridNormalizer, GlobalZScoreNormalizer (Welford/Chan streaming)
 │
 ├── models/
-│   ├── __init__.py                # create_model (45L, registry-based)
-│   ├── lstm.py                    # LSTMClassifier, GRUClassifier, LSTMConfig (legacy compat)
+│   ├── __init__.py                # create_model (45L, registry-based), LSTM/GRU re-exports from lobmodels
 │   └── baselines.py               # NaiveClassPrior, NaivePreviousLabel, LogisticBaseline
 │
 ├── training/
@@ -153,19 +165,28 @@ scripts/
 ├── e5_baselines.py                # E5 60s-bin experiment baselines
 ├── precompute_norm_stats.py       # Pre-compute normalization statistics cache
 ├── validate_export.py             # Dataset validation
-├── export_hmhp_signals.py         # HMHP signal export (deprecated, use export_signals.py)
-├── export_regression_signals.py   # Regression export (deprecated, use export_signals.py)
-├── export_tlob_regression_signals.py  # TLOB regression export (deprecated)
 └── analysis/                      # Analysis and evaluation scripts
     ├── evaluate_model.py          # Model evaluation from checkpoint
     └── run_baseline_evaluation.py # Baseline comparison
 
 configs/
 ├── README_configs.md              # Complete config reference
-├── experiments/                   # Active experiment configs (40)
-└── archive/                       # Reference configs (6)
+├── bases/                         # 21 axis-partitioned base configs (Phase 3)
+│   ├── README.md                  #   4-axis ownership rule + chained inheritance + _partial:
+│   ├── models/                    #   5: tlob_compact_bare, tlob_compact_regression,
+│   │                              #      tlob_paper_classification, hmhp_cascade_bare,
+│   │                              #      hmhp_cascade_regression
+│   ├── datasets/                  #   8: per-export normalisation/sampling bases
+│   ├── labels/                    #   4: regression_huber, tlob_smoothed, opportunity,
+│   │                              #      triple_barrier_volscaled
+│   └── train/                     #   4: regression_default, classification_default,
+│                                  #      classification_triple_barrier, tlob_paper_classification_train
+├── experiments/                   # 42 in-scope YAML configs: 25 migrated to multi-base _base:,
+│                                  #   17 standalone by design (baselines, XGBoost, archive,
+│                                  #   niche HMHP, TLOB singletons). See MERGE_MIGRATION_PLAN.md.
+└── archive/                       # Legacy reference configs (6) — not in Phase 3 migration scope
 
-tests/                             # 31 test modules (656 passed, 15 skipped)
+tests/                             # 43 test modules, 1052 tests pytest-collected (2026-04-15)
 ├── conftest.py                    # Shared fixtures (rng, day_data_factory, synthetic_export_dir)
 ├── test_baselines.py
 ├── test_calibration.py
@@ -377,13 +398,26 @@ class DataConfig:
     data_dir: str = "../data/exports/nvda_11month_complete"
     feature_count: int = 98
     horizon_idx: Optional[int] = 0
-    
+
     sequence: SequenceConfig = field(default_factory=SequenceConfig)
     normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
-    
+
     labeling_strategy: LabelingStrategy = LabelingStrategy.TLOB
     num_classes: int = 3
     cache_in_memory: bool = True
+
+    # Phase 4 Batch 4c: FeatureSet-registry selection (mutually exclusive w/
+    # feature_indices and feature_preset — at most one may be set).
+    feature_set: Optional[str] = None            # e.g. "momentum_hft_v1" → registry lookup
+    feature_indices: Optional[List[int]] = None  # explicit override (bypasses registry)
+    feature_preset: Optional[str] = None         # DEPRECATED (hard-error 2026-08-15)
+    feature_sets_dir: Optional[str] = None       # override registry root (test isolation)
+
+    # Private runtime cache populated by resolver; NOT serialized to YAML.
+    # R3 invariant: to_dict() strips all `_`-prefixed keys at both dataclass
+    # and dict branches, preserving on-disk YAML round-trip.
+    _feature_indices_resolved: Optional[List[int]] = field(init=False, repr=False, compare=False, default=None)
+    _feature_set_ref_resolved: Optional[tuple[str, str]] = field(init=False, repr=False, compare=False, default=None)
 ```
 
 ### ModelConfig
@@ -394,7 +428,7 @@ class ModelType(str, Enum):
     XGBOOST = "xgboost"
     LSTM = "lstm"
     GRU = "gru"
-    TRANSFORMER = "transformer"  # Not implemented
+    TRANSFORMER = "transformer"  # NOT IMPLEMENTED — reserved for future use
     DEEPLOB = "deeplob"
     TLOB = "tlob"
     HMHP = "hmhp"            # Multi-horizon classification (lob-models)
@@ -490,6 +524,53 @@ class LabelingStrategy(str, Enum):
     REGRESSION = "regression"
     """Continuous bps returns (float64), no discretization"""
 ```
+
+### Config Inheritance (`_base`) — `src/lobtrainer/config/merge.py`
+
+Phase 3 (2026-04-15) promoted `_base:` to a first-class multi-base composition mechanism. v1 (single-string only) is preserved in `archive/merge-v1/` for byte-identity parity testing.
+
+`resolve_inheritance(data, config_path)` accepts:
+
+| Form | Example | Semantics |
+|------|---------|-----------|
+| `_base: "path.yaml"` | monolith style (v1-compat) | Single base, backward compatible |
+| `_base: ["a.yaml", "b.yaml"]` | axis-composed style (v2) | Bases merge **left-to-right** (each successive base overrides the previous); child config overrides all accumulated bases |
+| `_base: null` or absent | — | No inheritance |
+| `_base: []` / `_base: 42` / `_base: [""]` | — | Raises `ValueError` (exhaustive validation) |
+
+**v1 invariants preserved byte-identically** (verified by 21 tests (pytest-collected) in `tests/test_config_inheritance.py` + golden-fixture parity in `tests/test_merge_v1_parity.py`):
+- `deep_merge`: dicts recurse; lists REPLACE (not append); `None` explicitly overrides
+- Entry-level cycle detection (`_seen` set tracks resolved absolute paths)
+- Depth cap: `_MAX_INHERITANCE_DEPTH = 10` (per-branch budget — each base chain counted from the current depth)
+- Relative `_base:` paths resolved against the child config's parent directory
+- `_base` key stripped from the returned dict (pop-on-read mutation pattern)
+
+**`is_partial_base()`**: detects the `_partial: true` sentinel. Bases declaring this at top level are standalone-invalid (only meaningful when composed with peer bases). `ExperimentConfig.from_yaml()` checks the raw YAML for this sentinel and raises a descriptive error if a partial base is loaded directly.
+
+### Axis-Partitioned Bases (`configs/bases/`) — Phase 3
+
+21 orthogonal base configs across 4 axes (see `configs/bases/README.md` for the complete ownership matrix and rule):
+
+| Axis | Count | Owns (high-level) | Must NOT set |
+|------|-------|---|---|
+| `models/` | 5 | `model.model_type`, `model.dropout`, `model.tlob_*`, `model.hmhp_*`, `model.regression_loss_type` | `model.num_classes`, `model.input_size`, `train.task_type`, `train.loss_type`, `train.batch_size` |
+| `datasets/` | 8 | `data.data_dir`, `data.feature_count`, `data.normalization`, `data.sequence`, `model.input_size` (T13 auto-derivation) | `data.labeling_strategy`, `data.horizon_idx`, `model.num_classes` |
+| `labels/` | 4 | `data.labeling_strategy`, `data.horizon_idx`, `data.num_classes`, `model.num_classes`, `train.task_type`, `train.loss_type` (task-coupled) | `model.*` (other than num_classes), `data.feature_count` |
+| `train/` | 4 | `train.batch_size`, `train.epochs`, `train.optimizer`, `train.scheduler`, `train.learning_rate`, `train.weight_decay`, `train.seed`, `train.gradient_clip_norm`, `train.use_class_weights`, `train.focal_gamma` | `train.task_type`, `train.loss_type`, `model.*`, `data.*` |
+
+**Per-child (NOT in any base)**: `name`, `description`, `tags`, `output_dir`, `log_level`.
+
+**Chained-inheritance patterns** (lock-tested by `tests/test_base_axis_ownership.py::TestChainedInheritancePurity`):
+
+1. **TLOB compact**: `tlob_compact_bare` → `tlob_compact_regression` (regression adds `tlob_use_cvml: false` + `tlob_cvml_out_channels: 0` on top of 12 shared arch fields). E4 TLOB uses `bare` directly (keeps its pre-migration golden byte-identical); E5/E6 use the full chain (same byte-identity guarantee).
+
+2. **HMHP cascade**: `hmhp_cascade_bare` → `hmhp_cascade_regression`. `bare` has 10 model fields (`model_type: hmhp` + `dropout` + 8 `hmhp_*` arch fields); `regression` chains from `bare`, overrides `model_type: hmhp_regression`, and adds `hmhp_regression_loss_type: huber`. HMHP classification/triple-barrier use `bare` directly (those regression fields would corrupt their goldens); HMHP regression uses the chain.
+
+**Ownership refinement (Batch 2, 2026-04-15)**: `train.loss_type` moved from `models/` → `labels/` because it is **task-coupled** (regression → huber, tlob → weighted_ce, triple_barrier → focal), not model-coupled. Before this move, HMHP — which shares one cascade model across all three loss types — would have required three near-duplicate HMHP model bases. All migrated configs' resolved dicts are byte-identical before and after the refinement.
+
+**Migration status (2026-04-15)**: 25 of 42 in-scope experiment configs migrated to axis-composed form across 3 batches (E4×1 + E5×5 + E6×1 + HMHP×11 + TLOB classif×7 = 25). 17 configs remain standalone by design (baselines×7, XGBoost×2, archive×6, niche HMHP×2). Monolith `bases/e5_tlob_regression.yaml` retired at end of Batch 1 after all 5 E5 consumers migrated with byte-identical resolved dicts.
+
+See `MERGE_MIGRATION_PLAN.md` for the per-batch migration ledger.
 
 ---
 
@@ -683,35 +764,9 @@ normalizer = HybridNormalizer(exclude_indices=None)  # Uses contract defaults
 
 ## 9. Model Implementations
 
-### LSTMClassifier (src/lobtrainer/models/lstm.py)
+### LSTMClassifier / GRUClassifier (lobmodels.models.rnn)
 
-```python
-class LSTMClassifier(nn.Module):
-    """
-    LSTM-based classifier with optional attention and bidirectional.
-    
-    Architecture:
-        Input [B, T, F] → LSTM layers → (optional) Attention → FC → Output [B, C]
-    """
-    
-    def __init__(
-        self,
-        input_size: int = 98,
-        hidden_size: int = 64,
-        num_layers: int = 2,
-        num_classes: int = 3,
-        dropout: float = 0.2,
-        bidirectional: bool = False,
-        attention: bool = False,
-    ): ...
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args: x: [batch, seq_len, features]
-        Returns: logits: [batch, num_classes]
-        """
-        ...
-```
+LSTM and GRU models live in the `lob-models` package (`lobmodels.models.rnn`), registered in ModelRegistry as `"lstm"` and `"gru"`. They return `ModelOutput(logits=...)` and support optional attention and bidirectional modes. Re-exported by `lobtrainer.models` for convenience.
 
 ### Model Factory
 
@@ -1263,8 +1318,9 @@ python scripts/train.py --config configs/experiments/nvda_tlob_h10_v1.yaml \
 
 See `configs/README_configs.md` for complete configuration reference including:
 
-- Active experiment configs (40)
-- Archived reference configs (6)
+- Active experiment configs (42 in-scope: 25 migrated to axis-composed `_base: [...]` form + 17 standalone by design — see `MERGE_MIGRATION_PLAN.md`)
+- Axis-partitioned bases (21 under `configs/bases/{models,datasets,labels,train}/` — see `configs/bases/README.md`)
+- Archived reference configs (6 legacy, not in Phase 3 migration scope)
 - Horizon index mapping
 - Model type options
 - Loss function selection
@@ -1301,13 +1357,13 @@ class TestTrainer:
         assert trainer.config.name == "test"
 ```
 
-### Test Modules (24)
+### Test Modules (43; 1052 tests pytest-collected on 2026-04-15)
 
 | Test File | Coverage |
 |-----------|----------|
 | `test_baselines.py` | NaiveClassPrior, NaivePreviousLabel, LogisticBaseline |
-| `test_regression_metrics.py` | r_squared, IC, MAE, RMSE, directional/profitable accuracy (22 tests) |
-| `test_regression_dataset.py` | DayData.regression_labels, load_day_data, LOBSequenceDataset (8 tests) |
+| `test_regression_metrics.py` | r_squared, IC, MAE, RMSE, directional/profitable accuracy |
+| `test_regression_dataset.py` | DayData.regression_labels, load_day_data, LOBSequenceDataset |
 | `test_config.py` | Configuration loading and validation |
 | `test_deeplob_integration.py` | DeepLOB model creation |
 | `test_evaluation.py` | BaselineReport, evaluate_model |
@@ -1328,6 +1384,24 @@ class TestTrainer:
 | `test_regression_training.py` | HMHP regression training pipeline |
 | `test_standard_regression_training.py` | DeepLOB regression training pipeline |
 | `test_calibration.py` | Variance calibration metrics |
+| `test_create_dataloaders.py` | Feature selection cascade, num_workers override, strategy routing |
+| `test_hmhp_collate.py` | `_hmhp_collate_fn` 2/3-tuple dict-label collation |
+| `test_optimizer_scheduler.py` | Optimizer + LR scheduler factories |
+| `test_regression_evaluation.py` | Regression metrics + per-horizon reporting |
+| `test_signal_export.py` | Signal export pipeline (classification + regression outputs) |
+| `test_signal_export_inference.py` | Signal export inference loop |
+| `test_simple_trainer.py` | SimpleModelTrainer (TemporalRidge, GradBoost) |
+| `test_strategies.py` | TrainingStrategy ABC + per-model strategy implementations |
+| `test_sources_and_bundle.py` | DayBundle multi-source fusion (T12) |
+| `test_forward_prices_integration.py` | ForwardPriceContract / LabelFactory integration (T9–T10) |
+| `test_integration_wrappers.py` | Wrapper-manifest integration path |
+| `test_experiment_spec_and_gates.py` | `ExperimentSpec` orchestrator + decision gates (T14) |
+| **Phase 3 (config composition)** — all 5 files added 2026-04-15: | |
+| `test_config_inheritance.py` | **21 tests** (pytest-collected; static `grep "def test_"` = 22, one method filtered at collection) — v1 `_base:` single-string semantics (depth cap, cycle detection, list-REPLACE, None override, pop-on-read, relative paths, `_partial:` sentinel). All pre-Phase-3 invariants locked. |
+| `test_multi_base_inheritance.py` | v2 `_base: list[str]` multi-base composition — exhaustive 2/3/4-base merge, explicit diamond case, left-to-right order |
+| `test_merge_v1_parity.py` | Byte-identity parity between v1 (`importlib`-loaded from `archive/merge-v1/`) and v2 on every in-scope pre-migration golden JSON fixture |
+| `test_base_axis_ownership.py` | Mechanical §3.4 ownership enforcement (each top-level dotted-key appears in exactly one axis directory); `TestChainedInheritancePurity` locks the TLOB compact and HMHP cascade chained patterns |
+| `test_migrated_configs_e2e.py` | Auto-discovers migrated configs; verifies `ExperimentConfig.from_yaml` loads each without error; meta-tests cover every E-family / HMHP-family / TLOB-classif-family member |
 
 ---
 

@@ -100,6 +100,13 @@ class TrainingStrategy(ABC):
     @property
     def horizon_idx(self) -> Optional[int]:
         """Which horizon to select. None = return all horizons (HMHP)."""
+        # T9: read from LabelsConfig (always populated by DataConfig.__post_init__).
+        # Defensive: verify the attribute is a real int/None, not a MagicMock.
+        labels = getattr(self.config.data, "labels", None)
+        if labels is not None:
+            idx = getattr(labels, "primary_horizon_idx", None)
+            if isinstance(idx, (int, type(None))):
+                return idx
         return getattr(self.config.data, "horizon_idx", 0)
 
     # =========================================================================

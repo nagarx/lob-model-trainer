@@ -41,7 +41,7 @@ from lobtrainer.training.strategies.hmhp_classification import (
 )
 from lobtrainer.training.strategies.hmhp_regression import HMHPRegressionStrategy
 
-# Models from lobmodels (the correct source — NOT lobtrainer.models.lstm)
+# Models from lobmodels
 from lobmodels import (
     LogisticLOB,
     LogisticLOBConfig,

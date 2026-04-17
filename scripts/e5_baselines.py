@@ -29,6 +29,18 @@ import sys
 import time
 from pathlib import Path
 
+# Phase 1.4 deprecation hook — fires before expensive imports
+sys.path.insert(0, str(Path(__file__).parent))
+from _hft_ops_compat import warn_if_not_orchestrated
+warn_if_not_orchestrated(
+    script_name="e5_baselines.py",
+    suggestion=(
+        "Use 'hft-ops sweep run experiments/sweeps/e5_baselines.yaml' once "
+        "the sweep template is authored (Phase 5). Until then, this script "
+        "remains usable."
+    ),
+)
+
 import numpy as np
 from sklearn.linear_model import Ridge
 from sklearn.ensemble import GradientBoostingRegressor
