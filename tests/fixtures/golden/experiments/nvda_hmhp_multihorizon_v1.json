@@ -1,0 +1,75 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/nvda_116feat_full_analysis",
+      "feature_count": 116,
+      "horizon_idx": 0,
+      "labeling_strategy": "tlob",
+      "normalization": {
+        "clip_value": 10.0,
+        "eps": 1e-08,
+        "exclude_features": [
+          93,
+          111
+        ],
+        "strategy": "hybrid"
+      },
+      "num_classes": 3,
+      "sequence": {
+        "stride": 10,
+        "window_size": 100
+      }
+    },
+    "description": "Hierarchical Multi-Horizon Predictor (HMHP) on 11-month NVDA dataset.\nFirst experiment with cascading state and cross-horizon confirmation.\n",
+    "log_level": "INFO",
+    "model": {
+      "dropout": 0.1,
+      "hmhp_cascade_mode": "full",
+      "hmhp_decoder_hidden_dim": 32,
+      "hmhp_encoder_hidden_dim": 64,
+      "hmhp_encoder_type": "tlob",
+      "hmhp_horizons": [
+        10,
+        20,
+        50,
+        100,
+        200
+      ],
+      "hmhp_num_encoder_layers": 2,
+      "hmhp_state_dim": 32,
+      "hmhp_state_fusion": "gate",
+      "hmhp_use_confirmation": true,
+      "input_size": 116,
+      "model_type": "hmhp",
+      "num_classes": 3
+    },
+    "name": "HMHP_NVDA_MultiHorizon_v1",
+    "output_dir": "outputs/experiments/nvda_hmhp_multihorizon_v1",
+    "tags": [
+      "nvda",
+      "hmhp",
+      "multi-horizon",
+      "cascade",
+      "confirmation",
+      "11month",
+      "experiment"
+    ],
+    "train": {
+      "batch_size": 32,
+      "early_stopping_patience": 15,
+      "epochs": 50,
+      "gradient_clip_norm": 1.0,
+      "learning_rate": 5e-05,
+      "loss_type": "weighted_ce",
+      "mixed_precision": false,
+      "num_workers": 4,
+      "pin_memory": true,
+      "scheduler": "cosine",
+      "seed": 42,
+      "task_type": "multiclass",
+      "use_class_weights": true,
+      "weight_decay": 1e-05
+    }
+  },
+  "status": "ok"
+}

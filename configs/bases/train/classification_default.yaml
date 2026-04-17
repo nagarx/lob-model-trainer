@@ -1,0 +1,27 @@
+# axis: train
+# Default classification training hyperparameters
+# Used by: HMHP classification configs (TLOB, opportunity variants on
+#          128feat / 40feat — configs 1-6 per MIGRATION_PLAN Batch 2)
+#
+# Different from regression_default: larger batch (256 vs 128), shorter
+# patience (8 vs 5), pin_memory=true, num_workers=4, use_class_weights=true.
+# Triple-barrier configs have DIFFERENT training regime — use
+# `classification_triple_barrier.yaml` instead.
+#
+# Ownership (per §3.4): train.* EXCEPT train.task_type and train.loss_type
+#                        (both labels/-owned since refined in Batch 2).
+_partial: true
+
+train:
+  batch_size: 256
+  learning_rate: 5.0e-4
+  weight_decay: 0.01
+  epochs: 30
+  early_stopping_patience: 8
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 4
+  pin_memory: true
+  seed: 42
+  mixed_precision: false
+  use_class_weights: true

@@ -39,6 +39,7 @@ model:
 
 train:
   task_type: regression
+  loss_type: huber
 
 output_dir: outputs/experiments/nvda_temporal_ridge_h10
 log_level: INFO

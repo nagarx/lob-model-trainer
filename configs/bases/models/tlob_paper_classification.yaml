@@ -1,0 +1,38 @@
+# axis: models
+# TLOB paper-spec classification architecture (Berti & Kasneci 2025)
+# Used by: nvda_tlob_{h10_v1, h50_v1, h100_v1, raw_h50_v1, v2_h100,
+#                     98feat_h100, repo_match_h50} — 7 configs
+#
+# DISTINCT from `tlob_compact_bare.yaml` (the E5 regression variant which
+# uses hidden=32, layers=2, heads=2, dropout=0.1, + regression loss fields).
+# This base reproduces the TLOB PAPER classification spec: deeper arch
+# (hidden=64, layers=4, heads=1), intended for event-based single-horizon
+# classification benchmarks matching the FI-2010 tradition.
+#
+# `dropout: 0.1` is the default (used by 4/7 configs: h10_v1, h50_v1,
+# h100_v1, raw_h50_v1). The 3 TLOB-repo-match variants (v2_h100,
+# 98feat_h100, repo_match_h50) override to `dropout: 0.0` in the child to
+# match the OFFICIAL TLOB repo's no-dropout baseline.
+#
+# Fields intentionally OMITTED (E4-cvml lesson from Batch 1b):
+#   - `tlob_use_cvml` / `tlob_cvml_out_channels` — none of the 7 configs
+#     explicitly set these. A base that injected cvml defaults would corrupt
+#     byte-identity with all 7 goldens.
+#
+# Ownership (per §3.4): model.model_type, model.dropout, model.tlob_*,
+#                        model.task_type. `model.num_classes` and
+#                        `model.input_size` are owned by labels/ and
+#                        datasets/ respectively.
+# `train.loss_type` and `train.task_type` are TASK-coupled — lives in labels/.
+_partial: true
+
+model:
+  model_type: tlob
+  dropout: 0.1   # majority default; 3 configs override to 0.0 (repo-match variants)
+  tlob_hidden_dim: 64
+  tlob_num_layers: 4
+  tlob_num_heads: 1
+  tlob_mlp_expansion: 4.0
+  tlob_use_sinusoidal_pe: true
+  tlob_use_bin: true
+  tlob_dataset_type: nvda

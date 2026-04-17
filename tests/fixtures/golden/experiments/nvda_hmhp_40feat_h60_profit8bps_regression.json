@@ -1,0 +1,84 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/nvda_xnas_128feat_profit8bps",
+      "feature_count": 128,
+      "feature_preset": "short_term_40",
+      "horizon_idx": 1,
+      "labeling_strategy": "tlob",
+      "normalization": {
+        "clip_value": 10.0,
+        "eps": 1e-08,
+        "exclude_features": [
+          93,
+          115
+        ],
+        "strategy": "hybrid"
+      },
+      "num_classes": 3,
+      "sequence": {
+        "stride": 10,
+        "window_size": 100
+      }
+    },
+    "description": "Signal-First Pivot with regression. HMHP predicts both direction (classification)\nand magnitude (regression). Regression head outputs predicted bps return per horizon.\nAt inference: trade only when |predicted_bps| > option breakeven cost.\n",
+    "log_level": "INFO",
+    "model": {
+      "dropout": 0.1,
+      "hmhp_cascade_mode": "full",
+      "hmhp_decoder_hidden_dim": 32,
+      "hmhp_encoder_hidden_dim": 64,
+      "hmhp_encoder_type": "tlob",
+      "hmhp_horizons": [
+        10,
+        60,
+        300
+      ],
+      "hmhp_loss_weights": {
+        "H10": 0.08,
+        "H300": 0.12,
+        "H60": 0.4,
+        "consistency": 0.05,
+        "final": 0.1,
+        "regression": 0.25
+      },
+      "hmhp_num_encoder_layers": 2,
+      "hmhp_state_dim": 32,
+      "hmhp_state_fusion": "gate",
+      "hmhp_use_confirmation": true,
+      "hmhp_use_regression": true,
+      "input_size": 40,
+      "model_type": "hmhp",
+      "num_classes": 3
+    },
+    "name": "HMHP_NVDA_40feat_H60_Profit8bps_Regression",
+    "output_dir": "outputs/experiments/nvda_hmhp_40feat_h60_profit8bps_regression",
+    "tags": [
+      "nvda",
+      "xnas",
+      "hmhp",
+      "40-features",
+      "h60-primary",
+      "profit-threshold",
+      "regression-head",
+      "magnitude-aware"
+    ],
+    "train": {
+      "batch_size": 256,
+      "early_stopping_patience": 8,
+      "epochs": 30,
+      "gradient_clip_norm": 1.0,
+      "learning_rate": 0.0005,
+      "loss_type": "weighted_ce",
+      "mixed_precision": false,
+      "num_workers": 0,
+      "pin_memory": true,
+      "scheduler": "cosine",
+      "seed": 42,
+      "task_type": "multiclass",
+      "use_class_weights": true,
+      "weight_decay": 0.01
+    }
+  },
+  "status": "ok"
+}

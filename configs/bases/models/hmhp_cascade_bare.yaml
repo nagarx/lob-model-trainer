@@ -1,0 +1,30 @@
+# axis: models
+# HMHP cascade architecture — BARE (universal fields shared by ALL 11 HMHP configs)
+# Used by: HMHP classification (TLOB, opportunity, TB), HMHP triple_barrier
+#
+# For HMHP regression variants (model_type: hmhp_regression), use
+# `hmhp_cascade_regression.yaml` which chains from this bare base and
+# overrides `model_type` + adds `hmhp_regression_loss_type: huber`.
+#
+# Fields NOT in this bare base (variable across configs):
+#   - `hmhp_horizons` — [10, 60, 300] (TLOB/OPP/regression) vs [50, 100, 200] (TB)
+#   - `hmhp_loss_weights` — unique per config (5 distinct dicts across 11 configs)
+#   - `hmhp_use_regression` — only config 6 sets to true (n=1, child override)
+#   - `input_size` — owned by datasets/ (varies by preset)
+#   - `num_classes` — owned by labels/
+#
+# Ownership (per §3.4): model.* (except input_size, num_classes).
+# train.loss_type is TASK-coupled (owned by labels/) — not set here.
+_partial: true
+
+model:
+  model_type: hmhp
+  dropout: 0.1
+  hmhp_cascade_mode: full
+  hmhp_encoder_type: tlob
+  hmhp_encoder_hidden_dim: 64
+  hmhp_num_encoder_layers: 2
+  hmhp_decoder_hidden_dim: 32
+  hmhp_state_dim: 32
+  hmhp_state_fusion: gate
+  hmhp_use_confirmation: true

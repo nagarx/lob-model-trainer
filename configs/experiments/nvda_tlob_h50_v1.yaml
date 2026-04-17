@@ -2,156 +2,25 @@
 # TLOB Experiment: H=50 (Medium-term Prediction) - RECOMMENDED FIRST TEST
 # =============================================================================
 #
-# This experiment trains TLOB (Transformer LOB) on the complete 11-month NVDA
-# dataset with medium-term prediction horizon (H=50 ticks, ~5 seconds).
-#
-# WHY H=50 FOR FIRST TEST:
-# - Near-perfect class balance: 33% Down / 34% Stable / 33% Up
-# - Good signal-to-noise ratio at 5-second horizon
-# - Literature sweet spot for LOB prediction
-# - Easier to validate if architecture is working correctly
-#
-# MODEL: TLOB (Berti & Kasneci 2025)
-# - Dual attention mechanism (temporal + feature)
-# - Bilinear Normalization (BiN) for non-stationarity
-# - 4 transformer blocks
-#
-# DATA: nvda_11month_complete export
-# - 234 trading days (Feb 3, 2025 - Jan 7, 2026)
-# - 272,238 sequences
-# - Multi-horizon labels [10, 20, 50, 100]
-# - Using horizon_idx=2 (H=50)
-#
-# EXPECTED PERFORMANCE (balanced classes should yield higher metrics):
-# - Accuracy: 0.45-0.55
-# - Macro F1: 0.40-0.50
-# - Directional Accuracy: 0.55-0.65
-#
-# REFERENCE:
-# - Berti & Kasneci (2025), "TLOB: A Novel Transformer Model for Price Movement"
-# - Zhang et al. (2019), "DeepLOB" (baseline comparison)
+# Trains TLOB on 11-month NVDA dataset at H=50 (medium-term event-based horizon)
+# with NO pre-normalization — BiN layer handles all scaling. Recommended first
+# architecture-validation test per EXPERIMENT_INDEX.
 # =============================================================================
+# Migrated to multi-base 2026-04-15 (Phase 3.5 Batch 3). Uses 3-base composition
+# (dataset inline because `normalization=none` doesn't fit any dataset base
+# cleanly). Golden-fixture locked.
+_base:
+  - "../bases/models/tlob_paper_classification.yaml"
+  - "../bases/labels/tlob_smoothed.yaml"
+  - "../bases/train/tlob_paper_classification_train.yaml"
 
 name: TLOB_NVDA_H50_v1
 description: |
   TLOB model with H=50 horizon on complete 11-month NVDA dataset.
   Medium-term prediction with balanced class distribution.
   RECOMMENDED first training test for architecture validation.
-
-# =============================================================================
-# Data Configuration
-# =============================================================================
-data:
-  # Path to the complete 11-month export
-  data_dir: "../data/exports/nvda_11month_complete"
-  feature_count: 98
-  
-  # Labeling strategy: TLOB (Down/Stable/Up based on smoothed return)
-  labeling_strategy: tlob
-  num_classes: 3
-  
-  # Use horizon index 2 = H=50 ticks (~5 seconds)
-  # Class balance: ~33% Down / 34% Stable / 33% Up
-  horizon_idx: 2
-  
-  # Sequence configuration (matches export)
-  sequence:
-    window_size: 100
-    stride: 10
-  
-  # Normalization: NONE (BiN layer handles this internally)
-  # IMPORTANT: With raw export from feature extractor, the TLOB model's
-  # Bilinear Normalization (BiN) layer learns optimal normalization parameters.
-  # Do NOT apply additional normalization as it would cause double-normalization.
-  normalization:
-    strategy: none
-    eps: 1.0e-8
-    clip_value: null  # No clipping needed with BiN
-    exclude_features: []
-
-# =============================================================================
-# Model Configuration (TLOB)
-# =============================================================================
-model:
-  model_type: tlob
-  input_size: 98
-  num_classes: 3
-  dropout: 0.1
-  
-  # TLOB Architecture Parameters (Berti & Kasneci 2025, Section 3.2)
-  # Embedding dimension: Paper uses 40 for FI-2010. For 98 features, 64 provides better capacity.
-  tlob_hidden_dim: 64
-  
-  # Number of TLOB blocks. Each block has temporal + feature attention. Paper default: 4.
-  tlob_num_layers: 4
-  
-  # Attention heads. Paper uses 1.
-  tlob_num_heads: 1
-  
-  # MLP hidden dimension = hidden_dim × expansion. Paper default: 4.0.
-  tlob_mlp_expansion: 4.0
-  
-  # Use fixed sinusoidal positional encoding (better generalization than learned PE).
-  tlob_use_sinusoidal_pe: true
-  
-  # Use Bilinear Normalization (BiN) for handling non-stationarity. Reference: Tran et al. (2021), ICPR.
-  tlob_use_bin: true
-  
-  # Dataset type for internal preprocessing. 'nvda' for our NVIDIA dataset.
-  tlob_dataset_type: nvda
-
-# =============================================================================
-# Training Configuration
-# =============================================================================
-train:
-  # Batch size: Larger = faster but more memory. TLOB paper uses 32-64.
-  batch_size: 64
-  
-  # Initial learning rate. TLOB paper uses 1e-4.
-  learning_rate: 1.0e-4
-  
-  # L2 regularization for AdamW.
-  weight_decay: 1.0e-5
-  
-  # Maximum epochs. Early stopping will likely trigger earlier.
-  epochs: 50
-  
-  # Stop if no improvement for 10 epochs.
-  early_stopping_patience: 10
-  
-  # Gradient clipping for stability.
-  gradient_clip_norm: 1.0
-  
-  # Learning rate scheduler: Cosine annealing to minimum.
-  scheduler: cosine
-  
-  # DataLoader workers. Adjust based on CPU cores.
-  num_workers: 4
-  
-  # Pin memory for faster GPU transfer.
-  pin_memory: true
-  
-  # Random seed for reproducibility.
-  seed: 42
-  
-  # Disable mixed precision for reproducibility. Enable for faster training on supported GPUs.
-  mixed_precision: false
-  
-  # Weighted cross-entropy to handle any residual class imbalance.
-  loss_type: weighted_ce
-  
-  # Compute weights from training data distribution.
-  use_class_weights: true
-  
-  # Standard 3-class classification.
-  task_type: multiclass
-
-# =============================================================================
-# Output Configuration
-# =============================================================================
 output_dir: outputs/experiments/nvda_tlob_h50_v1
 log_level: INFO
-
 tags:
   - nvda
   - tlob
@@ -161,30 +30,19 @@ tags:
   - balanced-classes
   - first-test
 
-# =============================================================================
-# KEY METRICS TO MONITOR
-# =============================================================================
-#
-# For TLOB labeling with BALANCED classes (H=50):
-#
-# 1. ACCURACY: Overall prediction accuracy
-#    Random baseline: 33%
-#    Target: > 45% (higher than H=10 due to better signal)
-#
-# 2. MACRO_F1: Balanced F1 across classes
-#    With balanced classes, this should closely track accuracy
-#    Target: > 0.40
-#
-# 3. DIRECTIONAL_ACCURACY: Accuracy on Up/Down predictions
-#    "When we predict a direction, are we right?"
-#    Target: > 55%
-#
-# 4. PER-CLASS METRICS:
-#    With balanced classes, all per-class metrics should be similar
-#    Any large discrepancy indicates model bias
-#
-# WHAT TO LOOK FOR:
-# - Loss should decrease steadily
-# - All three classes should have similar precision/recall
-# - If model collapses to one class, investigate immediately
-# =============================================================================
+# Per-child data (no-normalization variant: BiN handles all scaling)
+data:
+  data_dir: "../data/exports/nvda_11month_complete"
+  feature_count: 98
+  horizon_idx: 2   # H=50
+  sequence:
+    window_size: 100
+    stride: 10
+  normalization:
+    strategy: none
+    eps: 1.0e-8
+    clip_value: null
+    exclude_features: []
+
+model:
+  input_size: 98

@@ -1,0 +1,33 @@
+# axis: models
+# TLOB compact regression architecture — BARE (no cvml-default fields)
+# Used by: E4 TLOB (standalone configs that don't explicitly set cvml fields —
+#          dataclass defaults apply at load time)
+#
+# For configs that DO want explicit cvml:false/cvml_out_channels:0 fields in
+# the resolved dict (e.g., E5 NoCVML family, which inherited them from the
+# monolith), use `tlob_compact_regression.yaml` which chains from this bare
+# base and adds the cvml default fields.
+#
+# Ownership (per §3.4): model.* (except input_size, num_classes),
+#                        train.loss_type (model-coupled)
+_partial: true
+
+model:
+  model_type: tlob
+  dropout: 0.1
+  task_type: regression
+  regression_loss_type: huber
+  regression_loss_delta: 12.6   # 60s default; E4 overrides to 7.3, 30s overrides to 15.1
+  tlob_hidden_dim: 32
+  tlob_num_layers: 2
+  tlob_num_heads: 2
+  tlob_mlp_expansion: 4.0
+  tlob_use_sinusoidal_pe: true
+  tlob_use_bin: true
+  tlob_dataset_type: nvda
+
+# `train.loss_type` moved to `labels/regression_huber.yaml` (Phase 3.5 Batch 2
+# ownership refinement): loss_type is TASK-coupled, not model-coupled. HMHP
+# configs use the same cascade arch but different losses (weighted_ce,
+# focal, huber) depending on labeling strategy. Aligning loss_type with
+# labels/ makes the decomposition uniform across model families.

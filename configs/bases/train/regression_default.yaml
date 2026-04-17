@@ -1,0 +1,21 @@
+# axis: train
+# Default regression training hyperparameters
+# Used by: E4/E5/E6 regression family and all TLOB-regression variants
+#
+# Ownership (per §3.4): train.* EXCEPT train.task_type (labels/) and
+#                        train.loss_type (models/ — model-coupled)
+_partial: true
+
+train:
+  batch_size: 128
+  learning_rate: 5.0e-4
+  weight_decay: 0.01
+  epochs: 30
+  early_stopping_patience: 5
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 0
+  pin_memory: false
+  seed: 42
+  mixed_precision: false
+  use_class_weights: false

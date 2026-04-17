@@ -25,24 +25,21 @@
 #   - Walk-forward IC stability: 15.22 (highest in pipeline history)
 #   - Feature saturation: 4 features (DEPTH_NORM_OFI captures 95.7% of R²)
 #
-# BASELINES (from e4_phase2_baselines_2026_03.md):
-#   - Single feature IC = 0.089 (DEPTH_NORM_OFI only)
-#   - Linear Ridge IC = 0.091 (98 raw features)
-#   - TemporalRidge IC = 0.121 (53 temporal features, 36% above single)
-#   - TemporalGradBoost IC = 0.073 (overfits on this data)
-#
-# ABLATION JUSTIFICATION (from ABLATION_FINDINGS_2026_03_16.md):
-#   - T=20 retains 99.6% of IC vs T=100 (0.674 vs 0.677)
-#   - T=20 uses 7.4× fewer parameters (93.7K vs 693K)
-#   - Signal half-life = 5 steps → T=20 is theoretically optimal
-#
 # SUCCESS CRITERIA (decision gates):
 #   - G5: Test IC > 0.121 (beat TemporalRidge baseline)
 #   - G6: Test R² > 0.013 (beat Ridge R² baseline)
 #   - G7: |Val IC - Test IC| / Test IC < 10% (no overfitting)
 #   - G8: Best epoch < 30 (reasonable convergence)
-#
 # =============================================================================
+# Migrated to multi-base 2026-04-15 (Phase 3.5 Batch 1b). Uses `tlob_compact_bare`
+# instead of `tlob_compact_regression` because the pre-migration standalone
+# YAML did NOT explicitly set cvml default fields — the bare base preserves
+# byte-identity with the golden fixture. Golden-fixture locked.
+_base:
+  - "../bases/models/tlob_compact_bare.yaml"
+  - "../bases/datasets/nvda_e4_5s.yaml"
+  - "../bases/labels/regression_huber.yaml"
+  - "../bases/train/regression_default.yaml"
 
 name: TLOB_E4_H60_TimeBased
 description: |
@@ -50,80 +47,8 @@ description: |
   First deep learning model on time-based sampled data.
   Must beat TemporalRidge IC=0.121 baseline.
   Huber delta=7.3 calibrated from E4 H60 return distribution.
-
-# =============================================================================
-# Data Configuration
-# =============================================================================
-data:
-  data_dir: "../data/exports/e4_timebased_5s"
-  feature_count: 98
-  labeling_strategy: regression
-  num_classes: 3
-
-  # H60 = index 1 in horizons [10, 60, 300]
-  # H60 = 60 × 5s = 300 seconds = 5 minutes
-  horizon_idx: 1
-
-  sequence:
-    window_size: 20    # 20 × 5s = 100 seconds of history
-    stride: 1          # Every 5-second sample (matches E4 export)
-
-  normalization:
-    strategy: hybrid
-    eps: 1.0e-8
-    clip_value: 10.0
-    exclude_features: [93]        # time_regime (categorical). Note: time_bucket(115) not in 98-feature export
-
-# =============================================================================
-# Model Configuration (TLOB Regression)
-# =============================================================================
-model:
-  model_type: tlob
-  input_size: 98       # E4 has 98 stable features (no experimental)
-  num_classes: 3       # Required by schema (unused in regression mode)
-  dropout: 0.1
-
-  # Regression
-  task_type: regression
-  regression_loss_type: huber
-  regression_loss_delta: 7.3     # E4-calibrated (not 5.0 from event-based H10)
-
-  # TLOB architecture — same proven config as REG-01
-  # Adapted: input_size 128→98, but hidden/layers/heads unchanged
-  tlob_hidden_dim: 32
-  tlob_num_layers: 2
-  tlob_num_heads: 2
-  tlob_mlp_expansion: 4.0
-  tlob_use_sinusoidal_pe: true
-  tlob_use_bin: true
-  tlob_dataset_type: nvda
-
-# =============================================================================
-# Training Configuration
-# =============================================================================
-train:
-  task_type: regression
-  loss_type: huber
-  use_class_weights: false
-
-  batch_size: 128
-  learning_rate: 5.0e-4
-  weight_decay: 0.01
-  epochs: 50
-  early_stopping_patience: 10
-  gradient_clip_norm: 1.0
-  scheduler: cosine
-  num_workers: 0
-  pin_memory: false
-  seed: 42
-  mixed_precision: false
-
-# =============================================================================
-# Output
-# =============================================================================
 output_dir: outputs/experiments/e4_tlob_h60
 log_level: INFO
-
 tags:
   - e4
   - nvda
@@ -136,3 +61,14 @@ tags:
   - 5-second
   - huber-loss
   - delta-7.3bps
+
+# Per-child overrides: H60 horizon, E4-calibrated delta, longer training
+data:
+  horizon_idx: 1     # H60 = index 1 in horizons [10, 60, 300]
+
+model:
+  regression_loss_delta: 7.3    # E4-calibrated (vs base default 12.6)
+
+train:
+  epochs: 50                     # longer than default 30 (E4 dataset is larger)
+  early_stopping_patience: 10    # longer than default 5

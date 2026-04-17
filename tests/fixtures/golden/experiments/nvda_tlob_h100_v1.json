@@ -1,0 +1,66 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/nvda_11month_complete",
+      "feature_count": 98,
+      "horizon_idx": 3,
+      "labeling_strategy": "tlob",
+      "normalization": {
+        "clip_value": 10.0,
+        "eps": 1e-08,
+        "exclude_features": [
+          93
+        ],
+        "strategy": "zscore_per_day"
+      },
+      "num_classes": 3,
+      "sequence": {
+        "stride": 10,
+        "window_size": 100
+      }
+    },
+    "description": "TLOB model with H=100 horizon on complete 11-month NVDA dataset.\nLong-term prediction experiment matching DeepLOB paper benchmark.\n",
+    "log_level": "INFO",
+    "model": {
+      "dropout": 0.1,
+      "input_size": 98,
+      "model_type": "tlob",
+      "num_classes": 3,
+      "tlob_dataset_type": "nvda",
+      "tlob_hidden_dim": 64,
+      "tlob_mlp_expansion": 4.0,
+      "tlob_num_heads": 1,
+      "tlob_num_layers": 4,
+      "tlob_use_bin": true,
+      "tlob_use_sinusoidal_pe": true
+    },
+    "name": "TLOB_NVDA_H100_v1",
+    "output_dir": "outputs/experiments/nvda_tlob_h100_v1",
+    "tags": [
+      "nvda",
+      "tlob",
+      "horizon-100",
+      "multi-horizon",
+      "11month",
+      "full-dataset",
+      "deeplob-benchmark"
+    ],
+    "train": {
+      "batch_size": 64,
+      "early_stopping_patience": 10,
+      "epochs": 50,
+      "gradient_clip_norm": 1.0,
+      "learning_rate": 0.0001,
+      "loss_type": "weighted_ce",
+      "mixed_precision": false,
+      "num_workers": 4,
+      "pin_memory": true,
+      "scheduler": "cosine",
+      "seed": 42,
+      "task_type": "multiclass",
+      "use_class_weights": true,
+      "weight_decay": 1e-05
+    }
+  },
+  "status": "ok"
+}

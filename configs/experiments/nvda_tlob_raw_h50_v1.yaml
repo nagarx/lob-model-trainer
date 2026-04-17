@@ -2,124 +2,25 @@
 # TLOB Experiment: RAW Export + H=50 (BiN-Optimized)
 # =============================================================================
 #
-# This experiment trains TLOB on the NEW RAW export of NVDA 11-month dataset.
-#
-# KEY CHANGE FROM PREVIOUS EXPERIMENTS:
-# - Data is exported WITHOUT normalization (raw values)
-# - BiN layer in TLOB learns optimal normalization from data
-# - This matches the TLOB paper's approach (BiN handles non-stationarity)
-#
-# PREVIOUS ISSUE (FIXED):
-# - Old export used market_structure_zscore normalization
-# - Combined with model's BiN → double normalization → poor learning
-#
-# MODEL: TLOB (Berti & Kasneci 2025)
-# - Dual attention mechanism (temporal + feature)
-# - Bilinear Normalization (BiN) for non-stationarity
-# - 4 transformer blocks with "triple-skip" architecture
-#
-# DATA: nvda_tlob_raw_v2 export
-# - 234 trading days (Feb 3, 2025 - Jan 7, 2026)
-# - RAW features (no pre-normalization)
-# - Multi-horizon labels [10, 20, 50, 100]
-# - Using horizon_idx=2 (H=50) for balanced classes
-#
-# EXPECTED PERFORMANCE:
-# - With proper normalization, expect significant improvement
-# - Accuracy: 0.45-0.55
-# - Macro F1: 0.40-0.50
-# - Directional Accuracy: 0.55-0.65
-#
-# REFERENCE:
-# - Berti & Kasneci (2025), "TLOB: A Novel Transformer Model"
-# - Tran et al. (2021), "Data Normalization for Bilinear Structures"
+# Trains TLOB on the RAW (unnormalized) NVDA 11-month export. BiN layer is
+# the sole normalization mechanism. Matches the TLOB paper's intended data
+# flow (no double normalization — pre-norm + BiN is problematic).
 # =============================================================================
+# Migrated to multi-base 2026-04-15 (Phase 3.5 Batch 3). Uses 3-base composition
+# (dataset inline: unique `data_dir` = nvda_tlob_raw_v2 + normalization=none).
+# Golden-fixture locked.
+_base:
+  - "../bases/models/tlob_paper_classification.yaml"
+  - "../bases/labels/tlob_smoothed.yaml"
+  - "../bases/train/tlob_paper_classification_train.yaml"
 
 name: TLOB_NVDA_RAW_H50_v1
 description: |
   TLOB model trained on RAW export (no pre-normalization).
   BiN layer handles all normalization with learnable parameters.
   This matches the TLOB paper's intended data flow.
-
-# =============================================================================
-# Data Configuration
-# =============================================================================
-data:
-  # Path to the NEW raw export (no normalization)
-  data_dir: "../data/exports/nvda_tlob_raw_v2"
-  feature_count: 98
-  
-  # Labeling strategy: TLOB (Down/Stable/Up based on smoothed return)
-  labeling_strategy: tlob
-  num_classes: 3
-  
-  # Use horizon index 2 = H=50 ticks (~5 seconds)
-  # Class balance: ~33% Down / 34% Stable / 33% Up
-  horizon_idx: 2
-  
-  # Sequence configuration (matches export)
-  sequence:
-    window_size: 100
-    stride: 10
-  
-  # CRITICAL: No additional normalization applied
-  # The BiN layer in TLOB handles normalization internally
-  # This prevents double-normalization which was the previous issue
-  normalization:
-    strategy: none
-    eps: 1.0e-8
-    clip_value: null
-    exclude_features: []
-
-# =============================================================================
-# Model Configuration (TLOB)
-# =============================================================================
-model:
-  model_type: tlob
-  input_size: 98
-  num_classes: 3
-  dropout: 0.1
-  
-  # TLOB Architecture Parameters (Berti & Kasneci 2025)
-  tlob_hidden_dim: 64
-  tlob_num_layers: 4
-  tlob_num_heads: 1
-  tlob_mlp_expansion: 4.0
-  
-  # Sinusoidal positional encoding (generalizes better)
-  tlob_use_sinusoidal_pe: true
-  
-  # CRITICAL: BiN enabled - this is what normalizes the raw data
-  tlob_use_bin: true
-  
-  # Dataset type
-  tlob_dataset_type: nvda
-
-# =============================================================================
-# Training Configuration
-# =============================================================================
-train:
-  batch_size: 64
-  learning_rate: 1.0e-4
-  weight_decay: 1.0e-5
-  epochs: 50
-  early_stopping_patience: 10
-  gradient_clip_norm: 1.0
-  scheduler: cosine
-  num_workers: 4
-  pin_memory: true
-  seed: 42
-  mixed_precision: false
-  loss_type: weighted_ce
-  use_class_weights: true
-  task_type: multiclass
-
-# =============================================================================
-# Output Configuration
-# =============================================================================
 output_dir: outputs/experiments/nvda_tlob_raw_h50_v1
 log_level: INFO
-
 tags:
   - nvda
   - tlob
@@ -129,16 +30,19 @@ tags:
   - no-double-norm
   - fixed-normalization
 
-# =============================================================================
-# KEY METRICS TO MONITOR
-# =============================================================================
-#
-# COMPARE WITH PREVIOUS (DOUBLE-NORMALIZED) RUN:
-# - Previous: Low directional accuracy, overfitting
-# - Expected: Steady loss decrease, balanced per-class metrics
-#
-# WATCH FOR:
-# - BiN gamma values: Should learn to weight temporal vs feature normalization
-# - Loss convergence: Should be smoother without conflicting normalizations
-# - Class balance: All three classes should have similar precision/recall
-# =============================================================================
+# Per-child data (raw export, BiN handles scaling)
+data:
+  data_dir: "../data/exports/nvda_tlob_raw_v2"
+  feature_count: 98
+  horizon_idx: 2   # H=50
+  sequence:
+    window_size: 100
+    stride: 10
+  normalization:
+    strategy: none
+    eps: 1.0e-8
+    clip_value: null
+    exclude_features: []
+
+model:
+  input_size: 98

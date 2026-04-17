@@ -1,0 +1,21 @@
+# axis: models
+# HMHP cascade regression variant (hmhp_regression enum)
+# Used by: HMHP regression configs (nvda_hmhp_regression_h10_primary,
+#          nvda_hmhp_regressor_h60)
+#
+# Chained inheritance: inherits 9 universal HMHP cascade fields from
+# `hmhp_cascade_bare.yaml` and adds:
+#   - model_type: hmhp_regression (overrides bare's `hmhp`)
+#   - hmhp_regression_loss_type: huber (unique to regression variant)
+#
+# Pattern mirrors `tlob_compact_bare.yaml` → `tlob_compact_regression.yaml`
+# from Batch 1b. Use `hmhp_cascade_bare.yaml` DIRECTLY for classification
+# configs (TLOB, opportunity, triple_barrier) which don't need the
+# `hmhp_regression_loss_type` field — adding it would change their
+# resolved-dict byte-identity with golden fixtures.
+_base: "hmhp_cascade_bare.yaml"
+_partial: true
+
+model:
+  model_type: hmhp_regression
+  hmhp_regression_loss_type: huber

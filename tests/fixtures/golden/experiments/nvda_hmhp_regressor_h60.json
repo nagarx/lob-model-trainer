@@ -1,0 +1,82 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/nvda_xnas_128feat_regression",
+      "feature_count": 128,
+      "feature_preset": "short_term_40",
+      "horizon_idx": 1,
+      "labeling_strategy": "regression",
+      "normalization": {
+        "clip_value": 10.0,
+        "eps": 1e-08,
+        "exclude_features": [
+          93,
+          115
+        ],
+        "strategy": "hybrid"
+      },
+      "num_classes": 3,
+      "sequence": {
+        "stride": 10,
+        "window_size": 100
+      }
+    },
+    "description": "Pure regression HMHP predicting continuous forward returns in bps at H60.\nLoss: Huber (robust to outlier returns). Metrics: R\u00b2, IC, MAE.\n",
+    "log_level": "INFO",
+    "model": {
+      "dropout": 0.1,
+      "hmhp_cascade_mode": "full",
+      "hmhp_decoder_hidden_dim": 32,
+      "hmhp_encoder_hidden_dim": 64,
+      "hmhp_encoder_type": "tlob",
+      "hmhp_horizons": [
+        10,
+        60,
+        300
+      ],
+      "hmhp_loss_weights": {
+        "H10": 0.1,
+        "H300": 0.15,
+        "H60": 0.5,
+        "consistency": 0.25
+      },
+      "hmhp_num_encoder_layers": 2,
+      "hmhp_regression_loss_type": "huber",
+      "hmhp_state_dim": 32,
+      "hmhp_state_fusion": "gate",
+      "hmhp_use_confirmation": true,
+      "input_size": 40,
+      "model_type": "hmhp_regression",
+      "num_classes": 3
+    },
+    "name": "HMHP_NVDA_Regressor_H60",
+    "output_dir": "outputs/experiments/nvda_hmhp_regressor_h60",
+    "tags": [
+      "nvda",
+      "xnas",
+      "hmhp-regression",
+      "pure-regression",
+      "40-features",
+      "h60-primary",
+      "huber-loss",
+      "continuous-bps"
+    ],
+    "train": {
+      "batch_size": 256,
+      "early_stopping_patience": 8,
+      "epochs": 30,
+      "gradient_clip_norm": 1.0,
+      "learning_rate": 0.0005,
+      "loss_type": "huber",
+      "mixed_precision": false,
+      "num_workers": 0,
+      "pin_memory": true,
+      "scheduler": "cosine",
+      "seed": 42,
+      "task_type": "regression",
+      "use_class_weights": false,
+      "weight_decay": 0.01
+    }
+  },
+  "status": "ok"
+}

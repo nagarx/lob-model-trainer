@@ -1,0 +1,5 @@
+{
+  "exc_type": "ScannerError",
+  "message": "while scanning a simple key\n  in \"/Users/knight/code_local/HFT-pipeline-v2/lob-model-trainer/configs/experiments/nvda_tlob_triple_barrier_11mo_v1.yaml\", line 124, column 3\ncould not find expected ':'\n  in \"/Users/knight/code_local/HFT-pipeline-v2/lob-model-trainer/configs/experiments/nvda_tlob_triple_barrier_11mo_v1.yaml\", line 127, column 4",
+  "status": "error"
+}

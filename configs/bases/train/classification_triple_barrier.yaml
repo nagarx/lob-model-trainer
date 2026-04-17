@@ -1,0 +1,31 @@
+# axis: train
+# Triple-barrier classification training hyperparameters (heavier regime)
+# Used by: nvda_hmhp_triple_barrier_{v1, calibrated, volscaled}
+#
+# Distinctions from `classification_default.yaml`:
+#   - smaller batch (64 vs 256), lower lr (1e-4 vs 5e-4), lower wd (1e-5 vs 0.01)
+#   - longer training (100 epochs vs 30, patience 15 vs 8)
+#   - focal_gamma=2.0 paired with loss_type=focal (set in labels/triple_barrier_volscaled.yaml)
+#
+# The TB dataset is smaller (98-feat 11-month vs 128-feat full), loss is harder
+# to balance (class imbalance motivates focal), so longer training + lower lr.
+#
+# Ownership (per §3.4): train.* EXCEPT train.task_type, train.loss_type.
+# `focal_gamma` is a focal-loss hyperparameter — not coupled to a specific
+# model family — kept in train/ axis.
+_partial: true
+
+train:
+  batch_size: 64
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  epochs: 100
+  early_stopping_patience: 15
+  gradient_clip_norm: 1.0
+  focal_gamma: 2.0
+  scheduler: cosine
+  num_workers: 4
+  pin_memory: true
+  seed: 42
+  mixed_precision: false
+  use_class_weights: true

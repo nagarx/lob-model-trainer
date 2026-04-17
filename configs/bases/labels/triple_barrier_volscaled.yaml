@@ -1,0 +1,32 @@
+# axis: labels
+# Triple-barrier classification (stop-loss / timeout / profit-target)
+# Used by: nvda_hmhp_triple_barrier_{v1, calibrated, volscaled}
+#
+# Classes: 0=StopLoss, 1=Timeout, 2=ProfitTarget (López de Prado 2018).
+# Barrier levels (profit_target_pct, stop_loss_pct) are BAKED INTO the
+# dataset export (data_dir), not set in config.
+#
+# CRITICAL: This base MUST NOT set `horizon_idx`. The 3 TB configs'
+# golden fixtures OMIT horizon_idx entirely — the labeling spec is
+# captured by `model.hmhp_horizons: [50, 100, 200]` instead. Setting
+# horizon_idx here would corrupt byte-identity with all 3 TB goldens.
+#
+# Uses focal loss (hard-example weighting for class-imbalanced TB data).
+# The focal_gamma: 2.0 lives in `train/classification_triple_barrier.yaml`
+# as a training hyperparameter, not here.
+#
+# Ownership (per §3.4 refined in Batch 2): data.labeling_strategy, num_classes;
+#                        model.num_classes; train.task_type; train.loss_type
+_partial: true
+
+data:
+  labeling_strategy: triple_barrier
+  num_classes: 3
+  # NO horizon_idx — golden fixtures of TB configs omit this field
+
+model:
+  num_classes: 3
+
+train:
+  task_type: multiclass
+  loss_type: focal

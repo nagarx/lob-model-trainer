@@ -1,0 +1,27 @@
+# axis: labels
+# Opportunity-labeled classification (big-move detection)
+# Used by: nvda_hmhp_128feat_opportunity_h10
+#
+# Classes: 0=NoOpportunity, 1=BigUp, 2=BigDown (schema.py::LabelingStrategy.OPPORTUNITY).
+# Big-move threshold is BAKED INTO the dataset export (data_dir), not set in
+# config — the trainer reads pre-labeled data.
+#
+# Currently used by 1 config; retained as a distinct axis rather than a child
+# override so future opportunity experiments compose cleanly.
+#
+# Ownership (per §3.4 refined in Batch 2): data.labeling_strategy, num_classes,
+#                        horizon_idx; model.num_classes; train.task_type;
+#                        train.loss_type
+_partial: true
+
+data:
+  labeling_strategy: opportunity
+  num_classes: 3
+  horizon_idx: 0
+
+model:
+  num_classes: 3
+
+train:
+  task_type: multiclass
+  loss_type: weighted_ce

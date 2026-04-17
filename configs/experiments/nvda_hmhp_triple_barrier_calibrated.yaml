@@ -1,115 +1,35 @@
 # =============================================================================
-# HMHP Experiment: Calibrated Triple Barrier Labeling
+# HMHP Experiment: Triple Barrier with CALIBRATED Per-Horizon Barriers
 # =============================================================================
 #
-# This experiment trains HMHP on the 11-month NVDA dataset with CALIBRATED
-# per-horizon Triple Barrier thresholds.
+# Variant of nvda_hmhp_triple_barrier_v1 using per-horizon calibrated
+# thresholds — barriers chosen so class distributions hit ~25% ProfitTarget /
+# ~25% StopLoss / ~50% Timeout, improving class balance and downstream
+# metric stability. Calibrated on validation set.
 #
-# KEY DIFFERENCE FROM v1:
-# - Uses calibrated per-horizon barriers instead of single global barriers
-# - Expected class distribution: ~20-25% PT, ~25-30% SL, ~50% TO
-# - Barriers calibrated on validation set (low-volatility regime)
-#
-# CALIBRATION DETAILS:
+# CALIBRATION:
 # | Horizon | Profit Target | Stop Loss | R:R  |
 # |---------|---------------|-----------|------|
 # | H50     | 28 bps        | 19 bps    | 1.5:1|
 # | H100    | 39 bps        | 26 bps    | 1.5:1|
 # | H200    | 59 bps        | 40 bps    | 1.5:1|
 #
-# MODEL: HMHP (Hierarchical Multi-Horizon Predictor)
-# DATA: nvda_11month_triple_barrier_calibrated export
+# Data differs only in `data_dir`; model + training hyperparams identical to v1.
 # =============================================================================
+# Migrated to multi-base 2026-04-15 (Phase 3.5 Batch 2). Golden-fixture locked.
+_base:
+  - "../bases/models/hmhp_cascade_bare.yaml"
+  - "../bases/datasets/nvda_98feat_triple_barrier.yaml"
+  - "../bases/labels/triple_barrier_volscaled.yaml"
+  - "../bases/train/classification_triple_barrier.yaml"
 
 name: HMHP_NVDA_TripleBarrier_Calibrated
 description: |
   HMHP multi-horizon model with CALIBRATED per-horizon Triple Barrier thresholds.
   Barriers calibrated to achieve balanced class distribution (~25% PT, ~25% SL, ~50% TO).
   Cascading state from H50 → H100 → H200 with cross-horizon confirmation.
-
-# =============================================================================
-# Data Configuration
-# =============================================================================
-data:
-  # Path to CALIBRATED Triple Barrier export
-  # IMPORTANT: This uses per-horizon barriers for balanced classes
-  data_dir: "../data/exports/nvda_11month_triple_barrier_calibrated"
-  feature_count: 98
-  
-  # CRITICAL: Set labeling strategy to triple_barrier
-  labeling_strategy: triple_barrier
-  num_classes: 3
-  
-  # Sequence configuration
-  sequence:
-    window_size: 100
-    stride: 10
-  
-  # Normalization
-  normalization:
-    strategy: hybrid
-    eps: 1.0e-8
-    clip_value: 10.0
-    exclude_features: [93]  # TIME_REGIME is categorical
-
-# =============================================================================
-# Model Configuration (HMHP)
-# =============================================================================
-model:
-  model_type: hmhp
-  input_size: 98
-  num_classes: 3
-  dropout: 0.1
-  
-  # HMHP-specific configuration
-  hmhp_horizons: [50, 100, 200]
-  hmhp_cascade_mode: full
-  hmhp_state_fusion: gate
-  hmhp_encoder_type: tlob
-  hmhp_encoder_hidden_dim: 64
-  hmhp_num_encoder_layers: 2
-  hmhp_decoder_hidden_dim: 32
-  hmhp_state_dim: 32
-  hmhp_use_confirmation: true
-  
-  # Loss weights
-  hmhp_loss_weights:
-    H50: 0.35
-    H100: 0.25
-    H200: 0.15
-    consistency: 0.10
-    final: 0.15
-
-# =============================================================================
-# Training Configuration
-# =============================================================================
-train:
-  batch_size: 64
-  learning_rate: 1.0e-4
-  weight_decay: 1.0e-5
-  epochs: 100
-  early_stopping_patience: 15
-  gradient_clip_norm: 1.0
-  scheduler: cosine
-  num_workers: 4
-  pin_memory: true
-  seed: 42
-  mixed_precision: false
-  
-  # Loss configuration
-  # With calibrated balanced classes, can use standard CE or focal
-  loss_type: focal
-  focal_gamma: 2.0
-  use_class_weights: true
-  
-  task_type: multiclass
-
-# =============================================================================
-# Output Configuration
-# =============================================================================
 output_dir: outputs/experiments/nvda_hmhp_triple_barrier_calibrated
 log_level: INFO
-
 tags:
   - nvda
   - hmhp
@@ -121,25 +41,14 @@ tags:
   - cascading
   - focal-loss
 
-# =============================================================================
-# EXPECTED RESULTS WITH CALIBRATED BARRIERS
-# =============================================================================
-#
-# With balanced class distribution (~25% PT, ~25% SL, ~50% TO):
-#
-# GOOD SIGNS (model is learning):
-# - val_accuracy ≈ 45-55% (not just majority class prediction)
-# - val_profittarget_precision > 40% (better than random 25%)
-# - val_agreement_ratio varies (not always 1.0)
-# - Loss decreases over epochs
-#
-# BAD SIGNS (model not learning):
-# - val_accuracy ≈ 50% constant (predicting all Timeout)
-# - val_profittarget_precision ≈ 25% (random guessing)
-# - All predictions are class 1 (Timeout)
-#
-# TARGET METRICS:
-# - val_profittarget_precision > 50% (profitable trading)
-# - val_predicted_trade_win_rate > 40% (break-even at 40% with 1.5:1 R:R)
-# - val_decisive_prediction_rate > 30% (model makes clear predictions)
-# =============================================================================
+data:
+  data_dir: "../data/exports/nvda_11month_triple_barrier_calibrated"
+
+model:
+  hmhp_horizons: [50, 100, 200]
+  hmhp_loss_weights:
+    H50: 0.35
+    H100: 0.25
+    H200: 0.15
+    consistency: 0.10
+    final: 0.15

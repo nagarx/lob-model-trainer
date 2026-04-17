@@ -1,0 +1,72 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/e5_timebased_30s",
+      "feature_count": 98,
+      "horizon_idx": 0,
+      "labeling_strategy": "regression",
+      "normalization": {
+        "clip_value": 10.0,
+        "eps": 1e-08,
+        "exclude_features": [
+          93
+        ],
+        "strategy": "hybrid"
+      },
+      "num_classes": 3,
+      "sequence": {
+        "stride": 1,
+        "window_size": 20
+      }
+    },
+    "description": "E5 Phase 2 best-combo test: TLOB + CVML on 30s bins at H10 (5 min).\nCombines 4x data (vs 60s) with CVML cross-feature mixing.\n",
+    "log_level": "INFO",
+    "model": {
+      "dropout": 0.1,
+      "input_size": 98,
+      "model_type": "tlob",
+      "num_classes": 3,
+      "regression_loss_delta": 15.1,
+      "regression_loss_type": "huber",
+      "task_type": "regression",
+      "tlob_cvml_out_channels": 49,
+      "tlob_dataset_type": "nvda",
+      "tlob_hidden_dim": 32,
+      "tlob_mlp_expansion": 4.0,
+      "tlob_num_heads": 2,
+      "tlob_num_layers": 2,
+      "tlob_use_bin": true,
+      "tlob_use_cvml": true,
+      "tlob_use_sinusoidal_pe": true
+    },
+    "name": "E5_30s_Huber_CVML",
+    "output_dir": "outputs/experiments/e5_30s_huber_cvml",
+    "tags": [
+      "e5",
+      "nvda",
+      "regression",
+      "h10",
+      "30s",
+      "huber",
+      "cvml",
+      "best-combo"
+    ],
+    "train": {
+      "batch_size": 128,
+      "early_stopping_patience": 5,
+      "epochs": 30,
+      "gradient_clip_norm": 1.0,
+      "learning_rate": 0.0005,
+      "loss_type": "huber",
+      "mixed_precision": false,
+      "num_workers": 0,
+      "pin_memory": false,
+      "scheduler": "cosine",
+      "seed": 42,
+      "task_type": "regression",
+      "use_class_weights": false,
+      "weight_decay": 0.01
+    }
+  },
+  "status": "ok"
+}

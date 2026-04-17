@@ -1,0 +1,26 @@
+# axis: labels
+# TLOB smoothed classification (3 classes: Down, Stable, Up)
+# Used by: HMHP TLOB classification configs (nvda_hmhp_128feat_{h10_primary,
+#          arcx_h10}, nvda_hmhp_40feat_h10, nvda_hmhp_40feat_h60_profit8bps,
+#          nvda_hmhp_40feat_h60_profit8bps_regression)
+#
+# Default horizon_idx=0 (H10); configs targeting H60 (5, 6) override in child.
+# Uses weighted_ce loss by default. Triple-barrier variants use focal loss
+# via `triple_barrier_volscaled.yaml`.
+#
+# Ownership (per §3.4 refined in Batch 2): data.labeling_strategy, num_classes,
+#                        horizon_idx; model.num_classes; train.task_type;
+#                        train.loss_type
+_partial: true
+
+data:
+  labeling_strategy: tlob
+  num_classes: 3
+  horizon_idx: 0   # configs 5, 6 override to 1 (H60-primary)
+
+model:
+  num_classes: 3
+
+train:
+  task_type: multiclass
+  loss_type: weighted_ce

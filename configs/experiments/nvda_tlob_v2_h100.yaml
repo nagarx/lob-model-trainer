@@ -2,113 +2,27 @@
 # TLOB Experiment: V2 Dataset with Dynamic Threshold, H=100
 # =============================================================================
 #
-# CHANGES FROM V1:
-# - Dataset: nvda_tlob_repo_v2 (TLOB dynamic threshold: alpha = mean(|pct_change|) / 2)
-# - Horizon: H=100 (index 3)
-# - More balanced labels due to dynamic threshold
-#
-# OFFICIAL TLOB PREPROCESSING PIPELINE:
-# 1. Export RAW 40 LOB features (10 levels × 4: ask_p, ask_s, bid_p, bid_s)
-# 2. Labels computed with DYNAMIC threshold (per TLOB paper)
-# 3. Compute GLOBAL mean/std from ALL training data (in Python)
-# 4. Apply training stats to normalize train/val/test
-# 5. BiN layer in model provides additional per-sample adaptive normalization
-#
-# DATA: nvda_tlob_repo_v2 export
-# - 234 trading days (Feb 3, 2025 - Jan 7, 2026)
-# - 40 LOB features (raw values)
-# - Multi-horizon labels [10, 20, 50, 100] with DYNAMIC threshold
-# - ~272K total sequences (167K train, 55K val, 50K test)
-#
-# REFERENCE:
-# - Berti & Kasneci (2025), "TLOB: A Novel Transformer Model"
-# - TLOB/utils/utils_data.py::labeling() - alpha = np.abs(percentage_change).mean() / 2
+# Trains TLOB on the V2 NVDA export (dynamic threshold labeling) at H=100.
+# Uses global Z-score + BiN (matching TLOB repo preprocessing). Sibling of
+# `repo_match_h50` — differs in horizon + data_dir (v2 export with dynamic
+# threshold labeling).
 # =============================================================================
+# Migrated to multi-base 2026-04-15 (Phase 3.5 Batch 3). Uses dedicated
+# `nvda_40feat_tlob_repo.yaml` dataset base (shared with repo_match_h50).
+# Golden-fixture locked.
+_base:
+  - "../bases/models/tlob_paper_classification.yaml"
+  - "../bases/datasets/nvda_40feat_tlob_repo.yaml"
+  - "../bases/labels/tlob_smoothed.yaml"
+  - "../bases/train/tlob_paper_classification_train.yaml"
 
 name: TLOB_NVDA_V2_H100
 description: |
   TLOB model on V2 dataset with dynamic threshold labeling.
   H=100 horizon for longer-term trend prediction.
   Global Z-score normalization + BiN layer.
-
-# =============================================================================
-# Data Configuration
-# =============================================================================
-data:
-  # V2 dataset with TLOB dynamic threshold
-  data_dir: "../data/exports/nvda_tlob_repo_v2"
-  
-  # 40 features: 10 levels × 4 (ask_p, ask_s, bid_p, bid_s)
-  feature_count: 40
-  
-  # Labeling strategy: TLOB (Down/Stable/Up)
-  labeling_strategy: tlob
-  num_classes: 3
-  
-  # Horizon index 3 = H=100 (horizons: [10, 20, 50, 100])
-  horizon_idx: 3
-  
-  # Sequence configuration
-  sequence:
-    window_size: 100
-    stride: 10
-  
-  # Global Z-Score Normalization (matches official TLOB repo)
-  normalization:
-    strategy: global_zscore
-    eps: 1.0e-8
-    clip_value: null
-    exclude_features: []
-
-# =============================================================================
-# Model Configuration (TLOB)
-# =============================================================================
-model:
-  model_type: tlob
-  input_size: 40
-  num_classes: 3
-  dropout: 0.0  # Match official TLOB repo (no dropout)
-  
-  # TLOB Architecture (per paper Table 10)
-  tlob_hidden_dim: 64
-  tlob_num_layers: 4
-  tlob_num_heads: 1
-  tlob_mlp_expansion: 4.0
-  
-  # Sinusoidal positional encoding
-  tlob_use_sinusoidal_pe: true
-  
-  # BiN enabled
-  tlob_use_bin: true
-  
-  # Dataset type
-  tlob_dataset_type: nvda
-
-# =============================================================================
-# Training Configuration
-# =============================================================================
-train:
-  batch_size: 64
-  learning_rate: 1.0e-4
-  weight_decay: 1.0e-5
-  epochs: 50
-  early_stopping_patience: 10
-  gradient_clip_norm: 1.0
-  scheduler: cosine
-  num_workers: 4
-  pin_memory: true
-  seed: 42
-  mixed_precision: false
-  loss_type: weighted_ce
-  use_class_weights: true
-  task_type: multiclass
-
-# =============================================================================
-# Output Configuration
-# =============================================================================
 output_dir: outputs/experiments/nvda_tlob_v2_h100
 log_level: INFO
-
 tags:
   - nvda
   - tlob
@@ -116,3 +30,10 @@ tags:
   - v2-dynamic-threshold
   - global-zscore
   - 40-features
+
+data:
+  data_dir: "../data/exports/nvda_tlob_repo_v2"
+  horizon_idx: 3   # H=100
+
+model:
+  dropout: 0.0   # match official TLOB repo (no dropout)

@@ -1,0 +1,60 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/nvda_xnas_128feat_regression",
+      "feature_count": 128,
+      "horizon_idx": 0,
+      "labeling_strategy": "regression",
+      "sequence": {
+        "stride": 10,
+        "window_size": 100
+      }
+    },
+    "description": "GradientBoosting on 53 temporal features. Nonlinear alternative to Ridge.\n",
+    "log_level": "INFO",
+    "model": {
+      "features": {
+        "include_momentum": true,
+        "include_volatility": true,
+        "rolling_windows": [
+          5,
+          10,
+          20
+        ],
+        "signal_indices": [
+          85,
+          84,
+          86,
+          56,
+          45
+        ],
+        "top_k_signals": 3
+      },
+      "huber_delta": 0.9,
+      "learning_rate": 0.05,
+      "loss_type": "huber",
+      "max_depth": 5,
+      "max_train_samples": 50000,
+      "min_samples_leaf": 50,
+      "model_type": "temporal_gradboost",
+      "n_estimators": 200,
+      "subsample": 0.8
+    },
+    "name": "TemporalGradBoost_NVDA_H10",
+    "output_dir": "outputs/experiments/nvda_temporal_gradboost_h10",
+    "tags": [
+      "nvda",
+      "xnas",
+      "temporal-gradboost",
+      "regression",
+      "53-features",
+      "h10",
+      "simple-model"
+    ],
+    "train": {
+      "loss_type": "huber",
+      "task_type": "regression"
+    }
+  },
+  "status": "ok"
+}

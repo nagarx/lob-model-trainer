@@ -1,116 +1,24 @@
 # =============================================================================
-# HMHP Experiment: 128-Feature H10 Primary (XNAS)
+# HMHP Experiment: 128-Feature H10 Primary (ARCX variant)
 # =============================================================================
 #
-# First HMHP experiment on the profiler-aligned 128-feature XNAS export.
-# Target: Exceed prior HMHP benchmark of 58.2% at H10 (from 116-feature run).
-#
-# KEY DESIGN DECISIONS (from statistical analysis):
-#
-# Horizons [10, 60, 300]:
-#   - H10: Primary target (signal r=0.30, strongest per profiler/analyzer)
-#   - H60: Execution horizon (1 min, profiler-recommended)
-#   - H300: Strategic horizon (5 min, tests long-range signal ceiling)
-#   - H20/H50 dropped: 84.7% agreement with H60 (redundant)
-#   - H100/H200 dropped: intermediate, no unique signal structure
-#
-# Features: 128 (119 after dead exclusion via analysis_ready_128 preset)
-#   - Includes MLOFI (116-127): R² 0.10→0.60 per Kolm et al. (2023)
-#   - MLOFI adds most value on ARCX (thin book), confirmed by XGBoost
-#
-# Loss weights: H10-heavy (0.50) because:
-#   - H10 has 8x stronger signal than H60 (r=0.30 vs 0.10)
-#   - Label persistence at H10 (45% self-transition) is exploitable
-#   - Shorter horizons have better generalization stability
-#
-# Prior benchmarks:
-#   - XGBoost baseline (single-snapshot): 38.0% at H60
-#   - HMHP prior (116 features): 58.2% at H10
-#   - Target: 58-62% at H10 with MLOFI boost
-#
+# Sibling of nvda_hmhp_128feat_h10_primary — identical architecture + hyperparams,
+# differs ONLY in `data_dir` (ARCX export instead of XNAS). Tests whether
+# cross-exchange signal consistency holds for HMHP.
 # =============================================================================
+# Migrated to multi-base 2026-04-15 (Phase 3.5 Batch 2). Golden-fixture locked.
+_base:
+  - "../bases/models/hmhp_cascade_bare.yaml"
+  - "../bases/datasets/nvda_xnas_128feat_full.yaml"
+  - "../bases/labels/tlob_smoothed.yaml"
+  - "../bases/train/classification_default.yaml"
 
 name: HMHP_NVDA_128feat_ARCX_H10
 description: |
   HMHP on 233-day XNAS 128-feature export (profiler-aligned).
   Primary focus on H10, with H60/H300 for multi-horizon context.
-
-# =============================================================================
-# Data Configuration
-# =============================================================================
-data:
-  data_dir: "../data/exports/nvda_arcx_128feat"
-  feature_count: 128
-  feature_preset: "analysis_ready_128"
-  labeling_strategy: tlob
-  num_classes: 3
-  horizon_idx: 0  # Overridden to None by trainer for HMHP
-
-  sequence:
-    window_size: 100
-    stride: 10
-
-  normalization:
-    strategy: hybrid
-    eps: 1.0e-8
-    clip_value: 10.0
-    exclude_features: [93, 115]  # TIME_REGIME, TIME_BUCKET (categorical)
-
-# =============================================================================
-# Model Configuration (HMHP)
-# =============================================================================
-model:
-  model_type: hmhp
-  input_size: 119  # 128 raw minus 9 dead features (analysis_ready_128 preset)
-  num_classes: 3
-  dropout: 0.1
-
-  hmhp_horizons:
-    - 10     # ~10s: Primary target (strongest signal)
-    - 60     # ~1 min: Execution horizon (profiler-recommended)
-    - 300    # ~5 min: Strategic horizon (long-range test)
-
-  hmhp_cascade_mode: full
-  hmhp_state_fusion: gate
-  hmhp_encoder_type: tlob
-  hmhp_encoder_hidden_dim: 64
-  hmhp_num_encoder_layers: 2
-  hmhp_decoder_hidden_dim: 32
-  hmhp_state_dim: 32
-  hmhp_use_confirmation: true
-
-  hmhp_loss_weights:
-    H10: 0.50
-    H60: 0.25
-    H300: 0.10
-    consistency: 0.05
-    final: 0.10
-
-# =============================================================================
-# Training Configuration
-# =============================================================================
-train:
-  batch_size: 256
-  learning_rate: 5.0e-4
-  weight_decay: 0.01
-  epochs: 30
-  early_stopping_patience: 8
-  gradient_clip_norm: 1.0
-  scheduler: cosine
-  num_workers: 4
-  pin_memory: true
-  seed: 42
-  mixed_precision: false
-  loss_type: weighted_ce
-  use_class_weights: true
-  task_type: multiclass
-
-# =============================================================================
-# Output
-# =============================================================================
 output_dir: outputs/experiments/nvda_hmhp_128feat_arcx_h10
 log_level: INFO
-
 tags:
   - nvda
   - arcx
@@ -120,3 +28,15 @@ tags:
   - multi-horizon
   - h10-primary
   - profiler-aligned
+
+data:
+  data_dir: "../data/exports/nvda_arcx_128feat"
+
+model:
+  hmhp_horizons: [10, 60, 300]
+  hmhp_loss_weights:
+    H10: 0.5
+    H60: 0.25
+    H300: 0.1
+    consistency: 0.05
+    final: 0.1

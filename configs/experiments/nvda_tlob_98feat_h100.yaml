@@ -2,128 +2,25 @@
 # TLOB Experiment: 98-Feature Dataset with Hybrid Normalization
 # =============================================================================
 #
-# This experiment uses the FULL 98-feature set for TLOB training:
-# - Raw LOB (40): prices and sizes at 10 levels
-# - Derived (8): mid-price, spread, imbalances, microprice
-# - MBO (36): order flow rates, queue stats, institutional patterns
-# - Signals (14): OFI, pressure indicators, regime, safety gates
-#
-# NORMALIZATION STRATEGY (Hybrid):
+# Trains TLOB on the 98-feature NVDA v2 export with hybrid normalization.
+# Includes OFI, microprice, and other derived signals. `dropout: 0.0` matches
+# the official TLOB repo no-dropout baseline.
 # =============================================================================
-# | Range   | Features       | Strategy                              |
-# |---------|----------------|---------------------------------------|
-# | 0-39    | Raw LOB        | Global Z-score (prices pooled, sizes pooled) |
-# | 40-91   | Derived/MBO/Signals | Per-feature Z-score             |
-# | 92      | BOOK_VALID     | EXCLUDE (binary 0/1)                  |
-# | 93      | TIME_REGIME    | EXCLUDE (categorical 0-4)             |
-# | 94      | MBO_READY      | EXCLUDE (binary 0/1)                  |
-# | 95      | DT_SECONDS     | Per-feature Z-score                   |
-# | 96      | INVALIDITY_DELTA | EXCLUDE (counter)                   |
-# | 97      | SCHEMA_VERSION | EXCLUDE (constant)                    |
-#
-# LABELING: TLOB Dynamic Threshold
-#   alpha = mean(|percentage_change|) / 2  (per TLOB paper/repo)
-#
-# DATA: nvda_98feat_v2 export
-# - 234 trading days (Feb 3, 2025 - Jan 7, 2026)
-# - 98 features (full feature set)
-# - Multi-horizon labels [10, 20, 50, 100]
-#
-# REFERENCE:
-# - Berti & Kasneci (2025), "TLOB: A Novel Transformer Model"
-# - Cont et al. (2014), "The Price Impact of Order Book Events"
-# =============================================================================
+# Migrated to multi-base 2026-04-15 (Phase 3.5 Batch 3). Uses 3-base composition
+# (dataset inline: unique `nvda_98feat_v2` export + hybrid norm with exclude=[]).
+# Dropout override to 0.0 (TLOB-repo-match). Golden-fixture locked.
+_base:
+  - "../bases/models/tlob_paper_classification.yaml"
+  - "../bases/labels/tlob_smoothed.yaml"
+  - "../bases/train/tlob_paper_classification_train.yaml"
 
 name: TLOB_NVDA_98FEAT_H100
 description: |
   TLOB model on 98-feature dataset with hybrid normalization.
   H=100 horizon for longer-term trend prediction.
   Includes OFI, microprice, and other derived signals.
-
-# =============================================================================
-# Data Configuration
-# =============================================================================
-data:
-  # 98-feature dataset with TLOB dynamic threshold
-  data_dir: "../data/exports/nvda_98feat_v2"
-  
-  # 98 features: 40 LOB + 8 Derived + 36 MBO + 14 Signals
-  feature_count: 98
-  
-  # Labeling strategy: TLOB (Down/Stable/Up)
-  labeling_strategy: tlob
-  num_classes: 3
-  
-  # Horizon index 3 = H=100 (horizons: [10, 20, 50, 100])
-  horizon_idx: 3
-  
-  # Sequence configuration
-  sequence:
-    window_size: 100
-    stride: 10
-  
-  # ==========================================================================
-  # HYBRID NORMALIZATION
-  # ==========================================================================
-  # - Global Z-score for raw LOB (0-39)
-  # - Per-feature Z-score for derived/MBO/signals (40-97)
-  # - Excludes categorical/binary features (92-94, 96-97)
-  # ==========================================================================
-  normalization:
-    strategy: hybrid
-    eps: 1.0e-8
-    clip_value: 10.0
-    exclude_features: []  # HybridNormalizer handles exclusions internally
-
-# =============================================================================
-# Model Configuration (TLOB)
-# =============================================================================
-model:
-  model_type: tlob
-  input_size: 98  # CRITICAL: 98 features
-  num_classes: 3
-  dropout: 0.0    # Match official TLOB repo (no dropout)
-  
-  # TLOB Architecture (per paper Table 10)
-  tlob_hidden_dim: 64
-  tlob_num_layers: 4
-  tlob_num_heads: 1
-  tlob_mlp_expansion: 4.0
-  
-  # Sinusoidal positional encoding
-  tlob_use_sinusoidal_pe: true
-  
-  # BiN enabled - provides adaptive per-sample normalization
-  tlob_use_bin: true
-  
-  # Dataset type
-  tlob_dataset_type: nvda
-
-# =============================================================================
-# Training Configuration
-# =============================================================================
-train:
-  batch_size: 64
-  learning_rate: 1.0e-4
-  weight_decay: 1.0e-5
-  epochs: 50
-  early_stopping_patience: 10
-  gradient_clip_norm: 1.0
-  scheduler: cosine
-  num_workers: 4
-  pin_memory: true
-  seed: 42
-  mixed_precision: false
-  loss_type: weighted_ce
-  use_class_weights: true
-  task_type: multiclass
-
-# =============================================================================
-# Output Configuration
-# =============================================================================
 output_dir: outputs/experiments/nvda_tlob_98feat_h100
 log_level: INFO
-
 tags:
   - nvda
   - tlob
@@ -132,3 +29,21 @@ tags:
   - hybrid-normalization
   - ofi-signals
   - mbo-features
+
+# Per-child data (98feat v2 export with hybrid normalization, no excludes)
+data:
+  data_dir: "../data/exports/nvda_98feat_v2"
+  feature_count: 98
+  horizon_idx: 3   # H=100
+  sequence:
+    window_size: 100
+    stride: 10
+  normalization:
+    strategy: hybrid
+    eps: 1.0e-8
+    clip_value: 10.0
+    exclude_features: []
+
+model:
+  input_size: 98
+  dropout: 0.0   # match official TLOB repo (no dropout)

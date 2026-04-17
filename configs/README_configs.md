@@ -23,17 +23,183 @@ python scripts/train.py --config configs/experiments/nvda_tlob_triple_barrier_11
 ```
 configs/
 ├── README_configs.md                      # This file (complete reference)
-├── experiments/                           # ✅ ACTIVE configs (40)
-│   ├── nvda_tlob_h10_v1.yaml             # TLOB H=10 (short-term)
-│   ├── nvda_tlob_h100_v1.yaml            # TLOB H=100 (paper benchmark)
-│   └── nvda_tlob_triple_barrier_11mo_v1.yaml  # Triple Barrier
-└── archive/                               # 📦 REFERENCE configs (6)
+├── bases/                                 # 🏗️ 21 axis-partitioned BASE configs (Phase 3)
+│   ├── README.md                          #   4-axis ownership rule + chained inheritance
+│   ├── models/                            #   5 files — model architecture bases
+│   │   ├── tlob_compact_bare.yaml
+│   │   ├── tlob_compact_regression.yaml   #   chains from bare (cvml defaults added)
+│   │   ├── tlob_paper_classification.yaml
+│   │   ├── hmhp_cascade_bare.yaml
+│   │   └── hmhp_cascade_regression.yaml   #   chains from bare (regression head added)
+│   ├── datasets/                          #   8 files — per-export bases
+│   │   ├── nvda_e4_5s.yaml
+│   │   ├── nvda_e5_30s.yaml
+│   │   ├── nvda_e5_60s.yaml
+│   │   ├── nvda_xnas_128feat_full.yaml
+│   │   ├── nvda_40feat_short_term.yaml
+│   │   ├── nvda_98feat_triple_barrier.yaml
+│   │   ├── nvda_98feat_zscore_per_day.yaml
+│   │   └── nvda_40feat_tlob_repo.yaml
+│   ├── labels/                            #   4 files — label strategy bases
+│   │   ├── regression_huber.yaml
+│   │   ├── tlob_smoothed.yaml
+│   │   ├── opportunity.yaml
+│   │   └── triple_barrier_volscaled.yaml
+│   └── train/                             #   4 files — training hyperparam bases
+│       ├── regression_default.yaml
+│       ├── classification_default.yaml
+│       ├── classification_triple_barrier.yaml
+│       └── tlob_paper_classification_train.yaml
+│   # Monolith bases/e5_tlob_regression.yaml was RETIRED 2026-04-15 at end of Batch 1.
+│
+├── experiments/                           # ✅ 42 in-scope ACTIVE configs
+│   #   25 migrated to axis-composed _base: [...] form (E4×1, E5×5, E6×1, HMHP×11, TLOB classif×7)
+│   #   17 standalone by design (baselines, XGBoost, archive-of-configs, niche HMHP, TLOB singletons)
+│   #   See MERGE_MIGRATION_PLAN.md for the per-batch migration ledger.
+│
+└── archive/                               # 📦 REFERENCE configs (6) — legacy datasets, not in Phase 3 migration scope
     ├── baseline_lstm.yaml                 # Pure LSTM model
     ├── lstm_attn_bidir_h20.yaml          # LSTM + Attention + Bidirectional
     ├── deeplob_benchmark.yaml            # DeepLOB (Zhang et al. 2019)
     ├── nvda_bigmove_opportunity_v1.yaml  # Opportunity labeling
     ├── nvda_tlob_bigmove_v1.yaml         # TLOB + Opportunity
     └── nvda_tlob_binary_signal_v1.yaml   # Binary classification + Focal Loss
+```
+
+Related archive:
+- `src/lobtrainer/config/archive/merge-v1/` — v1 `merge.py` (single-string `_base:` only) preserved for byte-identity parity testing. See `ARCHIVE_README.md` inside that directory. Mirrors `feature-extractor-MBO-LOB/archive/monolith-v1/` precedent.
+
+---
+
+## Config Inheritance (Phase 3 — `_base: str | list[str]`)
+
+Configs compose via the `_base` key. A child config inherits all values from its bases and overrides only the fields that differ.
+
+### v2 Multi-Base Composition (preferred — axis-composed)
+
+```yaml
+# configs/experiments/e5_60s_huber_cvml.yaml
+_base:
+  - "../bases/models/tlob_compact_regression.yaml"   # model architecture
+  - "../bases/datasets/nvda_e5_60s.yaml"             # dataset + normalization
+  - "../bases/labels/regression_huber.yaml"          # label strategy + loss
+  - "../bases/train/regression_default.yaml"         # training hyperparams
+
+name: E5_60s_Huber_CVML
+description: "E5 60s-bin regression with CVML encoder"
+tags: [e5, nvda, regression, h10, 60s, huber, cvml]
+output_dir: outputs/experiments/e5_60s_huber_cvml
+
+# Per-child overrides on top of the 4 composed bases:
+model:
+  tlob_use_cvml: true
+  tlob_cvml_out_channels: 49
+```
+
+### v1 Single-Base Form (backward-compatible)
+
+```yaml
+# Still supported, still the right form for standalone experiments that
+# don't fit the 4-axis decomposition (singletons, variants).
+_base: "../bases/<some-base>.yaml"
+```
+
+### Semantics
+
+- **List form**: bases merge **left-to-right** — each successive base overrides the previous; child config overrides all accumulated bases
+- **Dicts**: recursively merged (base keys preserved unless overridden)
+- **Lists**: REPLACED entirely (tags, horizons, exclude_features)
+- **Scalars**: child value wins
+- **`null`**: explicitly sets a value to None (use to clear `feature_preset` when switching to `feature_indices`)
+- **Chained inheritance**: a base may itself have `_base` (max depth: 10, per-branch cycle detection)
+- **`_base` paths**: resolved relative to the file containing the `_base` key
+
+### Axis Ownership Rule (§3.4)
+
+Each top-level dotted-key is owned by **exactly one axis**. Mechanically enforced by `tests/test_base_axis_ownership.py` — CI fails if any field appears in more than one axis's bases.
+
+| Axis | Owns (high-level) | Must NOT set |
+|------|-------------------|--------------|
+| `models/` | `model.model_type`, `model.dropout`, `model.tlob_*`, `model.hmhp_*`, `model.regression_loss_type` | `model.num_classes`, `model.input_size`, `train.task_type`, `train.loss_type`, `train.batch_size` |
+| `datasets/` | `data.data_dir`, `data.feature_count`, `data.normalization`, `data.sequence`, `model.input_size` (T13 auto-derivation) | `data.labeling_strategy`, `data.horizon_idx`, `model.num_classes` |
+| `labels/` | `data.labeling_strategy`, `data.horizon_idx`, `data.num_classes`, `model.num_classes`, `train.task_type`, `train.loss_type` | `model.*` (other than num_classes), `data.feature_count` |
+| `train/` | `train.batch_size`, `train.epochs`, `train.optimizer`, `train.scheduler`, `train.learning_rate`, `train.weight_decay`, `train.seed`, `train.gradient_clip_norm`, `train.use_class_weights`, `train.focal_gamma` | `train.task_type`, `train.loss_type`, `model.*`, `data.*` |
+| **per-child (NOT in any base)** | `name`, `description`, `tags`, `output_dir`, `log_level` | (identity fields — unique per experiment) |
+
+**Why `train.loss_type` lives in `labels/` (not `models/`)**: it is **task-coupled** (regression → `huber`, tlob → `weighted_ce`, triple_barrier → `focal`), not model-coupled. HMHP cascade shares one model base across three loss types; without this move, HMHP would require three near-duplicate HMHP model bases.
+
+### Chained Inheritance Patterns
+
+Two chained patterns are locked by `tests/test_base_axis_ownership.py::TestChainedInheritancePurity`:
+
+**Pattern 1 — TLOB compact** (`tlob_compact_bare` → `tlob_compact_regression`):
+- `bare` contains 12 shared arch fields
+- `regression` chains from `bare` via `_base: "tlob_compact_bare.yaml"` and adds `tlob_use_cvml: false` + `tlob_cvml_out_channels: 0` on top
+- **E4 TLOB** uses `bare` DIRECTLY (its pre-migration golden has no cvml fields — the chain would corrupt byte-identity)
+- **E5 / E6** use the full chain (their pre-migration goldens DO have cvml fields)
+
+**Pattern 2 — HMHP cascade** (`hmhp_cascade_bare` → `hmhp_cascade_regression`):
+- `bare` contains 10 model fields (`model_type: hmhp` + `dropout` + 8 `hmhp_*` arch fields)
+- `regression` chains from `bare` and adds `model_type: hmhp_regression` + `hmhp_regression_loss_type: huber` on top
+- **HMHP classification / triple-barrier** use `bare` DIRECTLY (those regression fields would corrupt their goldens)
+- **HMHP regression** uses the full chain
+
+### Partial Bases (`_partial: true`)
+
+Every axis-partitioned base declares `_partial: true` at top level. This sentinel marks the file as "standalone-invalid — only becomes a valid config when composed with peer bases via multi-base `_base: [...]`".
+
+If a researcher accidentally runs `ExperimentConfig.from_yaml("bases/models/tlob_compact_regression.yaml")`, they get a descriptive error pointing at `configs/bases/README.md` rather than a confusing dacite missing-field failure. Detection: `src/lobtrainer/config/merge.py::is_partial_base`.
+
+### Important Rules
+
+1. When switching from `feature_preset` to `feature_indices`, set `feature_preset: null` in the child
+2. When changing `feature_count`, also change `model.input_size` to match (datasets/ bases keep these locked together)
+3. `_base` is only supported in YAML configs loaded via `from_yaml()`, not in `from_dict()`
+4. Never run `ExperimentConfig.from_yaml()` on a partial base (`_partial: true`) — it will raise a descriptive error
+5. Per-child overrides (`name`, `description`, `tags`, `output_dir`) MUST NOT appear in any base — every experiment owns its own identity fields
+
+---
+
+## Feature Selection (Phase 4 Batch 4c, 2026-04-15)
+
+`DataConfig` exposes three mutually-exclusive feature-selection fields.
+**At most one** may be set; setting two or more raises `ValueError("At most one of ...")`.
+
+| Field | Form | Source | Lifetime |
+|---|---|---|---|
+| `data.feature_set` | str, e.g. `"momentum_hft_v1"` | FeatureSet registry `contracts/feature_sets/<name>.json` | **PREFERRED (Phase 4+)** |
+| `data.feature_indices` | `list[int]` | Inline in the trainer YAML | Ad-hoc overrides, tests |
+| `data.feature_preset` | str, e.g. `"short_term_40"` | `lobtrainer.constants.feature_presets` | **DEPRECATED** — ImportError on 2026-08-15 |
+
+**Registry lookup** (`feature_set`): resolver loads `<name>.json`, verifies
+SHA-256 content hash, then verifies `contract_version` and
+`source_feature_count` match the runtime expectations. Populates a
+runtime-only cache (`DataConfig._feature_indices_resolved`) that is
+**stripped from `to_dict()`/`to_yaml()`/`to_json()`** at both dataclass
+and dict branches — R3 invariant: the on-disk YAML round-trip
+preserves the user's `feature_set: X`, never silently substituting
+resolved `feature_indices: [...]`.
+
+**Registry location**: by default `find_feature_sets_dir(data_dir)`
+walks up to `contracts/feature_sets/`. Override with
+`data.feature_sets_dir: "/custom/path"` for test isolation or
+multi-registry workflows.
+
+**Byte-parity guarantee**: trainer inlines `_compute_content_hash`
+(~10 LOC, torch-free, cross-venv independent from hft-ops). Parity
+against the producer's canonical form is locked by
+`tests/test_feature_set_resolver_parity.py` via
+`hft_contracts.canonical_hash` (the single source of truth).
+
+**Producing a FeatureSet** (from `hft-feature-evaluator`):
+
+```
+hft-ops evaluate \
+  --config evaluator.yaml \
+  --criteria criteria.yaml \
+  --save-feature-set momentum_hft_v1 \
+  --applies-to-assets NVDA \
+  --applies-to-horizons 60
 ```
 
 ---
@@ -57,15 +223,28 @@ configs/
 
 ---
 
-## Active Experiment Configs (34)
+## Active Experiment Configs (42 in-scope — 25 migrated + 17 standalone by design)
 
-These are ready to run on the current 234-day dataset.
+42 experiment configs are ready to run on the current 233/234-day datasets. Phase 3 (2026-04-15) migrated 25 to the axis-composed `_base: [models/x, datasets/y, labels/z, train/w]` form across three batches:
+
+- **Batch 1** (E-family): E4×1 + E5×5 + E6×1 = 7 configs
+- **Batch 2** (HMHP): HMHP classification×6 + HMHP regression×2 + HMHP TB×3 = 11 configs
+- **Batch 3** (TLOB paper-spec classification): H10/H50/H100 + raw + 98feat + repo_match + v2_h100 = 7 configs
+
+**17 configs remain standalone by design** (out of Phase 3 migration scope):
+- **Baselines** (7): logistic×4, temporal_ridge×2, temporal_gradboost×1 — planned for Batch 4 (cancelled as diminishing returns)
+- **XGBoost** (2): `nvda_xgboost_baseline_h60.yaml`, `nvda_xgboost_baseline_arcx_h60.yaml` — different schema, bypasses `ExperimentConfig.from_yaml()`
+- **Archive** (6): legacy datasets no longer supported
+- **Niche HMHP** (2): `nvda_short_term_hmhp_v1.yaml`, `nvda_hmhp_multihorizon_v1.yaml` — too few peers to benefit from shared bases
+
+Representative examples (not exhaustive — see `MERGE_MIGRATION_PLAN.md` for the full per-config ledger):
 
 | Config | Model | Horizon | Labels | Purpose | When to Use |
 |--------|-------|---------|--------|---------|-------------|
 | `experiments/nvda_tlob_h10_v1.yaml` | TLOB | H=10 | TLOB | Short-term (~1s) | Fast iteration, high accuracy |
 | `experiments/nvda_tlob_h100_v1.yaml` | TLOB | H=100 | TLOB | Paper benchmark (~10s) | Compare with DeepLOB paper |
 | `experiments/nvda_tlob_triple_barrier_11mo_v1.yaml` | TLOB | H=50 | Triple Barrier | Risk-managed trading | Backtesting, win rate focus |
+| `experiments/e5_60s_huber_cvml.yaml` | TLOB | H=10 | Regression | Canonical Phase 3 multi-base example | Reference for new axis-composed experiments |
 
 ---
 
@@ -316,3 +495,13 @@ All datasets follow this contract:
 - **Normalization**: Market-structure preserving z-score
 
 See `plan/03-FEATURE-INDEX-MAP-v2.md` for complete feature index mapping.
+
+---
+
+## Related Documentation
+
+- **`configs/bases/README.md`** — Full 4-axis ownership matrix, per-base inventory, chained-inheritance pattern docs.
+- **`../MERGE_MIGRATION_PLAN.md`** — Phase 3 migration ledger: v1→v2 merge.py retirement, monolith decomposition, per-batch migration status (25/42 in-scope).
+- **`../CHANGELOG.md`** — Per-release change log (current 0.4.0, 2026-04-15 — Phase 3 config composition).
+- **`../src/lobtrainer/config/archive/merge-v1/ARCHIVE_README.md`** — Archived v1 `merge.py` (single-string `_base:` only). Loaded via `importlib` from parity tests only; mirrors `feature-extractor-MBO-LOB/archive/monolith-v1/` precedent.
+- **`../CODEBASE.md` §5 (Configuration System)** — Technical reference for `ExperimentConfig` / `DataConfig` / `ModelConfig` / `TrainConfig` dataclasses + `_base:` resolution internals.

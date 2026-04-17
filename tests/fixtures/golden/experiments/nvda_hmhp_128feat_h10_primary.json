@@ -1,0 +1,82 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/nvda_xnas_128feat",
+      "feature_count": 128,
+      "feature_preset": "analysis_ready_128",
+      "horizon_idx": 0,
+      "labeling_strategy": "tlob",
+      "normalization": {
+        "clip_value": 10.0,
+        "eps": 1e-08,
+        "exclude_features": [
+          93,
+          115
+        ],
+        "strategy": "hybrid"
+      },
+      "num_classes": 3,
+      "sequence": {
+        "stride": 10,
+        "window_size": 100
+      }
+    },
+    "description": "HMHP on 233-day XNAS 128-feature export (profiler-aligned).\nPrimary focus on H10, with H60/H300 for multi-horizon context.\n",
+    "log_level": "INFO",
+    "model": {
+      "dropout": 0.1,
+      "hmhp_cascade_mode": "full",
+      "hmhp_decoder_hidden_dim": 32,
+      "hmhp_encoder_hidden_dim": 64,
+      "hmhp_encoder_type": "tlob",
+      "hmhp_horizons": [
+        10,
+        60,
+        300
+      ],
+      "hmhp_loss_weights": {
+        "H10": 0.5,
+        "H300": 0.1,
+        "H60": 0.25,
+        "consistency": 0.05,
+        "final": 0.1
+      },
+      "hmhp_num_encoder_layers": 2,
+      "hmhp_state_dim": 32,
+      "hmhp_state_fusion": "gate",
+      "hmhp_use_confirmation": true,
+      "input_size": 119,
+      "model_type": "hmhp",
+      "num_classes": 3
+    },
+    "name": "HMHP_NVDA_128feat_H10_Primary",
+    "output_dir": "outputs/experiments/nvda_hmhp_128feat_xnas_h10",
+    "tags": [
+      "nvda",
+      "xnas",
+      "hmhp",
+      "128-features",
+      "mlofi",
+      "multi-horizon",
+      "h10-primary",
+      "profiler-aligned"
+    ],
+    "train": {
+      "batch_size": 256,
+      "early_stopping_patience": 8,
+      "epochs": 30,
+      "gradient_clip_norm": 1.0,
+      "learning_rate": 0.0005,
+      "loss_type": "weighted_ce",
+      "mixed_precision": false,
+      "num_workers": 4,
+      "pin_memory": true,
+      "scheduler": "cosine",
+      "seed": 42,
+      "task_type": "multiclass",
+      "use_class_weights": true,
+      "weight_decay": 0.01
+    }
+  },
+  "status": "ok"
+}

@@ -1,0 +1,29 @@
+# axis: labels
+# Regression task with Huber loss
+# Used by: all regression experiments (E4, E5 family, E6, HMHP-R, TLOB
+#          regression variants, TemporalRidge regression, TemporalGradBoost)
+#
+# Ownership (per §3.4 refined in Phase 3.5 Batch 2): data.labeling_strategy,
+#                        horizon_idx, num_classes, labels; model.num_classes;
+#                        train.task_type; train.loss_type (task-coupled —
+#                        regression→huber, tlob→weighted_ce, triple_barrier→focal)
+#
+# Note on num_classes for regression:
+#   - schema.py uses num_classes=3 for regression to represent the 3 horizons
+#     (H10, H60, H300) in the training head. Vestigial from the classification
+#     era but maintained for compatibility (see DataConfig/ModelConfig cross-
+#     validation at schema.py:1210-1215).
+_partial: true
+
+data:
+  labeling_strategy: regression
+  num_classes: 3
+  horizon_idx: 0
+
+model:
+  num_classes: 3
+
+train:
+  task_type: regression
+  loss_type: huber   # moved from models/tlob_compact_bare.yaml in Batch 2
+                     # (task-coupled across model families — uniform decomposition)

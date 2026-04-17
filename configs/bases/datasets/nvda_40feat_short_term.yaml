@@ -1,0 +1,26 @@
+# axis: datasets
+# NVDA 40-feat subset via short_term_40 preset on 128-feat data
+# Used by: nvda_hmhp_40feat_h10, nvda_hmhp_40feat_h60_profit8bps,
+#          nvda_hmhp_40feat_h60_profit8bps_regression, nvda_hmhp_regressor_h60
+#
+# The `short_term_40` preset selects a 40-feature subset from the 128-feat
+# export. Feature count is 128 (data size) but model input is 40 (selected).
+#
+# Ownership (per §3.4): data.data_dir, feature_count, feature_preset,
+#                        normalization, sequence; model.input_size
+_partial: true
+
+data:
+  feature_count: 128
+  feature_preset: short_term_40
+  sequence:
+    window_size: 100
+    stride: 10
+  normalization:
+    strategy: hybrid
+    eps: 1.0e-8
+    clip_value: 10.0
+    exclude_features: [93, 115]
+
+model:
+  input_size: 40   # short_term_40 preset selects 40 features

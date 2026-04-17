@@ -1,0 +1,19 @@
+# axis: models
+# TLOB compact regression architecture (with explicit cvml-default fields)
+# Used by: E5 family (5), E6 — configs that inherited cvml:false/cvml_out_channels:0
+# explicitly from the pre-Phase-3 monolith.
+#
+# For E4-style configs where the standalone YAML did NOT explicitly set cvml
+# fields (letting dataclass defaults apply), use `tlob_compact_bare.yaml`
+# directly — it omits cvml defaults to preserve byte-identity with those
+# configs' pre-migration resolved dicts.
+#
+# Chained inheritance: this base inherits from `tlob_compact_bare.yaml` and
+# adds the cvml default fields. The resolved content is IDENTICAL to the
+# pre-chain version (verified by golden-fixture parity tests).
+_base: "tlob_compact_bare.yaml"
+_partial: true
+
+model:
+  tlob_use_cvml: false
+  tlob_cvml_out_channels: 0

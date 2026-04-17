@@ -4,64 +4,23 @@
 # BASELINE: Same architecture as E4 (92K params) on 60s time-based data.
 # Must beat TemporalRidge IC=0.306 to justify deep learning.
 # Huber delta=12.6 calibrated from kurtosis=26.5 (ReturnDistributionAnalyzer).
-# Label overlap: 90% at stride=1 → ~4K independent samples. Expect early overfit.
+# Label overlap: 90% at stride=1 -> ~4K independent samples. Expect early overfit.
 # =============================================================================
+# Migrated to multi-base 2026-04-15 (Phase 3.5 Batch 1). Effective resolved
+# dict is byte-identical to pre-migration form (locked by golden fixture
+# at tests/fixtures/golden/experiments/e5_60s_huber_nocvml.json).
+_base:
+  - "../bases/models/tlob_compact_regression.yaml"
+  - "../bases/datasets/nvda_e5_60s.yaml"
+  - "../bases/labels/regression_huber.yaml"
+  - "../bases/train/regression_default.yaml"
 
+# Per-child identity (§3.4 orphans: name, description, output_dir, log_level, tags)
 name: E5_60s_Huber_NoCVML
 description: |
   E5 Phase 2 baseline: TLOB regression on 60s time-based data at H10 (10 min).
   Establishes deep learning baseline on highest-IC bin (0.248).
   Must beat TemporalRidge IC=0.306 baseline.
-
-data:
-  data_dir: "../data/exports/e5_timebased_60s"
-  feature_count: 98
-  labeling_strategy: regression
-  num_classes: 3
-  horizon_idx: 0
-  sequence:
-    window_size: 20
-    stride: 1
-  normalization:
-    strategy: hybrid
-    eps: 1.0e-8
-    clip_value: 10.0
-    exclude_features: [93]
-
-model:
-  model_type: tlob
-  input_size: 98
-  num_classes: 3
-  dropout: 0.1
-  task_type: regression
-  regression_loss_type: huber
-  regression_loss_delta: 12.6
-  tlob_hidden_dim: 32
-  tlob_num_layers: 2
-  tlob_num_heads: 2
-  tlob_mlp_expansion: 4.0
-  tlob_use_sinusoidal_pe: true
-  tlob_use_bin: true
-  tlob_dataset_type: nvda
-  tlob_use_cvml: false
-  tlob_cvml_out_channels: 0
-
-train:
-  task_type: regression
-  loss_type: huber
-  use_class_weights: false
-  batch_size: 128
-  learning_rate: 5.0e-4
-  weight_decay: 0.01
-  epochs: 30
-  early_stopping_patience: 5
-  gradient_clip_norm: 1.0
-  scheduler: cosine
-  num_workers: 0
-  pin_memory: false
-  seed: 42
-  mixed_precision: false
-
 output_dir: outputs/experiments/e5_60s_huber_nocvml
 log_level: INFO
 tags: [e5, nvda, regression, h10, 60s, huber, no-cvml, baseline]

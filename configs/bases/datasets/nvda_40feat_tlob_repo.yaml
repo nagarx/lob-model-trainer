@@ -1,0 +1,31 @@
+# axis: datasets
+# NVDA 40-feat with global z-score (matches official TLOB repo preprocessing)
+# Used by: nvda_tlob_repo_match_h50, nvda_tlob_v2_h100 (2 configs)
+#
+# Official TLOB repo preprocessing (TLOB/utils/utils_data.py::z_score_orderbook):
+#   - 40 raw LOB features (10 levels × 4: ask_p, ask_s, bid_p, bid_s)
+#   - Global Z-score: one mean/std for ALL prices, one for ALL sizes
+#   - clip_value: null (no clipping — match repo exactly)
+#   - BiN layer adds per-sample adaptive norm on top of this base norm
+#
+# `data_dir` VARIES (repo_v1 vs repo_v2 uses different date ranges / exports),
+# kept as child override.
+#
+# Ownership (per §3.4): data.feature_count, sources, normalization, sequence;
+#                        model.input_size (locked to feature_count).
+#                        `data.data_dir` is per-child here (varies).
+_partial: true
+
+data:
+  feature_count: 40
+  sequence:
+    window_size: 100
+    stride: 10
+  normalization:
+    strategy: global_zscore   # matches TLOB/utils/utils_data.py
+    eps: 1.0e-8
+    clip_value: null          # no clipping — match official repo exactly
+    exclude_features: []      # 40-feat has no categorical indices to exclude
+
+model:
+  input_size: 40

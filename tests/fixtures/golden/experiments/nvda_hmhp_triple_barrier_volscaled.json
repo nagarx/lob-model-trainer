@@ -1,0 +1,81 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/nvda_11month_triple_barrier_volscaled",
+      "feature_count": 98,
+      "labeling_strategy": "triple_barrier",
+      "normalization": {
+        "clip_value": 10.0,
+        "eps": 1e-08,
+        "exclude_features": [
+          93
+        ],
+        "strategy": "hybrid"
+      },
+      "num_classes": 3,
+      "sequence": {
+        "stride": 10,
+        "window_size": 100
+      }
+    },
+    "description": "HMHP multi-horizon model with VOLATILITY-SCALED per-day Triple Barrier thresholds.\nBarriers adapt to daily realized volatility for consistent class distribution\nacross all market regimes. Cascading state from H50 \u2192 H100 \u2192 H200.\n",
+    "log_level": "INFO",
+    "model": {
+      "dropout": 0.1,
+      "hmhp_cascade_mode": "full",
+      "hmhp_decoder_hidden_dim": 32,
+      "hmhp_encoder_hidden_dim": 64,
+      "hmhp_encoder_type": "tlob",
+      "hmhp_horizons": [
+        50,
+        100,
+        200
+      ],
+      "hmhp_loss_weights": {
+        "H100": 0.25,
+        "H200": 0.15,
+        "H50": 0.35,
+        "consistency": 0.1,
+        "final": 0.15
+      },
+      "hmhp_num_encoder_layers": 2,
+      "hmhp_state_dim": 32,
+      "hmhp_state_fusion": "gate",
+      "hmhp_use_confirmation": true,
+      "input_size": 98,
+      "model_type": "hmhp",
+      "num_classes": 3
+    },
+    "name": "HMHP_NVDA_TripleBarrier_VolScaled",
+    "output_dir": "outputs/experiments/nvda_hmhp_triple_barrier_volscaled",
+    "tags": [
+      "nvda",
+      "hmhp",
+      "triple-barrier",
+      "volatility-scaled",
+      "per-day-barriers",
+      "balanced-classes",
+      "multi-horizon",
+      "cascading",
+      "focal-loss"
+    ],
+    "train": {
+      "batch_size": 64,
+      "early_stopping_patience": 15,
+      "epochs": 100,
+      "focal_gamma": 2.0,
+      "gradient_clip_norm": 1.0,
+      "learning_rate": 0.0001,
+      "loss_type": "focal",
+      "mixed_precision": false,
+      "num_workers": 4,
+      "pin_memory": true,
+      "scheduler": "cosine",
+      "seed": 42,
+      "task_type": "multiclass",
+      "use_class_weights": true,
+      "weight_decay": 1e-05
+    }
+  },
+  "status": "ok"
+}

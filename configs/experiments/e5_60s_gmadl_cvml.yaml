@@ -6,62 +6,28 @@
 # a=10 (sigmoid sharpness), b=1.5 (upweights large returns).
 # Must show higher DA than Huber variants to validate loss change.
 # =============================================================================
+# Migrated to multi-base 2026-04-15 (Phase 3.5 Batch 1). Golden-fixture locked.
+_base:
+  - "../bases/models/tlob_compact_regression.yaml"
+  - "../bases/datasets/nvda_e5_60s.yaml"
+  - "../bases/labels/regression_huber.yaml"
+  - "../bases/train/regression_default.yaml"
 
 name: E5_60s_GMADL_CVML
 description: |
   E5 Phase 2 GMADL test: TLOB + CVML + GMADL loss on 60s data at H10.
   Tests if direction-optimized loss improves DA over Huber.
+output_dir: outputs/experiments/e5_60s_gmadl_cvml
+log_level: INFO
+tags: [e5, nvda, regression, h10, 60s, gmadl, cvml, direction-optimized]
 
-data:
-  data_dir: "../data/exports/e5_timebased_60s"
-  feature_count: 98
-  labeling_strategy: regression
-  num_classes: 3
-  horizon_idx: 0
-  sequence:
-    window_size: 20
-    stride: 1
-  normalization:
-    strategy: hybrid
-    eps: 1.0e-8
-    clip_value: 10.0
-    exclude_features: [93]
-
+# Per-child overrides: swap loss type + enable CVML
 model:
-  model_type: tlob
-  input_size: 98
-  num_classes: 3
-  dropout: 0.1
-  task_type: regression
   regression_loss_type: gmadl
   gmadl_a: 10.0
   gmadl_b: 1.5
-  tlob_hidden_dim: 32
-  tlob_num_layers: 2
-  tlob_num_heads: 2
-  tlob_mlp_expansion: 4.0
-  tlob_use_sinusoidal_pe: true
-  tlob_use_bin: true
-  tlob_dataset_type: nvda
   tlob_use_cvml: true
   tlob_cvml_out_channels: 49
 
 train:
-  task_type: regression
   loss_type: gmadl
-  use_class_weights: false
-  batch_size: 128
-  learning_rate: 5.0e-4
-  weight_decay: 0.01
-  epochs: 30
-  early_stopping_patience: 5
-  gradient_clip_norm: 1.0
-  scheduler: cosine
-  num_workers: 0
-  pin_memory: false
-  seed: 42
-  mixed_precision: false
-
-output_dir: outputs/experiments/e5_60s_gmadl_cvml
-log_level: INFO
-tags: [e5, nvda, regression, h10, 60s, gmadl, cvml, direction-optimized]

@@ -1,0 +1,80 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/nvda_xnas_128feat_regression",
+      "feature_count": 128,
+      "horizon_idx": 0,
+      "labeling_strategy": "regression",
+      "normalization": {
+        "clip_value": 10.0,
+        "eps": 1e-08,
+        "exclude_features": [
+          93,
+          115
+        ],
+        "strategy": "hybrid"
+      },
+      "num_classes": 3,
+      "sequence": {
+        "stride": 10,
+        "window_size": 100
+      }
+    },
+    "description": "Multi-horizon regression: HMHP-R predicts continuous bps returns at H10/H60/H300.\nH10-primary weighting per signal strength analysis.\n",
+    "log_level": "INFO",
+    "model": {
+      "dropout": 0.1,
+      "hmhp_cascade_mode": "full",
+      "hmhp_decoder_hidden_dim": 32,
+      "hmhp_encoder_hidden_dim": 64,
+      "hmhp_encoder_type": "tlob",
+      "hmhp_horizons": [
+        10,
+        60,
+        300
+      ],
+      "hmhp_loss_weights": {
+        "H10": 0.5,
+        "H300": 0.15,
+        "H60": 0.25,
+        "consistency": 0.1
+      },
+      "hmhp_num_encoder_layers": 2,
+      "hmhp_regression_loss_type": "huber",
+      "hmhp_state_dim": 32,
+      "hmhp_state_fusion": "gate",
+      "hmhp_use_confirmation": true,
+      "input_size": 128,
+      "model_type": "hmhp_regression",
+      "num_classes": 3
+    },
+    "name": "HMHP_NVDA_Regression_H10_Primary",
+    "output_dir": "outputs/experiments/nvda_hmhp_regression_h10_primary",
+    "tags": [
+      "nvda",
+      "xnas",
+      "hmhp-regression",
+      "multi-horizon",
+      "128-features",
+      "h10-primary",
+      "huber-loss"
+    ],
+    "train": {
+      "batch_size": 128,
+      "early_stopping_patience": 8,
+      "epochs": 20,
+      "gradient_clip_norm": 1.0,
+      "learning_rate": 0.0005,
+      "loss_type": "huber",
+      "mixed_precision": false,
+      "num_workers": 0,
+      "pin_memory": false,
+      "scheduler": "cosine",
+      "seed": 42,
+      "task_type": "regression",
+      "use_class_weights": false,
+      "weight_decay": 0.01
+    }
+  },
+  "status": "ok"
+}

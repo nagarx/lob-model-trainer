@@ -1,0 +1,73 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/e4_timebased_5s",
+      "feature_count": 98,
+      "horizon_idx": 1,
+      "labeling_strategy": "regression",
+      "normalization": {
+        "clip_value": 10.0,
+        "eps": 1e-08,
+        "exclude_features": [
+          93
+        ],
+        "strategy": "hybrid"
+      },
+      "num_classes": 3,
+      "sequence": {
+        "stride": 1,
+        "window_size": 20
+      }
+    },
+    "description": "E4 Phase 3: TLOB regression on time-based 5-second data at H60.\nFirst deep learning model on time-based sampled data.\nMust beat TemporalRidge IC=0.121 baseline.\nHuber delta=7.3 calibrated from E4 H60 return distribution.\n",
+    "log_level": "INFO",
+    "model": {
+      "dropout": 0.1,
+      "input_size": 98,
+      "model_type": "tlob",
+      "num_classes": 3,
+      "regression_loss_delta": 7.3,
+      "regression_loss_type": "huber",
+      "task_type": "regression",
+      "tlob_dataset_type": "nvda",
+      "tlob_hidden_dim": 32,
+      "tlob_mlp_expansion": 4.0,
+      "tlob_num_heads": 2,
+      "tlob_num_layers": 2,
+      "tlob_use_bin": true,
+      "tlob_use_sinusoidal_pe": true
+    },
+    "name": "TLOB_E4_H60_TimeBased",
+    "output_dir": "outputs/experiments/e4_tlob_h60",
+    "tags": [
+      "e4",
+      "nvda",
+      "xnas",
+      "tlob",
+      "regression",
+      "98-features",
+      "h60",
+      "time-based",
+      "5-second",
+      "huber-loss",
+      "delta-7.3bps"
+    ],
+    "train": {
+      "batch_size": 128,
+      "early_stopping_patience": 10,
+      "epochs": 50,
+      "gradient_clip_norm": 1.0,
+      "learning_rate": 0.0005,
+      "loss_type": "huber",
+      "mixed_precision": false,
+      "num_workers": 0,
+      "pin_memory": false,
+      "scheduler": "cosine",
+      "seed": 42,
+      "task_type": "regression",
+      "use_class_weights": false,
+      "weight_decay": 0.01
+    }
+  },
+  "status": "ok"
+}

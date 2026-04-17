@@ -1,0 +1,63 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/nvda_tlob_repo_v2",
+      "feature_count": 40,
+      "horizon_idx": 3,
+      "labeling_strategy": "tlob",
+      "normalization": {
+        "clip_value": null,
+        "eps": 1e-08,
+        "exclude_features": [],
+        "strategy": "global_zscore"
+      },
+      "num_classes": 3,
+      "sequence": {
+        "stride": 10,
+        "window_size": 100
+      }
+    },
+    "description": "TLOB model on V2 dataset with dynamic threshold labeling.\nH=100 horizon for longer-term trend prediction.\nGlobal Z-score normalization + BiN layer.\n",
+    "log_level": "INFO",
+    "model": {
+      "dropout": 0.0,
+      "input_size": 40,
+      "model_type": "tlob",
+      "num_classes": 3,
+      "tlob_dataset_type": "nvda",
+      "tlob_hidden_dim": 64,
+      "tlob_mlp_expansion": 4.0,
+      "tlob_num_heads": 1,
+      "tlob_num_layers": 4,
+      "tlob_use_bin": true,
+      "tlob_use_sinusoidal_pe": true
+    },
+    "name": "TLOB_NVDA_V2_H100",
+    "output_dir": "outputs/experiments/nvda_tlob_v2_h100",
+    "tags": [
+      "nvda",
+      "tlob",
+      "horizon-100",
+      "v2-dynamic-threshold",
+      "global-zscore",
+      "40-features"
+    ],
+    "train": {
+      "batch_size": 64,
+      "early_stopping_patience": 10,
+      "epochs": 50,
+      "gradient_clip_norm": 1.0,
+      "learning_rate": 0.0001,
+      "loss_type": "weighted_ce",
+      "mixed_precision": false,
+      "num_workers": 4,
+      "pin_memory": true,
+      "scheduler": "cosine",
+      "seed": 42,
+      "task_type": "multiclass",
+      "use_class_weights": true,
+      "weight_decay": 1e-05
+    }
+  },
+  "status": "ok"
+}

@@ -1,0 +1,53 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/nvda_xnas_128feat_regression",
+      "feature_count": 128,
+      "horizon_idx": 0,
+      "labeling_strategy": "regression",
+      "sequence": {
+        "stride": 10,
+        "window_size": 100
+      }
+    },
+    "description": "Temporal Ridge regression on 53 hand-crafted features.\nValidates ablation finding: IC=0.616 with 53 params vs 693K TLOB.\n",
+    "log_level": "INFO",
+    "model": {
+      "alpha": 1.0,
+      "features": {
+        "include_momentum": true,
+        "include_volatility": true,
+        "rolling_windows": [
+          5,
+          10,
+          20
+        ],
+        "signal_indices": [
+          85,
+          84,
+          86,
+          56,
+          45
+        ],
+        "top_k_signals": 3
+      },
+      "model_type": "temporal_ridge"
+    },
+    "name": "TemporalRidge_NVDA_H10",
+    "output_dir": "outputs/experiments/nvda_temporal_ridge_h10",
+    "tags": [
+      "nvda",
+      "xnas",
+      "temporal-ridge",
+      "regression",
+      "53-features",
+      "h10",
+      "simple-model"
+    ],
+    "train": {
+      "loss_type": "huber",
+      "task_type": "regression"
+    }
+  },
+  "status": "ok"
+}

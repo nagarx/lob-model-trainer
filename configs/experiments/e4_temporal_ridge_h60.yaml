@@ -39,6 +39,7 @@ model:
 
 train:
   task_type: regression
+  loss_type: huber
 
 output_dir: outputs/experiments/e4_temporal_ridge_h60
 log_level: INFO

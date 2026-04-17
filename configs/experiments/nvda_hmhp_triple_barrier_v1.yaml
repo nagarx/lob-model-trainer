@@ -11,156 +11,31 @@
 # - Cross-horizon confirmation for higher confidence signals
 # - Native multi-task learning with per-horizon losses
 #
-# DATA: nvda_11month_triple_barrier export
-# - 234 trading days (Feb 3, 2025 - Jan 7, 2026)
-# - 98 features (LOB + derived + MBO + signals)
-# - Triple Barrier labels with configurable barriers
+# DATA: nvda_11month_triple_barrier export (98-feat, 234 days)
 #
-# LABELING STRATEGY: Triple Barrier
-# Classes represent what happens FIRST after entry:
-#   - Class 0 (StopLoss): Hit lower barrier → LOSING trade
-#   - Class 1 (Timeout): Neither barrier hit → DON'T TRADE
-#   - Class 2 (ProfitTarget): Hit upper barrier → WINNING trade
+# LABELING: Triple Barrier (López de Prado 2018, Ch. 3)
+#   Class 0 (StopLoss): Hit lower barrier → LOSING trade
+#   Class 1 (Timeout): Neither barrier hit → DON'T TRADE
+#   Class 2 (ProfitTarget): Hit upper barrier → WINNING trade
 #
-# HORIZON SEMANTICS for Triple Barrier:
-# Unlike TLOB horizons (which predict price direction at time T+H),
-# Triple Barrier horizons are MAX HOLDING PERIODS:
-#   - H50: If neither barrier hit by tick 50 → Timeout
-#   - H100: If neither barrier hit by tick 100 → Timeout
-#   - H200: If neither barrier hit by tick 200 → Timeout
-#
-# WHY HMHP FOR TRIPLE BARRIER?
-# 1. Multi-horizon is NATIVE: Each barrier timeout is a natural horizon
-# 2. Cascading confirmation: If H50 predicts ProfitTarget and H100 agrees,
-#    that's a higher confidence signal than either alone
-# 3. Selective trading: Use agreement_ratio to filter low-confidence entries
-# 4. Risk management: Different horizons capture different market regimes
-#
-# REFERENCE:
-# - López de Prado (2018), "Advances in Financial Machine Learning", Ch. 3
-# - docs/HMHP_ARCHITECTURE.md
+# HORIZON SEMANTICS for Triple Barrier (different from TLOB):
+#   - Horizons are MAX HOLDING PERIODS, not price-direction points
+#   - [H50, H100, H200] = max ticks to wait before Timeout
 # =============================================================================
+# Migrated to multi-base 2026-04-15 (Phase 3.5 Batch 2). Canonical TB config.
+# Golden-fixture locked. Pre-migration was 223 LOC standalone → 25 LOC multi-base.
+_base:
+  - "../bases/models/hmhp_cascade_bare.yaml"
+  - "../bases/datasets/nvda_98feat_triple_barrier.yaml"
+  - "../bases/labels/triple_barrier_volscaled.yaml"
+  - "../bases/train/classification_triple_barrier.yaml"
 
 name: HMHP_NVDA_TripleBarrier_v1
 description: |
   HMHP multi-horizon model with Triple Barrier labeling on 11-month NVDA dataset.
   Cascading state from H50 → H100 → H200 with cross-horizon confirmation.
-
-# =============================================================================
-# Data Configuration
-# =============================================================================
-data:
-  # Path to Triple Barrier export
-  # NOTE: Horizons in export metadata are [50, 100, 200]
-  data_dir: "../data/exports/nvda_11month_triple_barrier"
-  feature_count: 98
-  
-  # CRITICAL: Set labeling strategy to triple_barrier
-  # This affects:
-  # 1. Label encoding (no +1 shift needed - already 0-indexed)
-  # 2. Metric computation (ProfitTarget precision, etc.)
-  # 3. Class naming (StopLoss, Timeout, ProfitTarget)
-  labeling_strategy: triple_barrier
-  num_classes: 3
-  
-  # HMHP requires horizon_idx=None (handled automatically by trainer)
-  # All horizons are loaded and returned as dict: {50: label, 100: label, 200: label}
-  
-  # Sequence configuration
-  sequence:
-    window_size: 100  # Must match export config
-    stride: 10
-  
-  # Normalization
-  # Use hybrid for 98-feature datasets:
-  # - Global Z-score for raw LOB (0-39)
-  # - Per-feature Z-score for derived/MBO/signals (40-97)
-  normalization:
-    strategy: hybrid
-    eps: 1.0e-8
-    clip_value: 10.0
-    exclude_features: [93]  # TIME_REGIME is categorical
-
-# =============================================================================
-# Model Configuration (HMHP)
-# =============================================================================
-model:
-  model_type: hmhp
-  input_size: 98
-  num_classes: 3
-  dropout: 0.1
-  
-  # HMHP-specific configuration
-  # Horizons MUST match the export config exactly: [50, 100, 200]
-  hmhp_horizons: [50, 100, 200]
-  
-  # Cascade mode: state flows from shorter to longer horizons
-  # H50 → H100 → H200 (shorter horizons inform longer ones)
-  hmhp_cascade_mode: full
-  
-  # State fusion: how previous horizon's state combines with current features
-  # "gate" is most flexible: learns sigmoid gate to balance state vs features
-  hmhp_state_fusion: gate
-  
-  # Encoder architecture: TLOB-based transformer is recommended
-  # - Better temporal modeling than linear
-  # - BiN handles non-stationarity
-  hmhp_encoder_type: tlob
-  hmhp_encoder_hidden_dim: 64
-  hmhp_num_encoder_layers: 2
-  
-  # Per-horizon decoder dimensions
-  hmhp_decoder_hidden_dim: 32
-  hmhp_state_dim: 32
-  
-  # Confirmation module for weighted ensemble
-  hmhp_use_confirmation: true
-  
-  # Loss weights:
-  # - Shorter horizons get higher weight (more reliable)
-  # - consistency: penalize contradicting horizons
-  # - final: ensemble prediction loss
-  hmhp_loss_weights:
-    H50: 0.35
-    H100: 0.25
-    H200: 0.15
-    consistency: 0.10
-    final: 0.15
-
-# =============================================================================
-# Training Configuration
-# =============================================================================
-train:
-  batch_size: 64
-  learning_rate: 1.0e-4
-  weight_decay: 1.0e-5
-  epochs: 100
-  early_stopping_patience: 15
-  gradient_clip_norm: 1.0
-  scheduler: cosine
-  num_workers: 4
-  pin_memory: true
-  seed: 42
-  mixed_precision: false
-  
-  # Loss configuration
-  # For Triple Barrier with class imbalance (Timeout often dominates),
-  # Focal Loss is recommended to focus on hard examples
-  loss_type: focal
-  focal_gamma: 2.0
-  
-  # Class weights are computed automatically from training data
-  # for weighted CE / focal loss
-  use_class_weights: true
-  
-  task_type: multiclass
-
-# =============================================================================
-# Output Configuration
-# =============================================================================
 output_dir: outputs/experiments/nvda_hmhp_triple_barrier_v1
 log_level: INFO
-
 tags:
   - nvda
   - hmhp
@@ -172,52 +47,15 @@ tags:
   - cascading
   - focal-loss
 
-# =============================================================================
-# KEY METRICS FOR HMHP + TRIPLE BARRIER
-# =============================================================================
-#
-# HMHP adds multi-horizon metrics to Triple Barrier metrics:
-#
-# PER-HORIZON METRICS (for each of H50, H100, H200):
-# 1. h{horizon}_loss: Per-horizon cross-entropy loss
-# 2. h{horizon}_accuracy: Per-horizon prediction accuracy
-# 3. h{horizon}_profittarget_precision: "When we predict ProfitTarget at H{x}, what % are correct?"
-#
-# ENSEMBLE/CONFIRMATION METRICS:
-# 4. agreement_ratio: Fraction of horizons agreeing on direction
-#    - High agreement (>0.8) = high confidence signal
-#    - Low agreement (<0.5) = conflicting signals → don't trade
-#
-# 5. confirmation_score: Combined confidence metric
-#    - Combines per-horizon confidence + agreement
-#    - Use for position sizing and trade filtering
-#
-# 6. consistency_loss: KL divergence between adjacent horizons
-#    - Low = horizons are consistent (good)
-#    - High = horizons contradict (noisy data or model)
-#
-# TRADING DECISION RULE (HMHP-specific):
-# Only trade when ALL of:
-#   1. Model predicts ProfitTarget (class 2) at target horizon
-#   2. agreement_ratio > 0.6 (majority of horizons agree)
-#   3. confirmation_score > threshold (e.g., 0.5)
-#
-# SELECTIVITY vs WIN RATE TRADEOFF:
-# - Higher agreement threshold → fewer trades, higher win rate
-# - Lower agreement threshold → more trades, potentially lower win rate
-# - Optimize for Profit Factor, not just accuracy
-#
-# EXAMPLE INTERPRETATION:
-# ======================
-# Epoch 20:
-#   val_h50_accuracy: 0.48, val_h50_profittarget_precision: 0.52
-#   val_h100_accuracy: 0.45, val_h100_profittarget_precision: 0.49
-#   val_h200_accuracy: 0.42, val_h200_profittarget_precision: 0.46
-#   val_agreement_ratio: 0.72
-#   val_confirmation_score: 0.65
-#
-# Interpretation:
-# - H50 is most accurate (expected - shorter horizon)
-# - 72% of time, horizons agree → good model consistency
-# - When horizons agree on ProfitTarget and conf > 0.65, expect ~52% win rate
-# =============================================================================
+# Per-child overrides: TB-specific data_dir, horizons, and loss weights
+data:
+  data_dir: "../data/exports/nvda_11month_triple_barrier"
+
+model:
+  hmhp_horizons: [50, 100, 200]
+  hmhp_loss_weights:
+    H50: 0.35
+    H100: 0.25
+    H200: 0.15
+    consistency: 0.10
+    final: 0.15

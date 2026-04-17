@@ -1,0 +1,62 @@
+{
+  "resolved": {
+    "data": {
+      "cache_in_memory": true,
+      "data_dir": "../data/exports/nvda_98feat_v2",
+      "feature_count": 98,
+      "horizon_idx": 3,
+      "labeling_strategy": "tlob",
+      "normalization": {
+        "clip_value": 10.0,
+        "eps": "1e-8",
+        "exclude_features": [
+          92,
+          93,
+          94,
+          96,
+          97
+        ],
+        "strategy": "hybrid"
+      },
+      "num_classes": 3,
+      "sequence": {
+        "stride": 10,
+        "window_size": 100
+      }
+    },
+    "description": "LogisticLOB baseline on 98 features with last-timestep pooling",
+    "log_level": "INFO",
+    "model": {
+      "dropout": 0.0,
+      "input_size": 98,
+      "logistic_feature_indices": null,
+      "logistic_pooling": "last",
+      "model_type": "logistic",
+      "num_classes": 3
+    },
+    "name": "nvda_logistic_baseline_v1",
+    "output_dir": "outputs/logistic_baseline",
+    "tags": [
+      "baseline",
+      "logistic",
+      "98feat",
+      "horizon_100"
+    ],
+    "train": {
+      "batch_size": 256,
+      "early_stopping_patience": 10,
+      "epochs": 50,
+      "gradient_clip_norm": null,
+      "learning_rate": "1e-3",
+      "loss_type": "weighted_ce",
+      "num_workers": 4,
+      "pin_memory": true,
+      "scheduler": "cosine",
+      "seed": 42,
+      "task_type": "multiclass",
+      "use_class_weights": true,
+      "weight_decay": "1e-4"
+    }
+  },
+  "status": "ok"
+}

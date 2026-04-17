@@ -1,91 +1,30 @@
 # =============================================================================
-# HMHP Regressor: Pure Regression, H60 Primary
+# HMHP Regressor: Pure Regression, H60 Primary, 40-Feature Subset
 # =============================================================================
 #
-# Pure regression experiment predicting continuous bps forward returns.
-# Uses the HierarchicalMultiHorizonRegressor (HMHP-R) model.
+# Pure regression experiment predicting continuous bps forward returns at H60.
+# Uses the HierarchicalMultiHorizonRegressor (HMHP-R) model — dedicated
+# `hmhp_regression` enum distinct from `hmhp` + auxiliary regression head.
 #
-# Key differences from classification:
-#   - model_type: hmhp_regression (not hmhp)
-#   - task_type: regression (not multiclass)
-#   - loss_type: huber (not weighted_ce)
-#   - data_dir: regression-labeled data (float64, not int8)
-#   - Metrics: R², IC, MAE, directional accuracy (not classification accuracy)
-#
-# Requires extraction with strategy = "regression" first:
-#   cargo run --release --bin export_dataset -- --config configs/nvda_xnas_128feat_regression.toml
-#
+# 40-feature short_term preset (input_size=40). H60-primary loss weighting
+# matches the 0DTE execution horizon. No `final` weight (regression variant
+# uses 4-key loss_weights: 3 horizons + consistency).
 # =============================================================================
+# Migrated to multi-base 2026-04-15 (Phase 3.5 Batch 2). Uses
+# `hmhp_cascade_regression` (chains from bare, adds model_type=hmhp_regression
+# + hmhp_regression_loss_type=huber). Golden-fixture locked.
+_base:
+  - "../bases/models/hmhp_cascade_regression.yaml"
+  - "../bases/datasets/nvda_40feat_short_term.yaml"
+  - "../bases/labels/regression_huber.yaml"
+  - "../bases/train/regression_default.yaml"
 
 name: HMHP_NVDA_Regressor_H60
 description: |
   Pure regression HMHP predicting continuous forward returns in bps at H60.
   Loss: Huber (robust to outlier returns). Metrics: R², IC, MAE.
-
-data:
-  data_dir: "../data/exports/nvda_xnas_128feat_regression"
-  feature_count: 128
-  feature_preset: "short_term_40"
-  labeling_strategy: regression
-  num_classes: 3            # Unused by regression model, kept for compatibility
-  horizon_idx: 1            # H60 = index 1 in horizons [10, 60, 300]
-
-  sequence:
-    window_size: 100
-    stride: 10
-
-  normalization:
-    strategy: hybrid
-    eps: 1.0e-8
-    clip_value: 10.0
-    exclude_features: [93, 115]
-
-model:
-  model_type: hmhp_regression
-  input_size: 40
-  num_classes: 3
-  dropout: 0.1
-
-  hmhp_horizons:
-    - 10
-    - 60
-    - 300
-
-  hmhp_cascade_mode: full
-  hmhp_state_fusion: gate
-  hmhp_encoder_type: tlob
-  hmhp_encoder_hidden_dim: 64
-  hmhp_num_encoder_layers: 2
-  hmhp_decoder_hidden_dim: 32
-  hmhp_state_dim: 32
-  hmhp_use_confirmation: true
-  hmhp_regression_loss_type: huber
-
-  hmhp_loss_weights:
-    H10: 0.10
-    H60: 0.50
-    H300: 0.15
-    consistency: 0.25
-
-train:
-  batch_size: 256
-  learning_rate: 5.0e-4
-  weight_decay: 0.01
-  epochs: 30
-  early_stopping_patience: 8
-  gradient_clip_norm: 1.0
-  scheduler: cosine
-  num_workers: 0
-  pin_memory: true
-  seed: 42
-  mixed_precision: false
-  task_type: regression
-  loss_type: huber
-  use_class_weights: false
-
 output_dir: outputs/experiments/nvda_hmhp_regressor_h60
 log_level: INFO
-
 tags:
   - nvda
   - xnas
@@ -95,3 +34,20 @@ tags:
   - h60-primary
   - huber-loss
   - continuous-bps
+
+data:
+  data_dir: "../data/exports/nvda_xnas_128feat_regression"
+  horizon_idx: 1              # H60 primary (override labels/regression_huber default of 0)
+
+model:
+  hmhp_horizons: [10, 60, 300]
+  hmhp_loss_weights:          # regression uses 4-key (no `final` head)
+    H10: 0.10
+    H60: 0.50                 # H60 primary
+    H300: 0.15
+    consistency: 0.25
+
+train:
+  batch_size: 256             # override regression_default's 128
+  early_stopping_patience: 8  # override regression_default's 5
+  pin_memory: true            # override regression_default's false

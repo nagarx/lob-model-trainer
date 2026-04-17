@@ -3,86 +3,25 @@
 # =============================================================================
 #
 # Tests whether the evidence-based 40-feature subset (short_term_40 preset)
-# matches or exceeds the full 119-feature model at H10.
+# matches or exceeds the full 119-feature model at H10. The preset selects
+# the 40 features with highest profiler IC; rest are zeroed out.
 #
-# Prior result: Short-term HMHP v1 on 116-feat data with short_term_40
-# achieved 58.67% val accuracy — only 0.65pp below the 116-feat model.
-# This experiment tests whether the same holds on 128-feat data.
-#
-# If accuracy is within 1pp of the full model, the 40-feature version
-# is preferred for inference latency and model simplicity.
-#
+# Data = same XNAS 128-feat export as nvda_hmhp_128feat_h10_primary, but
+# `feature_preset: short_term_40` reduces effective model input to 40.
 # =============================================================================
+# Migrated to multi-base 2026-04-15 (Phase 3.5 Batch 2). Golden-fixture locked.
+_base:
+  - "../bases/models/hmhp_cascade_bare.yaml"
+  - "../bases/datasets/nvda_40feat_short_term.yaml"
+  - "../bases/labels/tlob_smoothed.yaml"
+  - "../bases/train/classification_default.yaml"
 
 name: HMHP_NVDA_40feat_H10
 description: |
   HMHP with short_term_40 preset (40 evidence-based features) on XNAS 128-feat export.
   Feature selection test: does fewer features = less noise and comparable accuracy?
-
-data:
-  data_dir: "../data/exports/nvda_xnas_128feat"
-  feature_count: 128
-  feature_preset: "short_term_40"
-  labeling_strategy: tlob
-  num_classes: 3
-  horizon_idx: 0
-
-  sequence:
-    window_size: 100
-    stride: 10
-
-  normalization:
-    strategy: hybrid
-    eps: 1.0e-8
-    clip_value: 10.0
-    exclude_features: [93, 115]
-
-model:
-  model_type: hmhp
-  input_size: 40
-  num_classes: 3
-  dropout: 0.1
-
-  hmhp_horizons:
-    - 10
-    - 60
-    - 300
-
-  hmhp_cascade_mode: full
-  hmhp_state_fusion: gate
-  hmhp_encoder_type: tlob
-  hmhp_encoder_hidden_dim: 64
-  hmhp_num_encoder_layers: 2
-  hmhp_decoder_hidden_dim: 32
-  hmhp_state_dim: 32
-  hmhp_use_confirmation: true
-
-  hmhp_loss_weights:
-    H10: 0.50
-    H60: 0.25
-    H300: 0.10
-    consistency: 0.05
-    final: 0.10
-
-train:
-  batch_size: 256
-  learning_rate: 5.0e-4
-  weight_decay: 0.01
-  epochs: 30
-  early_stopping_patience: 8
-  gradient_clip_norm: 1.0
-  scheduler: cosine
-  num_workers: 4
-  pin_memory: true
-  seed: 42
-  mixed_precision: false
-  loss_type: weighted_ce
-  use_class_weights: true
-  task_type: multiclass
-
 output_dir: outputs/experiments/nvda_hmhp_40feat_h10
 log_level: INFO
-
 tags:
   - nvda
   - xnas
@@ -90,3 +29,15 @@ tags:
   - 40-features
   - feature-selection
   - short-term-preset
+
+data:
+  data_dir: "../data/exports/nvda_xnas_128feat"
+
+model:
+  hmhp_horizons: [10, 60, 300]
+  hmhp_loss_weights:
+    H10: 0.5
+    H60: 0.25
+    H300: 0.1
+    consistency: 0.05
+    final: 0.1

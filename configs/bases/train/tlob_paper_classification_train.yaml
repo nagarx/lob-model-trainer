@@ -1,0 +1,27 @@
+# axis: train
+# TLOB paper-spec classification training hyperparameters
+# Used by: all 7 TLOB classification configs (nvda_tlob_*_v1, _h100, _h50,
+#          _raw_h50_v1, _v2_h100, _98feat_h100, _repo_match_h50)
+#
+# Distinct from `classification_default.yaml` (HMHP classification, batch=256,
+# lr=5e-4, wd=0.01, epochs=30, patience=8). This regime uses the OFFICIAL TLOB
+# repo's lower-lr / smaller-batch recipe: batch=64, lr=1e-4, wd=1e-5, epochs=50,
+# patience=10. Both regimes use `loss_type: weighted_ce` (set in labels/tlob_smoothed.yaml).
+#
+# Ownership (per §3.4): train.* EXCEPT train.task_type + train.loss_type
+# (both owned by labels/ as TASK-coupled).
+_partial: true
+
+train:
+  batch_size: 64
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  epochs: 50
+  early_stopping_patience: 10
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+  num_workers: 4
+  pin_memory: true
+  seed: 42
+  mixed_precision: false
+  use_class_weights: true
