@@ -75,7 +75,10 @@ data:
   # - Primary trading signals (8 features)
   # - Safety gates (3 features)
   # - Institutional patience (2 features with H10 correlation)
-  feature_preset: short_term_40
+  # Phase 7 Stage 7.1 (2026-04-18): migrated from `feature_preset: short_term_40`
+  # (deprecated 2026-04-15, ImportError 2026-08-15). Uses the src116 variant
+  # because feature_count=116 (this config targets a 116-feature export).
+  feature_set: nvda_short_term_40_src116_v1
   
   # Labeling strategy: TLOB (Down/Stable/Up)
   labeling_strategy: tlob

@@ -3,7 +3,7 @@
     "data": {
       "data_dir": "../data/exports/nvda_xnas_128feat_opportunity",
       "feature_count": 128,
-      "feature_preset": "analysis_ready_128",
+      "feature_set": "nvda_analysis_ready_119_src128_v1",
       "horizon_idx": 0,
       "labeling_strategy": "opportunity",
       "normalization": {

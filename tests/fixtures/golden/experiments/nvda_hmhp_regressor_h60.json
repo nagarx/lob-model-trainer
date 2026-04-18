@@ -3,7 +3,7 @@
     "data": {
       "data_dir": "../data/exports/nvda_xnas_128feat_regression",
       "feature_count": 128,
-      "feature_preset": "short_term_40",
+      "feature_set": "nvda_short_term_40_src128_v1",
       "horizon_idx": 1,
       "labeling_strategy": "regression",
       "normalization": {

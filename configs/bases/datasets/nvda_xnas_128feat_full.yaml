@@ -1,19 +1,25 @@
 # axis: datasets
-# NVDA 128-feat full analysis_ready_128 preset (input_size 128→119 via preset)
+# NVDA 128-feat full via nvda_analysis_ready_119_src128_v1 FeatureSet
 # Used by: HMHP classification 128feat (h10_primary, arcx_h10, opportunity_h10)
 #
-# The `analysis_ready_128` preset strips 9 dead features → input_size=119.
-# NOT compatible with configs that need input_size=128 (no preset, e.g.,
+# The `nvda_analysis_ready_119_src128_v1` FeatureSet strips 9 dead features
+# (indices 68, 69, 76, 77, 92, 94, 96, 97, 102) → input_size=119.
+# NOT compatible with configs that need input_size=128 (no selection, e.g.,
 # nvda_hmhp_regression_h10_primary) — those configs override or use a
 # dedicated base.
 #
-# Ownership (per §3.4): data.data_dir, feature_count, feature_preset,
+# Phase 7 Stage 7.1 (2026-04-18) migrated from
+# `feature_preset: analysis_ready_128` (deprecated 2026-04-15, ImportError
+# 2026-08-15). Parity locked by
+# `tests/test_feature_preset_migration.py::TestAnalysisReady119ParityWithTrainerPreset`.
+#
+# Ownership (per §3.4): data.data_dir, feature_count, feature_set,
 #                        normalization, sequence; model.input_size
 _partial: true
 
 data:
   feature_count: 128
-  feature_preset: analysis_ready_128
+  feature_set: nvda_analysis_ready_119_src128_v1
   sequence:
     window_size: 100
     stride: 10
@@ -24,4 +30,4 @@ data:
     exclude_features: [93, 115]   # time_regime, time_bucket
 
 model:
-  input_size: 119   # 128 feat - 9 dead features (preset)
+  input_size: 119   # 128 feat - 9 dead features (FeatureSet-resolved)

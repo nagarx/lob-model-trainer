@@ -1,18 +1,22 @@
 # axis: datasets
-# NVDA 40-feat subset via short_term_40 preset on 128-feat data
+# NVDA 40-feat subset via nvda_short_term_40_src128_v1 FeatureSet on 128-feat data
 # Used by: nvda_hmhp_40feat_h10, nvda_hmhp_40feat_h60_profit8bps,
 #          nvda_hmhp_40feat_h60_profit8bps_regression, nvda_hmhp_regressor_h60
 #
-# The `short_term_40` preset selects a 40-feature subset from the 128-feat
-# export. Feature count is 128 (data size) but model input is 40 (selected).
+# The `nvda_short_term_40_src128_v1` FeatureSet selects a 40-feature subset
+# from the 128-feat export. Feature count is 128 (data size) but model input
+# is 40 (selected). Phase 7 Stage 7.1 (2026-04-18) migrated from
+# `feature_preset: short_term_40` (deprecated 2026-04-15, ImportError
+# 2026-08-15). Parity locked by
+# `tests/test_feature_preset_migration.py::TestShortTerm40ParityWithTrainerPreset`.
 #
-# Ownership (per §3.4): data.data_dir, feature_count, feature_preset,
+# Ownership (per §3.4): data.data_dir, feature_count, feature_set,
 #                        normalization, sequence; model.input_size
 _partial: true
 
 data:
   feature_count: 128
-  feature_preset: short_term_40
+  feature_set: nvda_short_term_40_src128_v1
   sequence:
     window_size: 100
     stride: 10
@@ -23,4 +27,4 @@ data:
     exclude_features: [93, 115]
 
 model:
-  input_size: 40   # short_term_40 preset selects 40 features
+  input_size: 40   # nvda_short_term_40_src128_v1 selects 40 features
