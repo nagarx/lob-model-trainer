@@ -672,7 +672,7 @@ Best strategy `dno_top_15pct` (|depth_norm_ofi| >= P85): WR=66.9% (+5.9pp), Bonf
 | **Method** | (1) 10-domain pre-training analysis: return distribution, feature distributions, full IC matrix, partial dependence, feature interactions, temporal analysis, redundancy, regime IC, walk-forward Ridge (136 daily folds), GradBoost 3×3 grid search, cost-adjusted tradability. (2) 7-diagnostic signal suite: multi-horizon threshold backtest (H=1-60 × P70-P95), val/test OOS backtest, regime robustness, trade distribution, P&L curve, power analysis, session conditioning. |
 | **Data** | `data/exports/basic_nvda_60s/` — Train: 166 days (2025-02-03 to 2025-09-30), Val: 32 days (Oct-Nov 2025), Test: 35 days (Nov 2025-Jan 2026). 34 features, point_return labels at 8 horizons. |
 | **Config** | No model config — pure statistical analysis scripts. GradBoost grid: max_depth=[3,5,7], lr=[0.01,0.05,0.1], n_estimators=300. |
-| **Tool** | `hft-feature-evaluator/scripts/pre_training_analysis.py` (10 domains, 2.1 min) + `hft-feature-evaluator/scripts/signal_diagnostics.py` (7 diagnostics, 3 sec) |
+| **Tool** | `hft-feature-evaluator/scripts/pre_training_analysis.py` (10 domains, 2.1 min) + `hft-feature-evaluator/scripts/archive/signal_diagnostics.py` (7 diagnostics, 3 sec) — **signal_diagnostics archived Phase 6 6D (2026-04-17), still runnable at new path** |
 | **Status** | **COMPLETE — ALL GATES FAILED for model training. Signal is real but not tradeable.** |
 
 **Decision Gates:**
@@ -1206,7 +1206,7 @@ Added trailing-rank signal (percentile of spread within trailing 60-min window, 
 
 | Field | Value |
 |---|---|
-| Script | `scripts/run_simple_model_ablation.py` |
+| Script | `scripts/archive/run_simple_model_ablation.py` — **archived Phase 6 6D (2026-04-17)**, runnable at new path |
 | Output | `outputs/experiments/simple_model_ablation/ablation_results.json` |
 | Report | `reports/ABLATION_FINDINGS_2026_03_16.md` |
 | Data | Same smoothed-average data as REG-01 (50,724 test samples) |
@@ -1235,7 +1235,7 @@ Added trailing-rank signal (percentile of spread within trailing 60-min window, 
 |---|---|
 | Config | `configs/experiments/nvda_temporal_ridge_h10.yaml` |
 | Output | `outputs/experiments/nvda_temporal_ridge_h10/` |
-| Script | `scripts/run_simple_training.py` |
+| Script | `scripts/archive/run_simple_training.py` — **archived Phase 6 6D (2026-04-17)**, runnable at new path |
 | Model | TemporalRidge(alpha=1.0, features=53) -- sklearn Ridge |
 | **Test R-squared** | **0.324** |
 | **Test IC** | **0.616** |
@@ -1677,7 +1677,7 @@ Configs not associated with any output directory (never run or results deleted):
 | **Hypothesis** | Morning microstructure features (spread, OFI) predict afternoon returns across 233 trading days. Between-day temporal signal with 1 trade/day. Fundamentally different from E1-E14 (within-day cross-sectional). |
 | **Method** | 3-phase analysis: (1) daily aggregation (13 morning features × 3 windows × 4 horizons), (2) baseline-first IC analysis with confound control (partial IC after controlling yesterday's return + day-of-week), (3) walk-forward Ridge with 3 models (A=baseline, B=morning-only, C=combined). |
 | **Data** | `data/exports/e5_timebased_60s/` — 233 days, 56,660 sequences, 98 MBO features, forward_prices (N,306). Morning windows: 30/45/60 min. Afternoon horizons: 120/180/240/300 bins (2-5 hours). |
-| **Script** | `hft-feature-evaluator/scripts/e15_morning_signal_analysis.py` |
+| **Script** | `hft-feature-evaluator/scripts/archive/e15_morning_signal_analysis.py` — **archived Phase 6 6D (2026-04-17)**, runnable at new path |
 | **Output** | `hft-feature-evaluator/outputs/e15_morning_signal/` |
 | **Status** | **ALL FAIL — In-sample artifact, negative out-of-sample. Independently validated.** |
 
@@ -1788,7 +1788,7 @@ Comprehensive code audit verified: (1) features are raw (not normalized), (2) fo
 | **Method** | (1) Compute feature percentile thresholds from TRAIN split (causal — no look-ahead). (2) Apply to OOS (val and test SEPARATELY). (3) Measure conditional mean return at H=1,3,5,10,20,60 with per-day block bootstrap CIs (2000 resamples). (4) BH FDR correction at α=0.10 across all tests. (5) Cross-stock sign consistency. (6) Val→test stability check. |
 | **Data** | 10 universality exports (134 days each, 60s bins, 98 features, point returns from forward_prices). 5 features × 3 percentiles × 2 tails × 6 horizons × 10 stocks × 2 splits = 3,600 tests. |
 | **Features** | true_ofi (84), depth_norm_ofi (85), spread_bps (42), volume_imbalance (45), fragility_score (90) |
-| **Script** | `hft-feature-evaluator/scripts/e16_extreme_event_study.py` |
+| **Script** | `hft-feature-evaluator/scripts/archive/e16_extreme_event_study.py` — **archived Phase 6 6D (2026-04-17)**, runnable at new path |
 | **Output** | `hft-feature-evaluator/outputs/e16_extreme_events/e16_results.json` |
 | **Status** | **MARGINAL — 15 survive FDR but sign-inconsistent and val→test unstable. Not tradeable.** |
 
