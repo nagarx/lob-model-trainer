@@ -9,11 +9,14 @@ indices + metadata the trainer needs.
 Design notes (Phase 4 Batch 4c, 2026-04-15):
 
 - **Canonical hash form is inlined** (~10 LOC in ``_compute_content_hash``)
-  rather than imported from ``hft-ops.feature_sets.hashing``. Rationale:
-  keeps lob-model-trainer free of an hft-ops pyproject dependency
-  (trainer venvs must stay runnable without the orchestrator). Behavioral
-  parity with ``hft_ops.feature_sets.hashing.compute_feature_set_hash``
-  is LOCKED by ``tests/test_feature_set_resolver_parity.py`` — any
+  rather than imported from ``hft_contracts.feature_sets.hashing``.
+  Rationale: keeps lob-model-trainer free of a hard runtime dependency
+  on hft_contracts.feature_sets even in contexts where the trainer
+  package is consumed without the full contract plane (Phase 6 6B.3
+  still lets the trainer inline for resilience; Phase 6B.2 deletes the
+  inline AFTER trainer pyproject hardening). Behavioral parity with
+  ``hft_contracts.feature_sets.hashing.compute_feature_set_hash`` is
+  LOCKED by ``tests/test_feature_set_resolver_parity.py`` — any
   canonical-form drift fails CI on both sides.
 
 - **Minimal schema validation** — the resolver checks only the keys it
@@ -32,7 +35,7 @@ Design notes (Phase 4 Batch 4c, 2026-04-15):
   path separators or leading ``.`` so resolver output cannot be coerced
   to escape ``registry_dir``.
 
-Canonical form (must match hft_ops.feature_sets.hashing):
+Canonical form (must match hft_contracts.feature_sets.hashing):
 
 .. code-block:: python
 
@@ -107,7 +110,7 @@ class FeatureSetContractMismatch(FeatureSetResolverError):
 class ResolvedFeatureSet:
     """In-memory representation of a resolved FeatureSet.
 
-    Subset of the full ``hft_ops.feature_sets.FeatureSet`` dataclass —
+    Subset of the full ``hft_contracts.feature_sets.FeatureSet`` dataclass —
     only carries fields the trainer needs. The ``content_hash`` is
     retained so callers can propagate it into ledger records
     (``ExperimentRecord.feature_set_ref``) and signal-export metadata.
@@ -238,7 +241,7 @@ def _compute_content_hash(
     source_feature_count: int,
     contract_version: str,
 ) -> str:
-    """Mirror of ``hft_ops.feature_sets.hashing.compute_feature_set_hash``.
+    """Mirror of ``hft_contracts.feature_sets.hashing.compute_feature_set_hash``.
 
     Must match byte-for-byte. Parity is locked by a cross-module test.
     """
