@@ -1,4 +1,11 @@
-"""Tests for lobtrainer.data.feature_set_resolver (Phase 4 Batch 4c.1)."""
+"""Tests for lobtrainer.data.feature_set_resolver (Phase 4 Batch 4c.1).
+
+Phase 6 6B.2 (2026-04-17): _compute_content_hash now delegates to
+hft_contracts.canonical_hash SSoT. Byte-parity with the producer is
+automatic; the former parity test (test_feature_set_resolver_parity.py)
+was retired in favor of the golden-fixture drift-detector added here as
+TestCanonicalHashGolden.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +22,48 @@ from lobtrainer.data.feature_set_resolver import (
     find_feature_sets_dir,
     resolve_feature_set,
 )
+
+
+class TestCanonicalHashGolden:
+    """Phase 6 6B.2 drift-detector — trainer delegates to
+    hft_contracts.canonical_hash. A change to the canonical form would
+    break every cross-module consumer (evaluator produces, trainer
+    verifies, backtester reads via signal_metadata). The golden hash
+    here pins the current canonical form so any unintended drift fails
+    CI.
+
+    Update procedure when you *intentionally* change the canonical form:
+    1. Make the change in hft_contracts.canonical_hash.
+    2. Run this test once to compute the new expected hash.
+    3. Update GOLDEN_HASH_98F_5_12 below.
+    4. Bump the canonical-form schema version in hft_contracts.
+    5. Document the break in the contract changelog.
+    """
+
+    # Golden hash of the canonical fixture {indices=[0,5,12],
+    # source_feature_count=98, contract_version="2.2"}, computed via
+    # hft_contracts.canonical_hash.canonical_json_blob + sha256_hex.
+    GOLDEN_HASH_98F_5_12 = (
+        "96f60276d2768b39292f8798331cf302357c8f0314448dcfb62db46e1783fc28"
+    )
+
+    def test_trainer_delegates_to_ssot_canonical_form(self):
+        """Regression guard — if this fails, either:
+        (a) `_compute_content_hash` stopped delegating to the SSoT, OR
+        (b) the SSoT canonical form changed without a coordinated bump.
+        """
+        h = _compute_content_hash([0, 5, 12], 98, "2.2")
+        assert h == self.GOLDEN_HASH_98F_5_12, (
+            f"Canonical-form drift detected. Expected {self.GOLDEN_HASH_98F_5_12}, "
+            f"got {h}. See docstring for update procedure."
+        )
+
+    def test_cross_module_byte_parity(self):
+        """Trainer and hft_contracts.feature_sets.hashing produce identical hashes."""
+        from hft_contracts.feature_sets.hashing import compute_feature_set_hash
+        h_trainer = _compute_content_hash([0, 5, 12], 98, "2.2")
+        h_contracts = compute_feature_set_hash([0, 5, 12], 98, "2.2")
+        assert h_trainer == h_contracts == self.GOLDEN_HASH_98F_5_12
 
 
 # ---------------------------------------------------------------------------

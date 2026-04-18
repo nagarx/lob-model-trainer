@@ -8,16 +8,17 @@ indices + metadata the trainer needs.
 
 Design notes (Phase 4 Batch 4c, 2026-04-15):
 
-- **Canonical hash form is inlined** (~10 LOC in ``_compute_content_hash``)
-  rather than imported from ``hft_contracts.feature_sets.hashing``.
-  Rationale: keeps lob-model-trainer free of a hard runtime dependency
-  on hft_contracts.feature_sets even in contexts where the trainer
-  package is consumed without the full contract plane (Phase 6 6B.3
-  still lets the trainer inline for resilience; Phase 6B.2 deletes the
-  inline AFTER trainer pyproject hardening). Behavioral parity with
-  ``hft_contracts.feature_sets.hashing.compute_feature_set_hash`` is
-  LOCKED by ``tests/test_feature_set_resolver_parity.py`` — any
-  canonical-form drift fails CI on both sides.
+- **Canonical hash delegated to hft_contracts SSoT** (Phase 6 6B.2,
+  2026-04-17). Previously this module inlined a ~10-LOC mirror of the
+  producer's hash for cross-venv resilience; the claim was outdated —
+  the trainer pyproject declares hft-contracts as a direct dependency,
+  so the inline was dead defense-in-depth. ``_compute_content_hash``
+  now delegates to ``hft_contracts.canonical_hash.canonical_json_blob``
+  + ``sha256_hex``, eliminating the last inline-duplication site (closes
+  the 5-site duplication identified in Phase 4 Batch 4c hardening).
+  Byte parity is automatic via the SSoT. A golden-fixture regression
+  test in ``tests/test_feature_set_resolver.py::TestCanonicalHashGolden``
+  locks drift from hft-contracts refactors.
 
 - **Minimal schema validation** — the resolver checks only the keys it
   reads (name, content_hash, feature_indices, source_feature_count,
@@ -35,7 +36,7 @@ Design notes (Phase 4 Batch 4c, 2026-04-15):
   path separators or leading ``.`` so resolver output cannot be coerced
   to escape ``registry_dir``.
 
-Canonical form (must match hft_contracts.feature_sets.hashing):
+Canonical form (delegates to hft_contracts.canonical_hash SSoT):
 
 .. code-block:: python
 
@@ -44,13 +45,12 @@ Canonical form (must match hft_contracts.feature_sets.hashing):
         "source_feature_count": int(source_feature_count),
         "contract_version": str(contract_version),
     }
-    blob = json.dumps(canonical, sort_keys=True, default=str).encode("utf-8")
-    hash = hashlib.sha256(blob).hexdigest()
+    blob = canonical_json_blob(canonical)  # json.dumps(sort_keys=True, default=str)
+    hash = sha256_hex(blob)
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -241,17 +241,26 @@ def _compute_content_hash(
     source_feature_count: int,
     contract_version: str,
 ) -> str:
-    """Mirror of ``hft_contracts.feature_sets.hashing.compute_feature_set_hash``.
+    """Delegates to ``hft_contracts.canonical_hash`` SSoT (Phase 6 6B.2).
 
-    Must match byte-for-byte. Parity is locked by a cross-module test.
+    Canonical form (locked by both the SSoT and the golden-fixture test
+    in ``tests/test_feature_set_resolver.py``):
+
+        canonical = {
+            "feature_indices": sorted(set(int(i) for i in feature_indices)),
+            "source_feature_count": int(source_feature_count),
+            "contract_version": str(contract_version),
+        }
+        blob = canonical_json_blob(canonical)  # json.dumps(sort_keys=True, default=str)
+        hash = sha256_hex(blob)
     """
+    from hft_contracts.canonical_hash import canonical_json_blob, sha256_hex
     canonical = {
         "feature_indices": sorted(set(int(i) for i in feature_indices)),
         "source_feature_count": int(source_feature_count),
         "contract_version": str(contract_version),
     }
-    blob = json.dumps(canonical, sort_keys=True, default=str).encode("utf-8")
-    return hashlib.sha256(blob).hexdigest()
+    return sha256_hex(canonical_json_blob(canonical))
 
 
 def _validate_minimal(data: dict, name: str, path: Path) -> None:
