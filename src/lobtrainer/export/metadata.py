@@ -26,6 +26,7 @@ def build_signal_metadata(
     data_dir: Optional[str] = None,
     # Feature configuration
     feature_preset: Optional[str] = None,
+    feature_set_ref: Optional[Dict[str, str]] = None,
     normalization_strategy: Optional[str] = None,
     # Prediction statistics
     prediction_stats: Optional[Dict[str, float]] = None,
@@ -75,6 +76,11 @@ def build_signal_metadata(
     # Feature configuration
     if feature_preset is not None:
         meta["feature_preset"] = feature_preset
+    if feature_set_ref is not None:
+        # Phase 4 Batch 4c.4: {name, content_hash} reference to FeatureSet
+        # registry. Read-only propagation; backtester does NOT recompute
+        # content_hash (integrity is the resolver's job at trainer load).
+        meta["feature_set_ref"] = feature_set_ref
     if normalization_strategy is not None:
         meta["normalization_strategy"] = normalization_strategy
 

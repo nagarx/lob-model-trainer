@@ -24,6 +24,31 @@ from lobtrainer.export.metadata import build_signal_metadata
 logger = logging.getLogger(__name__)
 
 
+def _feature_set_ref_dict(data_config: Any) -> Optional[Dict[str, str]]:
+    """Extract feature_set_ref dict from DataConfig private cache (Phase 4 Batch 4c.4).
+
+    The resolver populates `DataConfig._feature_set_ref_resolved` as a
+    `(name, content_hash)` tuple at dataloader construction (see
+    `Trainer._create_dataloaders`). This helper converts the tuple to the
+    JSON-shape `{"name": ..., "content_hash": ...}` for signal_metadata.json.
+    Returns None when no FeatureSet was resolved (feature_preset /
+    feature_indices / no selection paths).
+
+    Cross-subprocess invariant: this field is populated only when
+    `_create_dataloaders` has run in the current process; it is NOT
+    serialized across subprocess boundaries (the `_`-prefix + R3 `to_dict`
+    filter strip it). The signal-export subprocess re-runs
+    `_create_dataloaders` on its copy of the resolved config, which
+    re-populates the cache. See `test_feature_set_ref_subprocess_invariant.py`.
+    """
+    resolved = getattr(data_config, "_feature_set_ref_resolved", None)
+    if resolved is None:
+        return None
+    # Tuple form: (name, content_hash). Convert to dict.
+    name, content_hash = resolved
+    return {"name": str(name), "content_hash": str(content_hash)}
+
+
 @dataclass
 class ExportResult:
     """Result of a signal export operation."""
@@ -536,6 +561,7 @@ class SignalExporter:
             horizon_idx=horizon_idx,
             data_dir=str(config.data.data_dir),
             feature_preset=getattr(config.data, "feature_preset", None),
+            feature_set_ref=_feature_set_ref_dict(config.data),
             normalization_strategy=str(getattr(config.data.normalization, "strategy", "unknown")),
             prediction_stats=prediction_stats,
             spread_stats=spread_stats,
