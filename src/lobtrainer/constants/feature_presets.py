@@ -7,6 +7,20 @@ Provides named feature subsets for easy experiment setup:
 - Signal-focused subsets
 - Custom combinations
 
+**DEPRECATION NOTICE (Phase 4 Batch 4c, 2026-04-15)**: This module is
+scheduled for removal in favor of the ``contracts/feature_sets/`` content-
+addressed registry. See ``FEATURE_PRESET_DEPRECATION_SCHEDULE`` below for
+the timeline; the ``DeprecationWarning`` emitted by
+``DataConfig.__post_init__`` cites these dates.
+
+Migration path:
+    1. Run ``hft-ops evaluate --config <evaluator.yaml> --criteria <criteria.yaml>
+       --save-feature-set <name>_v1 --applies-to-assets NVDA --applies-to-horizons <h>``
+       to produce a registry entry.
+    2. Replace ``data.feature_preset: <name>`` with ``data.feature_set: <name>_v1``
+       in your trainer YAML.
+    3. Delete the old preset entry once no configs reference it.
+
 Design principles (RULE.md):
 - Named presets avoid magic indices in configs
 - Presets are immutable (use tuples)
@@ -19,14 +33,30 @@ Usage:
     ...     PRESET_LOB_ONLY,
     ...     PRESET_FULL,
     ... )
-    >>> 
+    >>>
     >>> # Get feature indices for a preset
     >>> lob_indices = get_feature_preset("lob_only")
     >>> full_indices = get_feature_preset("full")
-    >>> 
+    >>>
     >>> # Use in config
     >>> config.model.feature_indices = get_feature_preset("signals_core")
 """
+
+# Phase 4 Batch 4c (2026-04-15): single source of truth for the
+# feature_preset deprecation schedule. The DataConfig.__post_init__
+# DeprecationWarning references these dates. Keeping them in one place
+# prevents drift when the schedule slips (change here, ripples to the
+# warning message automatically).
+FEATURE_PRESET_DEPRECATION_SCHEDULE = {
+    "announced":          "2026-04-15",  # DeprecationWarning emitted
+    "escalate_to_pending": "2026-06-15",  # PendingDeprecationWarning
+    "hard_error_date":    "2026-08-15",  # ImportError on lookup
+    "final_delete_date":  "2026-10-15",  # module removal
+}
+"""Feature preset deprecation schedule (Phase 4 Batch 4c).
+
+Dates are ISO 8601 strings so they match the ledger provenance convention.
+See PIPELINE_ARCHITECTURE.md for the full deprecation policy."""
 
 from typing import Dict, List, Tuple, Optional
 from lobtrainer.constants.feature_index import FeatureIndex, ExperimentalFeatureIndex

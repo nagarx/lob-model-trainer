@@ -16,7 +16,7 @@ from lobtrainer.config import (
     load_config,
     save_config,
 )
-from lobtrainer.config.schema import NormalizationStrategy, ModelType, LabelEncoding
+from lobtrainer.config.schema import NormalizationStrategy, ModelType, LabelEncoding, TaskType, LossType
 
 
 class TestSequenceConfig:
@@ -98,6 +98,28 @@ class TestTrainConfig:
         """Learning rate must be > 0."""
         with pytest.raises(ValueError, match="learning_rate must be > 0"):
             TrainConfig(learning_rate=0)
+
+    def test_classification_task_rejects_huber_loss(self):
+        """Regression loss_type on classification task_type must raise ValueError."""
+        with pytest.raises(ValueError, match="regression loss"):
+            TrainConfig(task_type=TaskType.MULTICLASS, loss_type=LossType.HUBER)
+
+    def test_regression_task_rejects_cross_entropy_loss(self):
+        """Classification loss_type on regression task_type must raise ValueError."""
+        with pytest.raises(ValueError, match="classification loss"):
+            TrainConfig(task_type=TaskType.REGRESSION, loss_type=LossType.CROSS_ENTROPY)
+
+    def test_regression_task_accepts_huber_loss(self):
+        """Regression loss with regression task should pass validation."""
+        config = TrainConfig(task_type=TaskType.REGRESSION, loss_type=LossType.HUBER)
+        assert config.task_type == TaskType.REGRESSION
+        assert config.loss_type == LossType.HUBER
+
+    def test_classification_task_accepts_focal_loss(self):
+        """Classification loss with classification task should pass validation."""
+        config = TrainConfig(task_type=TaskType.MULTICLASS, loss_type=LossType.FOCAL)
+        assert config.task_type == TaskType.MULTICLASS
+        assert config.loss_type == LossType.FOCAL
 
 
 class TestExperimentConfig:

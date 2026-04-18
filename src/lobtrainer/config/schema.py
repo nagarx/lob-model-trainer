@@ -19,7 +19,7 @@ Usage:
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
-from typing import Optional, List, Tuple, Any
+from typing import Optional, List, Tuple, Any, Dict
 import json
 import yaml
 
@@ -134,6 +134,145 @@ class LabelingStrategy(str, Enum):
     """
 
 
+@dataclass
+class SourceConfig:
+    """Single data source specification (T12).
+
+    Used in DataConfig.sources for multi-source fusion.
+
+    Args:
+        name: Unique identifier (e.g., "mbo", "basic").
+        data_dir: Path to export directory containing train/val/test/.
+        role: "primary" (labels + features) or "auxiliary" (features only).
+            Exactly one source must be primary.
+    """
+
+    name: str = "mbo"
+    data_dir: str = ""
+    role: str = "primary"
+    feature_count: int = 0
+    """Feature count for this source. 0 = auto-detect at load time.
+    When all sources specify feature_count > 0, model.input_size can
+    be auto-derived as the sum (T13)."""
+
+    def __post_init__(self) -> None:
+        if self.role not in ("primary", "auxiliary"):
+            raise ValueError(
+                f"SourceConfig.role must be 'primary' or 'auxiliary', "
+                f"got {self.role!r}"
+            )
+        if self.feature_count < 0:
+            raise ValueError(
+                f"SourceConfig.feature_count must be >= 0, "
+                f"got {self.feature_count}"
+            )
+
+
+@dataclass
+class LabelsConfig:
+    """Unified label specification for training.
+
+    Replaces the overlap between DataConfig.labeling_strategy and
+    DataConfig.horizon_idx with a single source of truth. Backward
+    compatible via auto-derivation in DataConfig.__post_init__; legacy
+    fields remain supported with DeprecationWarning.
+
+    DESIGN INVARIANT: smoothing_window is NEVER a field on this dataclass.
+    It is read exclusively from ForwardPriceContract.smoothing_window_offset,
+    which is baked into the export metadata at extraction time.
+
+    Rationale (Bug B2, 2026-04-12): passing k=3 when Rust exported k=5
+    produces 34.8 bps silent label error (25x Deep ITM breakeven).
+
+    Fields:
+        source: Label computation source.
+            - "auto" (default): If forward_prices.npy exists and metadata
+              declares exported=True, compute via LabelFactory. Else load
+              precomputed labels from disk.
+            - "forward_prices": Require forward_prices.npy; compute via
+              LabelFactory. Raises if missing.
+            - "precomputed": Load {day}_labels.npy / {day}_regression_labels.npy.
+
+        return_type: Which LabelFactory return function to use.
+            Only used when source is forward_prices or auto (with fp present).
+
+        task: Whether to produce regression (continuous bps) or classification
+            ({-1, 0, +1}) labels.
+            - "auto" (default): Detect from metadata label_strategy field.
+
+        threshold_bps: Classification threshold in bps. Only used when
+            task="classification".
+
+        horizons: Event counts to materialize (e.g. [10, 60, 300]).
+            Empty list (default) = use all exported horizons from metadata.
+
+        primary_horizon_idx: Index INTO the resolved horizons list.
+            int >= 0 = single-horizon mode. None = all-horizons / HMHP mode.
+    """
+
+    source: str = "auto"
+    return_type: str = "smoothed_return"
+    task: str = "auto"
+    threshold_bps: float = 8.0
+    horizons: List[int] = field(default_factory=list)
+    primary_horizon_idx: Optional[int] = 0
+    sample_weights: str = "none"
+    """Sample weighting method to correct for non-IID overlapping labels.
+    - "none" (default): no weighting, standard uniform loss.
+    - "concurrent_overlap": de Prado (2018) AFML §4.5.1 — weight inversely
+      proportional to label concurrency. Corrects for overlapping horizons.
+    """
+
+    _VALID_SOURCES = frozenset({"auto", "precomputed", "forward_prices"})
+    _VALID_RETURN_TYPES = frozenset(
+        {"smoothed_return", "point_return", "mean_return", "peak_return"}
+    )
+    _VALID_TASKS = frozenset({"auto", "regression", "classification"})
+    _VALID_SAMPLE_WEIGHTS = frozenset({"none", "concurrent_overlap"})
+
+    def __post_init__(self) -> None:
+        if self.source not in self._VALID_SOURCES:
+            raise ValueError(
+                f"LabelsConfig.source must be one of "
+                f"{sorted(self._VALID_SOURCES)}, got {self.source!r}"
+            )
+        if self.return_type not in self._VALID_RETURN_TYPES:
+            raise ValueError(
+                f"LabelsConfig.return_type must be one of "
+                f"{sorted(self._VALID_RETURN_TYPES)}, got {self.return_type!r}"
+            )
+        if self.task not in self._VALID_TASKS:
+            raise ValueError(
+                f"LabelsConfig.task must be one of "
+                f"{sorted(self._VALID_TASKS)}, got {self.task!r}"
+            )
+        if self.threshold_bps < 0:
+            raise ValueError(
+                f"LabelsConfig.threshold_bps must be >= 0, "
+                f"got {self.threshold_bps}"
+            )
+        if self.primary_horizon_idx is not None and self.primary_horizon_idx < 0:
+            raise ValueError(
+                f"LabelsConfig.primary_horizon_idx must be >= 0 or None, "
+                f"got {self.primary_horizon_idx}"
+            )
+        if any(h < 1 for h in self.horizons):
+            raise ValueError(
+                f"LabelsConfig.horizons must all be >= 1 "
+                f"(horizon 0 is degenerate), got {self.horizons}"
+            )
+        if len(self.horizons) != len(set(self.horizons)):
+            raise ValueError(
+                f"LabelsConfig.horizons contains duplicates: {self.horizons}"
+            )
+        if self.sample_weights not in self._VALID_SAMPLE_WEIGHTS:
+            raise ValueError(
+                f"LabelsConfig.sample_weights must be one of "
+                f"{sorted(self._VALID_SAMPLE_WEIGHTS)}, "
+                f"got {self.sample_weights!r}"
+            )
+
+
 class TaskType(str, Enum):
     """Task type for training."""
     
@@ -179,16 +318,16 @@ class ModelType(str, Enum):
     """Logistic regression baseline."""
     
     XGBOOST = "xgboost"
-    """XGBoost classifier."""
-    
+    """XGBoost classifier. NOT in ModelRegistry — use scripts/analysis/train_xgboost_baseline.py directly."""
+
     LSTM = "lstm"
     """LSTM sequence model."""
-    
+
     GRU = "gru"
     """GRU sequence model."""
-    
+
     TRANSFORMER = "transformer"
-    """Transformer encoder."""
+    """NOT IMPLEMENTED — reserved for future use."""
     
     DEEPLOB = "deeplob"
     """DeepLOB (CNN + LSTM)."""
@@ -369,7 +508,17 @@ class DataConfig:
     
     cache_in_memory: bool = True
     """Whether to cache all data in memory. Faster but uses more RAM."""
-    
+
+    # T9: unified label configuration. None = derive from legacy fields below.
+    labels: Optional[LabelsConfig] = None
+    """
+    Unified label specification (T9). When provided, takes precedence over
+    legacy labeling_strategy and horizon_idx fields.
+
+    Set to None (default) to auto-derive from legacy fields for backward
+    compatibility. See LabelsConfig docstring for full field documentation.
+    """
+
     horizon_idx: Optional[int] = 0
     """
     Which prediction horizon to use for multi-horizon datasets.
@@ -407,15 +556,103 @@ class DataConfig:
     feature_indices: Optional[List[int]] = None
     """
     Custom feature indices for selection (optional).
-    
+
     If specified, only these feature indices are passed to the model.
     Requires model.input_size to match len(feature_indices).
-    
+
     Example: [84, 85, 86, 87, 88] to select only signal features.
-    
-    Note: Either feature_preset OR feature_indices can be set, not both.
+
+    Note: At most ONE of {feature_set, feature_indices, feature_preset}
+    may be set (mutual exclusion enforced in __post_init__ — Phase 4
+    Batch 4c). ``feature_set_per_horizon`` was removed in 4c hardening
+    and returns in 4d alongside HMHP ``feature_attention`` activation.
     """
-    
+
+    feature_set: Optional[str] = None
+    """
+    Named FeatureSet reference (Phase 4 Batch 4c, 2026-04-15).
+
+    If specified, the trainer loads ``contracts/feature_sets/<name>.json``
+    at dataloader construction time, verifies its content hash, and
+    populates the internal ``_feature_indices_resolved`` cache with the
+    resolved indices. ``feature_set`` REPLACES both ``feature_preset``
+    and ``feature_indices`` for the same role — preset mapping is
+    handled inside the FeatureSet registry (see ``contracts/feature_sets/SCHEMA.md``).
+
+    Example: ``feature_set: momentum_hft_v1``.
+
+    Mutual exclusion: at most one of {feature_set, feature_indices,
+    feature_preset} may be set. To override a base that defines a
+    different selection field, set the others to ``null`` in the child
+    YAML.
+    """
+
+    # Phase 4 Batch 4c hardening (2026-04-15): the previously-reserved
+    # ``feature_set_per_horizon: Optional[Dict[int, str]]`` field was removed
+    # per adversarial design audit finding D2. It will return in Phase 4
+    # Batch 4d alongside the HMHP ``feature_attention`` activation in
+    # ``lob-models/.../hmhp.py``. Shipping a reserved field that only
+    # raises ``NotImplementedError`` on direct use added documentation,
+    # test, and mutual-exclusion surface area for zero current value;
+    # 4d will add it back as a real feature, not a placeholder.
+
+    feature_sets_dir: Optional[str] = None
+    """
+    Explicit override for the FeatureSet registry directory (Phase 4 Batch 4c).
+
+    When ``None`` (default), the trainer auto-detects the registry by
+    walking up from ``data_dir`` looking for
+    ``contracts/pipeline_contract.toml``. Set this to a path string for:
+
+    - Test isolation (point tests at a temp registry).
+    - Multi-registry workflows (team-shared registry vs. local experiments).
+    - Running the trainer from a CWD outside the monorepo.
+
+    Resolved to an absolute path by
+    ``lobtrainer.data.feature_set_resolver.find_feature_sets_dir``
+    fallback when unset; used directly when set.
+    """
+
+    sources: Optional[List[SourceConfig]] = None
+    """Multi-source configuration (T12). When provided, data is loaded from
+    multiple sources and fused at load time. Exactly one source must have
+    role='primary'. The existing data_dir field is used as the single source
+    when sources is None (backward compat).
+
+    Example YAML:
+        data:
+          sources:
+            - name: mbo
+              data_dir: "../data/exports/e5_timebased_60s"
+              role: primary
+            - name: basic
+              data_dir: "../data/exports/basic_nvda_60s"
+              role: auxiliary
+    """
+
+    # -- Private runtime caches (NOT serialized, NOT user-facing) ------------
+    # Phase 4 Batch 4c: populated by the FeatureSet resolver at dataloader
+    # construction time. Consumers read these INSTEAD of resolving from
+    # `feature_set` every call. Non-init + non-repr so `to_yaml()` /
+    # dataclasses.asdict() do not leak them into the on-disk YAML (the
+    # source of truth stays `feature_set: <name>`, preserving round-trip
+    # fidelity — see Phase 4 R3 "runtime cache, not YAML mutation").
+
+    _feature_indices_resolved: Optional[List[int]] = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    """Resolved `feature_set` → list[int] cache. Populated by the trainer's
+    feature_set_resolver at dataloader construction. Do NOT read directly
+    from user code — use the public field(s) that drive the semantics."""
+
+    _feature_set_ref_resolved: Optional[Tuple[str, str]] = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    """Resolved (name, content_hash) pair for the active FeatureSet.
+    Propagated into signal_metadata.json and ExperimentRecord by
+    downstream stages so backtest artifacts self-identify the selection
+    provenance. None when no feature_set was used."""
+
     def __post_init__(self) -> None:
         # Validate feature_count is reasonable
         # Supported configurations:
@@ -449,16 +686,54 @@ class DataConfig:
                 f"horizon_idx must be >= 0 or None, got {self.horizon_idx}"
             )
         
-        # Feature selection validation: only one of preset or indices can be set
-        if self.feature_preset is not None and self.feature_indices is not None:
+        # Feature selection: mutual exclusion across the three user-facing
+        # fields (Phase 4 Batch 4c, 2026-04-15). At most ONE of
+        # {feature_set, feature_indices, feature_preset} may be set.
+        # Raises immediately if the user (or a _base: merge) produces
+        # more than one — explicit is better than a silent priority-based
+        # precedence.
+        _selection_fields = [
+            ("feature_set", self.feature_set),
+            ("feature_indices", self.feature_indices),
+            ("feature_preset", self.feature_preset),
+        ]
+        _active_selection = [n for n, v in _selection_fields if v is not None]
+        if len(_active_selection) > 1:
             raise ValueError(
-                "Cannot specify both 'feature_preset' and 'feature_indices'. "
-                "Use one or the other for feature selection."
+                "At most one feature-selection field may be set on DataConfig, "
+                f"got {len(_active_selection)}: {_active_selection}. "
+                "To override a base that sets a different selection field, "
+                "explicitly set the others to `null` in the child YAML "
+                "(e.g., `feature_preset: null` alongside `feature_set: my_v1`)."
             )
-        
+
+        # Validate `feature_set` shape (Phase 4 Batch 4c). The resolver
+        # (feature_set_resolver.resolve_feature_set) does the full
+        # integrity + contract-compat check at dataloader construction
+        # time; here we just catch obviously-wrong values at parse time.
+        if self.feature_set is not None:
+            if not isinstance(self.feature_set, str) or not self.feature_set.strip():
+                raise ValueError(
+                    f"feature_set must be a non-empty string, got "
+                    f"{self.feature_set!r}"
+                )
+            if "/" in self.feature_set or "\\" in self.feature_set:
+                raise ValueError(
+                    f"feature_set must not contain path separators "
+                    f"(reserved for directory-traversal safety in the "
+                    f"registry resolver). Got: {self.feature_set!r}"
+                )
+
         # Validate preset exists (import here to avoid circular imports)
+        # AND emit DeprecationWarning — feature_preset is scheduled for
+        # removal (Phase 4 4-month 3-step deprecation; see
+        # FEATURE_PRESET_DEPRECATION_SCHEDULE in feature_presets.py for
+        # the authoritative timeline).
         if self.feature_preset is not None:
             from lobtrainer.constants import FEATURE_PRESETS
+            from lobtrainer.constants.feature_presets import (
+                FEATURE_PRESET_DEPRECATION_SCHEDULE,
+            )
             preset_lower = self.feature_preset.lower()
             if preset_lower not in FEATURE_PRESETS:
                 available = sorted(FEATURE_PRESETS.keys())
@@ -466,7 +741,25 @@ class DataConfig:
                     f"Unknown feature_preset: '{self.feature_preset}'. "
                     f"Available presets: {available}"
                 )
-        
+            import warnings
+            _sched = FEATURE_PRESET_DEPRECATION_SCHEDULE
+            warnings.warn(
+                f"DataConfig.feature_preset='{self.feature_preset}' is "
+                f"DEPRECATED since {_sched['announced']} (Phase 4 Batch 4c). "
+                f"Migrate to a FeatureSet registry entry:\n"
+                f"  1. Run `hft-ops evaluate --config <evaluator.yaml> "
+                f"--criteria <criteria.yaml> --save-feature-set "
+                f"<name>_v1 --applies-to-assets NVDA --applies-to-horizons <h>`.\n"
+                f"  2. Update this config: `data.feature_set: <name>_v1` "
+                f"(and remove `feature_preset`).\n"
+                f"See `contracts/feature_sets/SCHEMA.md` for details. This "
+                f"warning escalates to PendingDeprecationWarning on "
+                f"{_sched['escalate_to_pending']} and becomes an ImportError "
+                f"on {_sched['hard_error_date']}.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
         # Validate feature_indices if provided
         if self.feature_indices is not None:
             if len(self.feature_indices) == 0:
@@ -476,6 +769,34 @@ class DataConfig:
             if any(idx < 0 for idx in self.feature_indices):
                 raise ValueError("feature_indices contains negative values")
             # Note: Upper bound checked at runtime when we know source_feature_count
+
+        # T12: validate sources configuration (if provided)
+        if self.sources is not None:
+            primaries = [s for s in self.sources if s.role == "primary"]
+            if len(primaries) != 1:
+                raise ValueError(
+                    f"Exactly one source must have role='primary', "
+                    f"got {len(primaries)}: {[s.name for s in primaries]}"
+                )
+            names = [s.name for s in self.sources]
+            if len(names) != len(set(names)):
+                raise ValueError(
+                    f"Duplicate source names in data.sources: {names}"
+                )
+
+        # T9: derive labels from legacy fields if user did not provide new config.
+        # DataConfig.__post_init__ runs before ExperimentConfig.__post_init__,
+        # guaranteeing self.labels is non-None when deprecation warnings fire.
+        if self.labels is None:
+            if self.labeling_strategy == LabelingStrategy.REGRESSION:
+                derived_task = "regression"
+            else:
+                derived_task = "classification"
+            self.labels = LabelsConfig(
+                source="auto",
+                task=derived_task,
+                primary_horizon_idx=self.horizon_idx,
+            )
 
 
 # =============================================================================
@@ -621,8 +942,13 @@ class ModelConfig:
             self.hmhp_horizons = [10, 20, 50, 100, 200]
 
         # Validate core fields that stay on ModelConfig
-        if self.input_size < 1:
-            raise ValueError(f"input_size must be >= 1, got {self.input_size}")
+        # T13: allow input_size=0 as sentinel for auto-derivation
+        # (resolved in ExperimentConfig.__post_init__)
+        if self.input_size < 0:
+            raise ValueError(
+                f"input_size must be >= 0 (0=auto-derive), "
+                f"got {self.input_size}"
+            )
         if self.num_classes < 2:
             raise ValueError(f"num_classes must be >= 2, got {self.num_classes}")
         if self.dropout < 0 or self.dropout > 1:
@@ -879,6 +1205,26 @@ class TrainConfig:
         if self.focal_alpha is not None and (self.focal_alpha < 0 or self.focal_alpha > 1):
             raise ValueError(f"focal_alpha must be in [0, 1], got {self.focal_alpha}")
 
+        # Cross-validate loss_type against task_type to prevent silent misconfiguration.
+        # Classification strategies only support CE/Focal/WeightedCE.
+        # Regression loss is controlled by model.regression_loss_type, not train.loss_type.
+        _CLASSIFICATION_LOSSES = {LossType.CROSS_ENTROPY, LossType.WEIGHTED_CE, LossType.FOCAL}
+        _REGRESSION_LOSSES = {LossType.MSE, LossType.HUBER, LossType.HETEROSCEDASTIC, LossType.GMADL}
+
+        if self.task_type == TaskType.REGRESSION and self.loss_type in _CLASSIFICATION_LOSSES:
+            raise ValueError(
+                f"loss_type='{self.loss_type.value}' is a classification loss but "
+                f"task_type='{self.task_type.value}'. For regression, use one of: "
+                f"{sorted(lt.value for lt in _REGRESSION_LOSSES)}."
+            )
+        if self.task_type != TaskType.REGRESSION and self.loss_type in _REGRESSION_LOSSES:
+            raise ValueError(
+                f"loss_type='{self.loss_type.value}' is a regression loss but "
+                f"task_type='{self.task_type.value}'. For classification, use one of: "
+                f"{sorted(lt.value for lt in _CLASSIFICATION_LOSSES)}. "
+                f"For regression loss control, set model.regression_loss_type instead."
+            )
+
 
 # =============================================================================
 # Experiment Configuration (Top-Level)
@@ -886,78 +1232,145 @@ class TrainConfig:
 
 
 @dataclass
+class CVConfig:
+    """Cross-validation configuration (T11).
+
+    Optional — only used when running purged K-fold CV via CVTrainer.
+    When cv is None on ExperimentConfig, no CV is performed.
+
+    Reference: de Prado (2018) AFML Chapter 7.
+    """
+
+    n_splits: int = 5
+    """Number of temporal folds (K). Must be >= 2."""
+
+    embargo_days: int = 1
+    """Days after each val block excluded from training. Prevents feature
+    autocorrelation leakage across temporal boundaries."""
+
+    def __post_init__(self) -> None:
+        if self.n_splits < 2:
+            raise ValueError(
+                f"CVConfig.n_splits must be >= 2, got {self.n_splits}"
+            )
+        if self.embargo_days < 0:
+            raise ValueError(
+                f"CVConfig.embargo_days must be >= 0, got {self.embargo_days}"
+            )
+
+
+@dataclass
 class ExperimentConfig:
     """
     Top-level configuration combining all sub-configs.
-    
+
     This is the main configuration object used throughout the codebase.
-    
+
     Usage:
         >>> config = ExperimentConfig.from_yaml("configs/baseline.yaml")
         >>> trainer = Trainer(config)
         >>> trainer.train()
     """
-    
+
     name: str = "default"
     """Experiment name for tracking."""
-    
+
     description: str = ""
     """Experiment description."""
-    
+
     data: DataConfig = field(default_factory=DataConfig)
     """Data loading configuration."""
-    
+
     model: ModelConfig = field(default_factory=ModelConfig)
     """Model architecture configuration."""
-    
+
     train: TrainConfig = field(default_factory=TrainConfig)
     """Training hyperparameters."""
-    
+
+    cv: Optional[CVConfig] = None
+    """Cross-validation configuration (T11). None = no CV."""
+
     output_dir: str = "outputs"
     """Directory for checkpoints and logs."""
-    
+
     log_level: str = "INFO"
     """Logging level: DEBUG, INFO, WARNING, ERROR."""
-    
+
     tags: List[str] = field(default_factory=list)
     """Tags for experiment tracking."""
     
     def __post_init__(self) -> None:
         """Validate cross-config consistency."""
-        # Determine expected model input size based on feature selection config
-        expected_input_size = self.data.feature_count
-        
-        if self.data.feature_preset is not None:
-            # Feature preset specified - model input must match preset size
-            from lobtrainer.constants import get_feature_preset
-            preset_indices = get_feature_preset(self.data.feature_preset)
-            expected_input_size = len(preset_indices)
-            
-        elif self.data.feature_indices is not None:
-            # Custom feature indices - model input must match indices count
-            expected_input_size = len(self.data.feature_indices)
-        
-        # CRITICAL: model.input_size must match expected feature count
-        # This prevents dimension mismatch errors at runtime
-        if self.model.input_size != expected_input_size:
-            if self.data.feature_preset is not None:
+        # T13: Resolve expected feature count and auto-derive model.input_size
+        import logging as _log
+        _t13_logger = _log.getLogger(__name__)
+
+        # Phase 6 6A.1 (2026-04-17, revised after validation audit):
+        # `data.feature_set` is resolved AT TRAINER RUNTIME (inside
+        # `_create_dataloaders` via the FeatureSet registry resolver) because
+        # __post_init__ lacks the filesystem / registry-path context the
+        # resolver needs. Consequence: T13 auto-derivation (`input_size=0`
+        # → fill from resolved feature count) CANNOT work for `feature_set`
+        # in this code generation — the model is constructed at `setup()`
+        # L717 BEFORE the resolver runs at L725.
+        #
+        # Fix: require the user to set `model.input_size` EXPLICITLY when
+        # using `data.feature_set`. Fails fast + clearly at config-load.
+        # A proper architectural fix (reorder `setup()` to run resolver
+        # before model construction, or make model creation lazy) is
+        # Phase 7 scope (lobtrainer-core split — architect Concern #2).
+        if self.data.feature_set is not None:
+            if self.model.input_size == 0:
                 raise ValueError(
-                    f"Config mismatch: model.input_size ({self.model.input_size}) "
-                    f"must equal feature_preset '{self.data.feature_preset}' size ({expected_input_size}). "
-                    f"Set model.input_size: {expected_input_size}"
+                    "`data.feature_set` requires `model.input_size` to be set "
+                    "explicitly (non-zero). Auto-derivation is unavailable "
+                    "because FeatureSet resolution needs registry-path context "
+                    "unavailable at config-load time. Set `model.input_size` "
+                    "to the expected feature count of the resolved FeatureSet "
+                    "(inspect contracts/feature_sets/<name>.json → "
+                    "len(feature_indices)), or use `data.feature_preset` / "
+                    "`data.feature_indices` which support auto-derivation. "
+                    "(Proper resolver-time auto-derivation is deferred to "
+                    "Phase 7 lobtrainer-core split.)"
                 )
+            # input_size is set explicitly — skip T13. trainer.py::_create_dataloaders
+            # L413-418 verifies it matches the resolved feature count at runtime.
+        else:
+            if self.data.sources is not None:
+                # Multi-source: sum per-source feature_counts (if all > 0)
+                source_counts = [
+                    s.feature_count for s in self.data.sources
+                    if s.feature_count > 0
+                ]
+                if len(source_counts) == len(self.data.sources):
+                    resolved_input_size = sum(source_counts)
+                else:
+                    resolved_input_size = self.data.feature_count
+            elif self.data.feature_preset is not None:
+                from lobtrainer.constants import get_feature_preset
+                preset_indices = get_feature_preset(self.data.feature_preset)
+                resolved_input_size = len(preset_indices)
             elif self.data.feature_indices is not None:
-                raise ValueError(
-                    f"Config mismatch: model.input_size ({self.model.input_size}) "
-                    f"must equal len(feature_indices) ({expected_input_size}). "
-                    f"Set model.input_size: {expected_input_size}"
-                )
+                resolved_input_size = len(self.data.feature_indices)
             else:
-                raise ValueError(
-                    f"Config mismatch: data.feature_count ({self.data.feature_count}) "
-                    f"must equal model.input_size ({self.model.input_size}). "
-                    f"Ensure both are set to match your exported data."
+                resolved_input_size = self.data.feature_count
+
+            if self.model.input_size == 0:
+                # Auto-derive (T13)
+                self.model.input_size = resolved_input_size
+                # Update params dict (built during ModelConfig.__post_init__)
+                for _key in ("num_features", "input_size"):
+                    if _key in self.model.params:
+                        self.model.params[_key] = resolved_input_size
+                _t13_logger.info(
+                    "Auto-derived model.input_size = %d", resolved_input_size
                 )
+            elif self.model.input_size != resolved_input_size:
+                raise ValueError(
+                    f"model.input_size ({self.model.input_size}) != resolved "
+                    f"feature count ({resolved_input_size}). "
+                    f"Set model.input_size: 0 to auto-derive."
+                    )
         
         # Validate exclude_features are within bounds of SOURCE data
         for idx in self.data.normalization.exclude_features:
@@ -967,18 +1380,69 @@ class ExperimentConfig:
                     f"but feature_count is only {self.data.feature_count}. "
                     f"Remove or adjust exclude_features for your dataset."
                 )
-    
+
+        # T9: deprecation warnings for legacy label fields.
+        # Only fire when legacy fields have non-default values.
+        import warnings as _warnings
+        if self.data.labeling_strategy != LabelingStrategy.TLOB:
+            _warnings.warn(
+                f"DataConfig.labeling_strategy is deprecated. "
+                f"Use data.labels.task instead. "
+                f"Current effective value: "
+                f"data.labels.task={self.data.labels.task!r}.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if self.data.horizon_idx != 0:
+            _warnings.warn(
+                f"DataConfig.horizon_idx is deprecated. "
+                f"Use data.labels.primary_horizon_idx instead. "
+                f"Current effective value: "
+                f"data.labels.primary_horizon_idx="
+                f"{self.data.labels.primary_horizon_idx!r}.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
     def to_dict(self) -> dict:
-        """Convert config to dictionary for serialization."""
+        """Convert config to dictionary for serialization.
+
+        Phase 4 Batch 4c (2026-04-15): keys whose name begins with an
+        underscore are filtered OUT of every dataclass and every nested
+        dict in the output. This keeps resolver-populated runtime caches
+        (``DataConfig._feature_indices_resolved``, ``_feature_set_ref_resolved``)
+        out of serialized YAML/JSON so the on-disk config round-trip is
+        preserved: user writes ``feature_set: momentum_v1``, reads back
+        the same. Without this filter, ``asdict()`` would leak the cache
+        into ``to_yaml()`` output and corrupt the source-of-truth
+        (Phase 4 R3 invariant).
+
+        Why both the dataclass and dict branches filter: ``asdict(obj)``
+        recursively converts nested dataclasses to plain dicts in one
+        pass, so by the time ``_convert`` recurses into a nested value,
+        it looks like a plain dict (not a dataclass). Filtering at the
+        dataclass boundary alone would not reach fields on nested
+        dataclasses; filtering at the dict branch catches them at any
+        depth. No currently-known config uses ``_``-prefixed dict keys
+        legitimately, so this convention is safe.
+        """
         def _convert(obj: Any) -> Any:
             if isinstance(obj, Enum):
                 return obj.value
             elif hasattr(obj, "__dataclass_fields__"):
-                return {k: _convert(v) for k, v in asdict(obj).items()}
+                return {
+                    k: _convert(v)
+                    for k, v in asdict(obj).items()
+                    if not k.startswith("_")
+                }
             elif isinstance(obj, list):
                 return [_convert(item) for item in obj]
             elif isinstance(obj, dict):
-                return {k: _convert(v) for k, v in obj.items()}
+                return {
+                    k: _convert(v)
+                    for k, v in obj.items()
+                    if not (isinstance(k, str) and k.startswith("_"))
+                }
             else:
                 return obj
         return _convert(self)
@@ -997,26 +1461,89 @@ class ExperimentConfig:
     def from_dict(cls, data: dict) -> "ExperimentConfig":
         """
         Create config from dictionary.
-        
+
         Uses dacite with type casting for robust parsing of YAML/JSON input.
         Handles common parsing issues like scientific notation strings.
+
+        Note: _base inheritance is resolved in from_yaml(), not here.
+        If a _base key leaks into a from_dict() call, it means inheritance
+        was not resolved — raise an error directing the caller to from_yaml().
         """
         from dacite import from_dict, Config as DaciteConfig
-        
+
+        if "_base" in data:
+            raise ValueError(
+                "_base key found in config dict. Config inheritance is only "
+                "supported when loading from YAML files via from_yaml(). "
+                "Remove _base from the dict or use from_yaml() instead."
+            )
+
         # Preprocess data to handle YAML parsing quirks
         data = _normalize_config_types(data)
-        
+
         return from_dict(
             data_class=cls,
             data=data,
             config=DaciteConfig(cast=[Enum, Path, float, int, bool]),
         )
-    
+
     @classmethod
     def from_yaml(cls, path: str) -> "ExperimentConfig":
-        """Load configuration from YAML file."""
-        with open(path) as f:
-            data = yaml.safe_load(f)
+        """Load configuration from YAML file.
+
+        Supports config inheritance via the ``_base`` key, in two forms:
+
+            _base: "../bases/regression.yaml"          # v1 single-base
+
+            _base:                                       # v2 multi-base
+              - "../bases/models/tlob_compact.yaml"
+              - "../bases/datasets/nvda_e5_60s.yaml"
+              - "../bases/labels/regression_huber.yaml"
+              - "../bases/train/regression_default.yaml"
+
+        Each base is loaded first (recursively resolving its own ``_base``),
+        then merged left-to-right (each successive base overrides the previous),
+        then this config's values are deep-merged on top of the accumulator.
+        Chained inheritance is supported with cycle detection and a depth
+        cap of 10. Paths are resolved relative to the directory of the file
+        containing the ``_base`` key.
+
+        Semantics:
+            - Dicts: recursively merged
+            - Lists: replaced entirely (not appended)
+            - Scalars / None: override value wins
+            - Multi-base order: later entries in the list override earlier;
+              this config's own keys override everything
+
+        Raises:
+            ValueError: If the target YAML is a partial base (declares
+                ``_partial: true`` at the top level). Partial bases are
+                standalone-invalid and must be composed with peer bases via
+                multi-base ``_base: [...]``. Catches the common mistake of
+                accidentally loading ``bases/models/tlob_compact.yaml``
+                directly instead of going through an experiment config.
+        """
+        from pathlib import Path as _Path
+        from lobtrainer.config.merge import is_partial_base, resolve_inheritance
+
+        config_path = _Path(path).resolve()
+
+        # Fail-fast on partial bases so the error points at the root cause,
+        # not at a dacite missing-required-field error deep in the validator.
+        if is_partial_base(config_path):
+            raise ValueError(
+                f"Partial base config cannot be loaded standalone: {config_path}\n"
+                f"This file declares `_partial: true` — it only becomes valid "
+                f"when composed with peer bases via multi-base inheritance.\n"
+                f"See configs/bases/README.md for the composition rule."
+            )
+
+        with open(config_path) as f:
+            # Phase 6 6A.5: empty YAML file → yaml.safe_load returns None;
+            # resolve_inheritance(None, ...) would crash. Defensive fallback
+            # mirrors the pattern at merge.py:169.
+            data = yaml.safe_load(f) or {}
+        data = resolve_inheritance(data, config_path)
         return cls.from_dict(data)
     
     @classmethod
