@@ -1542,7 +1542,22 @@ class ExperimentConfig:
             # Phase 6 6A.5: empty YAML file → yaml.safe_load returns None;
             # resolve_inheritance(None, ...) would crash. Defensive fallback
             # mirrors the pattern at merge.py:169.
-            data = yaml.safe_load(f) or {}
+            # Phase 6 post-validation hardening (2026-04-18): also reject
+            # valid-but-non-dict YAML payloads (top-level list / string /
+            # int / bool). The prior `or {}` silently passed those through,
+            # producing an unhelpful deep-merge crash. Now raise ValueError
+            # with a precise message pointing at the root cause.
+            raw = yaml.safe_load(f)
+        if raw is None:
+            data = {}
+        elif isinstance(raw, dict):
+            data = raw
+        else:
+            raise ValueError(
+                f"{config_path}: top-level YAML payload must be a mapping "
+                f"(key/value dict) or empty, got {type(raw).__name__}. "
+                f"Example valid shapes: `{{}}`, `name: foo` + nested keys."
+            )
         data = resolve_inheritance(data, config_path)
         return cls.from_dict(data)
     
