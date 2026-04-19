@@ -24,11 +24,12 @@ Design principles (RULE.md):
 """
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 
 # Add parent directory to path for local development
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -188,6 +189,81 @@ Examples:
     return parser.parse_args()
 
 
+def _dump_test_metrics(
+    result: Any,
+    output_dir: Path,
+    prefix: str = "test_",
+) -> Optional[Path]:
+    """Persist final test-split evaluation metrics to ``test_metrics.json``.
+
+    Phase 7 Stage 7.4 Round 4 item #6 (BLOCKER). The PyTorch ``Trainer`` flow
+    calls ``trainer.evaluate('test')`` for every run but only logged the
+    summary — the metrics were never persisted. Consequence: the 7 ``test_*``
+    keys added to ``ExperimentRecord.index_entry()`` whitelist in Round 1
+    were silently dead for every TLOB / HMHP / HMHP-R run. Round 4 closes
+    this gap by mirroring the ``SimpleModelTrainer.save`` convention
+    (simple_trainer.py:223-225): a flat ``{test_<key>: float}`` JSON file
+    consumed downstream by ``hft_ops.stages.training._capture_training_metrics``.
+
+    Handles BOTH return shapes of ``trainer.evaluate``:
+      - ``ClassificationMetrics`` → flattened via ``.to_dict()``.
+      - Regression / HMHP-R ``Dict[str, Any]`` → used directly.
+
+    Non-scalar values (confusion matrices, per-class dicts, numpy arrays)
+    are dropped — the whitelist at ``ExperimentRecord.index_entry`` only
+    surfaces scalars and non-scalars would break the flat-key contract.
+    """
+    if hasattr(result, "to_dict") and callable(result.to_dict):
+        flat = result.to_dict()
+    elif isinstance(result, dict):
+        flat = result
+    else:
+        return None
+
+    prefixed: Dict[str, float] = {}
+    for key, value in flat.items():
+        if isinstance(value, bool) or value is None:
+            continue
+        try:
+            prefixed[f"{prefix}{key}"] = float(value)
+        except (TypeError, ValueError):
+            # Drop non-scalars (arrays, dicts, strings) — only scalars land
+            # in the index_entry() whitelist projection.
+            continue
+
+    if not prefixed:
+        return None
+
+    output_path = output_dir / "test_metrics.json"
+    with open(output_path, "w") as f:
+        json.dump(prefixed, f, indent=2, sort_keys=True)
+    return output_path
+
+
+def _safe_summary(metrics: Any) -> str:
+    """Best-effort string rendering of evaluate() result.
+
+    ``ClassificationMetrics`` has ``.summary()``; regression strategies
+    return ``Dict[str, Any]`` which lacks it. Without the guard, the log
+    line at the end of ``scripts/train.py`` raises ``AttributeError`` on
+    every regression run (the enclosing ``except ValueError`` does NOT
+    catch it). Guard lets the persist step land regardless.
+    """
+    if hasattr(metrics, "summary") and callable(metrics.summary):
+        try:
+            return metrics.summary()
+        except Exception:  # pragma: no cover — defensive
+            pass
+    if isinstance(metrics, dict):
+        return "\n".join(
+            f"  {k}: {v:.6f}" if isinstance(v, (int, float))
+            and not isinstance(v, bool)
+            else f"  {k}: {v}"
+            for k, v in sorted(metrics.items())
+        )
+    return str(metrics)
+
+
 def apply_overrides(config: ExperimentConfig, args) -> ExperimentConfig:
     """Apply command-line overrides to configuration."""
     if args.data_dir is not None:
@@ -290,15 +366,19 @@ def main():
             sys.exit(1)
         
         logger.info("Running evaluation only")
-        
+
         # Evaluate on all splits
         for split in ['train', 'val', 'test']:
             try:
                 metrics = trainer.evaluate(split)
-                logger.info(f"\n{split.upper()} Results:\n{metrics.summary()}")
+                if split == 'test':
+                    written = _dump_test_metrics(metrics, output_dir)
+                    if written is not None:
+                        logger.info(f"Saved test metrics to {written}")
+                logger.info(f"\n{split.upper()} Results:\n{_safe_summary(metrics)}")
             except ValueError as e:
                 logger.warning(f"Could not evaluate {split}: {e}")
-        
+
         return
     
     # Run training
@@ -319,7 +399,11 @@ def main():
     for split in ['val', 'test']:
         try:
             metrics = trainer.evaluate(split)
-            logger.info(f"\n{split.upper()} Results:\n{metrics.summary()}")
+            if split == 'test':
+                written = _dump_test_metrics(metrics, output_dir)
+                if written is not None:
+                    logger.info(f"Saved test metrics to {written}")
+            logger.info(f"\n{split.upper()} Results:\n{_safe_summary(metrics)}")
         except ValueError as e:
             logger.warning(f"Could not evaluate {split}: {e}")
     

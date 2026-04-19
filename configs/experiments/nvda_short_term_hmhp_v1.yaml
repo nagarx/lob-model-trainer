@@ -84,8 +84,15 @@ data:
   # - Safety gates (3 features)
   # - Institutional patience (2 features with H10 correlation)
   # Phase 7 Stage 7.1 (2026-04-18): migrated from `feature_preset: short_term_40`
-  # (deprecated 2026-04-15, ImportError 2026-08-15). Uses the src116 variant
-  # because feature_count=116 (this config targets a 116-feature export).
+  # (deprecated 2026-04-15, ImportError 2026-08-15).
+  # Phase 7 Stage 7.4 post-validation A-H3 fix (2026-04-19): rewired from
+  # src116 → src128 when the 116-feat export was retired. Uses the src128
+  # variant because feature_count=128 (the live `nvda_xnas_128feat` export).
+  # The 40 selected feature indices are IDENTICAL between src116 and src128
+  # variants (the composition is sfc-independent); only `source_feature_count`
+  # and therefore `content_hash` differ. Legacy src116 variant retained at
+  # `contracts/feature_sets/nvda_short_term_40_src116_v1.json` for archival
+  # reproducibility should the 116-feat export be revived.
   feature_set: nvda_short_term_40_src128_v1
   
   # Labeling strategy: TLOB (Down/Stable/Up)
@@ -100,14 +107,24 @@ data:
     window_size: 100
     stride: 10
   
-  # Normalization: hybrid for the full 116-feature source
-  # Note: Normalization computed on ALL 116 features, then selection applied
+  # Normalization: hybrid for the full 128-feature source.
+  # Note: Normalization is computed on ALL 128 source features, THEN the
+  # 40-feat subset is selected — so `exclude_features` indices refer to
+  # the source 128-space, not the reduced 40-space.
+  # Exclude categorical features from normalization. TIME_REGIME (93) is
+  # in the 40-feat selection so it must be excluded.
+  # TODO (pre-existing bug, predates fa54e15): indices 92 (BOOK_VALID)
+  # and 94 (MBO_READY) are ALSO in the 40-feat selection and ALSO
+  # categorical — they should be excluded here too. Index 111
+  # (VOL_OF_VOL) is continuous and NOT in the 40-feat selection, so
+  # the current `[93, 111]` list is effectively `[93]` at runtime.
+  # Deferred to a dedicated config-correctness cycle (touches multiple
+  # configs; changing normalization is a silent behavior change that
+  # requires re-running every downstream experiment).
   normalization:
     strategy: hybrid
     eps: 1.0e-8
     clip_value: 10.0
-    # Exclude categorical features from normalization
-    # TIME_REGIME (93) is in our selection, so we exclude it
     exclude_features: [93, 111]
 
 # =============================================================================
