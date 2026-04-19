@@ -2,12 +2,21 @@
 
 > **Version**: 0.4.0  
 > **Schema**: 2.2 (via `hft-contracts` package)  
-> **Last Updated**: April 6, 2026  
+> **Tests**: 1149 collected (1084 passed + 65 skipped)  
+> **Last Updated**: 2026-04-20 (Phase 7 Stage 7.4 Round 4 closeout)  
 > **Purpose**: Complete technical reference for LLMs and developers to understand, modify, and extend the codebase.
 >
 > **Scope**: This library focuses solely on **model training**. For dataset analysis, use `lob-dataset-analyzer`.
 >
-> **New in 0.4.0**: Strategy Pattern refactoring — Trainer decomposed from 1,657L to 900L. 4 concrete strategies (Classification, Regression, HMHPClassification, HMHPRegression). Model Registry integration via lob-models. Dead HMHPOutput/HMHPRegressionOutput removed.
+> **New in 0.4.0 (cumulative through Phase 7 Stage 7.4 Round 4)**:
+> - Phase 2 Strategy Pattern refactoring — Trainer decomposed from 1,657L; 4 concrete strategies (Classification, Regression, HMHPClassification, HMHPRegression) under `src/lobtrainer/training/strategies/`. Model Registry integration via lob-models.
+> - Phase 2b — `CVTrainer` (purged k-fold + embargo, T11), `sample_weights` (T10 de Prado AFML 4.5.1), data sources abstraction + bundle (T12 multi-source), experiment_spec + gates (T14 pre-training IC gate).
+> - Phase 3 — multi-base config composition via `_base:` YAML inheritance (21 axis-partitioned bases, monolith retired 2026-04-15); 6A.5 M6 `yaml.safe_load` dict-guard; 6A.7 `data.feature_set` + `data.feature_sets_dir` axis ownership.
+> - Phase 4 Batch 4c — FeatureSet registry consumer: `DataConfig.feature_set` field (3-field mutual exclusion with `feature_preset` + `feature_indices`), `feature_set_resolver.py` walks up to `contracts/feature_sets/`, verifies `content_hash` via hft_contracts canonical_hash SSoT. Batch 4c.4: `signal_metadata.json::feature_set_ref` propagation to backtester.
+> - Phase 6 6B.2 — trainer inline `_compute_content_hash` retired; delegates to `hft_contracts.canonical_hash`. Golden-fixture drift detector at `tests/test_feature_set_resolver.py::TestCanonicalHashGolden`.
+> - Phase 6 6D — 5 experimental fossils archived under `scripts/archive/` with fossil headers + migration map per hft-rules §4.
+> - Phase 7 Stage 7.1 — 5 trainer config migrations from deprecated `feature_preset:` to Phase 4 `feature_set:` (+ 14 parity tests locking hand-curated JSON indices against trainer preset source). Closes 2026-08-15 `feature_preset` ImportError deadline.
+> - Phase 7 Stage 7.4 Round 4 — `scripts/train.py::_dump_test_metrics` + `_safe_summary`: writes `output_dir/test_metrics.json` after `trainer.evaluate("test")`. Consumed by `hft-ops` PostTrainingGateRunner for prior-best regression comparison. Closes the silent-dead Round 1 `test_*` whitelist for every PyTorch TLOB/HMHP run.
 
 ---
 
