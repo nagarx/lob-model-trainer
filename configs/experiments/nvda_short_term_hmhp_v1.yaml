@@ -57,11 +57,19 @@ description: |
 # Data Configuration
 # =============================================================================
 data:
-  # Path to the 116-feature export (source data)
-  data_dir: "../data/exports/nvda_116feat_full_analysis"
-  
-  # SOURCE data has 116 features (normalization computed on all 116)
-  feature_count: 116
+  # Phase 7 Stage 7.4 post-validation A-H3 fix (2026-04-19): the original
+  # `nvda_116feat_full_analysis` export no longer exists on disk — config
+  # was unrunnable. Rewired to the live 128-feat XNAS export with the
+  # matching src128 FeatureSet variant. Behavior: same 40 indices
+  # selected (nvda_short_term_40 feature composition is sfc-independent —
+  # only `source_feature_count` and therefore content_hash change
+  # between _src116_v1 and _src128_v1). Legacy src116 variant retained
+  # at `contracts/feature_sets/nvda_short_term_40_src116_v1.json` for
+  # archival reproducibility should the 116-feat export be revived.
+  data_dir: "../data/exports/nvda_xnas_128feat"
+
+  # SOURCE data has 128 features (normalization computed on all 128)
+  feature_count: 128
   
   # FEATURE SELECTION: Use short_term_40 preset
   # This selects 40 evidence-based features optimized for H10/H20 prediction
@@ -78,7 +86,7 @@ data:
   # Phase 7 Stage 7.1 (2026-04-18): migrated from `feature_preset: short_term_40`
   # (deprecated 2026-04-15, ImportError 2026-08-15). Uses the src116 variant
   # because feature_count=116 (this config targets a 116-feature export).
-  feature_set: nvda_short_term_40_src116_v1
+  feature_set: nvda_short_term_40_src128_v1
   
   # Labeling strategy: TLOB (Down/Stable/Up)
   labeling_strategy: tlob

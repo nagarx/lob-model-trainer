@@ -1,9 +1,9 @@
 {
   "resolved": {
     "data": {
-      "data_dir": "../data/exports/nvda_116feat_full_analysis",
-      "feature_count": 116,
-      "feature_set": "nvda_short_term_40_src116_v1",
+      "data_dir": "../data/exports/nvda_xnas_128feat",
+      "feature_count": 128,
+      "feature_set": "nvda_short_term_40_src128_v1",
       "horizon_idx": 0,
       "labeling_strategy": "tlob",
       "normalization": {
