@@ -69,7 +69,7 @@ Python library for training and evaluating ML models on LOB (Limit Order Book) d
 | **HMHP Regression** | ✅ Complete | Regression training with precomputed labels |
 | **Experiment Tracking** | ✅ Complete | ExperimentRegistry, comparison tables |
 | **Monitoring Callbacks** | ✅ Complete | Gradient, LR, diagnostics tracking (uses public properties) |
-| **Tests** | ✅ Complete | 656 passed, 15 skipped across 31 test modules |
+| **Tests** | ✅ Complete | 1149 collected (1084 passed + 65 skipped) — matches banner at line 5 |
 
 ### Core Dependencies
 
