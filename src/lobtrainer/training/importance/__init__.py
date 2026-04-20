@@ -31,7 +31,8 @@ References:
 """
 
 from lobtrainer.training.importance.config import (
-    IMPORTANCE_DEFAULT_BLOCK_SIZE_DAYS,
+    IMPORTANCE_DEFAULT_BLOCK_LENGTH_SAMPLES,
+    IMPORTANCE_DEFAULT_BLOCK_SIZE_DAYS,  # back-compat alias
     IMPORTANCE_DEFAULT_EVAL_SPLIT,
     IMPORTANCE_DEFAULT_METHOD,
     IMPORTANCE_DEFAULT_N_PERMUTATIONS,
@@ -46,6 +47,7 @@ from lobtrainer.training.importance.permutation import (
 )
 
 __all__ = [
+    "IMPORTANCE_DEFAULT_BLOCK_LENGTH_SAMPLES",
     "IMPORTANCE_DEFAULT_BLOCK_SIZE_DAYS",
     "IMPORTANCE_DEFAULT_EVAL_SPLIT",
     "IMPORTANCE_DEFAULT_METHOD",

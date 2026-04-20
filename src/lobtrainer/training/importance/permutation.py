@@ -90,7 +90,17 @@ from hft_contracts import (
     FeatureImportanceArtifact,
 )
 from hft_contracts.feature_importance_artifact import compute_stability
-from hft_metrics.bootstrap import block_permutation
+
+# Post-audit (2026-04-20 Agent-A M4 / Agent-D M5): we intentionally
+# DO NOT consume ``hft_metrics.bootstrap.block_permutation`` as a
+# dependency. The reason is a deliberate DRY trade-off: block_permutation
+# wraps a statistic_fn per-replicate, but our use case must run a MODEL
+# FORWARD PASS per replicate — far more expensive than the wrapping
+# overhead savings. We re-implement the identical block-shuffle logic
+# inline (~20 LOC) to avoid the statistic_fn indirection. If a future
+# refactor makes the forward pass comparable-cost to the wrapping, we
+# should route through block_permutation. This trade-off is documented
+# here in code (not a silent duplication).
 
 from lobtrainer.training.importance.config import ImportanceConfig
 
@@ -186,29 +196,57 @@ def compute_permutation_importance(
 
     logger.info(
         "Permutation importance: eval N=%d, features=%d, "
-        "n_permutations=%d, n_seeds=%d, block_size_days=%d",
+        "n_permutations=%d, n_seeds=%d, block_length_samples=%d",
         n_eval, n_features, config.n_permutations, config.n_seeds,
-        config.block_size_days,
+        config.block_length_samples,
     )
 
     # ---- Baseline metric ---------------------------------------------
     baseline_preds = predict_fn(X_eval)
     baseline_value = float(metric_fn(baseline_preds, y_eval))
+    # Post-audit (2026-04-20 Agent-D M2): non-finite baseline poisons
+    # every downstream importance calculation (baseline - null → NaN for
+    # every feature, ci_lower/upper → NaN, stability → 0). Previously
+    # we logged a warning and continued; fail-loud per hft-rules §8 is
+    # the right disposition — the operator must fix the metric or data
+    # before an importance artifact is worth trusting.
     if not math.isfinite(baseline_value):
-        logger.warning(
-            "Baseline metric is non-finite (%s). Importance values will "
-            "be unreliable. Check predict_fn / metric_fn / eval data.",
-            baseline_value,
+        raise ValueError(
+            f"Permutation importance: baseline metric is non-finite "
+            f"({baseline_value}). Cannot compute importance deltas. "
+            f"Verify predict_fn returns finite predictions on the eval "
+            f"split + metric_fn handles NaN inputs correctly."
         )
 
     # ---- Per-feature loop --------------------------------------------
-    # Block length for block_permutation — block_size_days is user-facing;
-    # at sample level, assume roughly even daily sample counts and compute
-    # ``block_length_samples = max(1, n_eval // n_days)`` if we had n_days;
-    # absent that, use block_size_days directly as the sample-count block
-    # (worst case: treats block_size_days samples as one block — fine for
-    # MVP; precise per-day grouping is a follow-up when metadata flows).
-    block_length_samples = max(1, config.block_size_days)
+    # Block length in SAMPLE units (post-audit 2026-04-20 Agent-D H1
+    # rename: was misleadingly named ``block_size_days``). Callers that
+    # want DAY-preserving block permutation pass
+    # ``block_length_samples = round(n_eval / n_days_in_eval)`` —
+    # trainer has this via its per-split sample counts.
+    block_length_samples = max(1, config.block_length_samples)
+
+    # Post-audit round-2 (2026-04-20 arch-S3 + trainer-review): same
+    # degenerate-null guard as ``hft_metrics.bootstrap.block_permutation``.
+    # If ``block_length_samples >= n_eval`` the partition collapses to a
+    # single block → every Fisher-Yates permutation is the identity →
+    # null distribution has zero width → callers would silently report
+    # p=0 / CI-width=0 against a nonexistent null. Fail loud per §8.
+    # (Mirrors the guard at bootstrap.py line 187; inline here per the
+    # documented DRY trade-off at top of this module. If either copy
+    # evolves, the other must track.)
+    _block_starts_precheck = np.arange(0, n_eval, block_length_samples)
+    if len(_block_starts_precheck) < 2:
+        raise ValueError(
+            f"compute_permutation_importance degenerate: "
+            f"block_length_samples={block_length_samples} ≥ n_eval={n_eval} "
+            f"produces a single block. Every permutation is the identity → "
+            f"zero-width null distribution → CI-width=0 and p=0 against "
+            f"a non-existent null. Pass a smaller block_length_samples "
+            f"(default 1 = element-wise permutation; for autocorrelation "
+            f"preservation, pass ~round(n_eval / n_days_in_eval) so at "
+            f"least 2 day-blocks exist)."
+        )
 
     # Pre-allocate working tensor once; mutate in-place per feature, then
     # restore. Avoids allocating ~196MB × n_features × n_seeds copies.
@@ -219,67 +257,24 @@ def compute_permutation_importance(
         # Collect per-seed null distributions
         all_null_values: List[float] = []
         per_seed_means: List[float] = []
+        n_seeds_aggregated_actual = 0  # Post-audit Agent-D M3: track seeds
+                                       # that produced >=1 finite permutation
 
         for seed_offset in range(config.n_seeds):
-            seed = config.seed + seed_offset
+            # Post-audit (2026-04-20 Agent-D H2): per-(feature, seed) RNG
+            # seed is offset by ``local_idx * config.n_seeds`` so each
+            # (feature, seed) pair gets an INDEPENDENT permutation
+            # sequence. Previously every feature shared the same
+            # ``config.seed + seed_offset`` → rank-correlated
+            # importance estimates that bias downstream A-vs-B
+            # comparisons (especially problematic for feedback-merge
+            # ensemble logic in Phase 8C-β).
+            seed = config.seed + seed_offset + local_idx * config.n_seeds
 
-            def _score_fn_closure(_x_unused: np.ndarray, y_perm: np.ndarray) -> float:
-                """Scoring closure for block_permutation.
-
-                block_permutation permutes y (the SECOND argument);
-                we need to map that back to a feature permutation of X.
-                Specifically, ``y_perm[i]`` corresponds to the original
-                ``y_eval[j]`` for some permuted index j. We need the
-                SAME permutation applied to X[:, ..., local_idx].
-
-                block_permutation's semantics: permute y's block-order.
-                To infer the permutation, diff y_perm vs original y_eval
-                and find the re-ordering. But this is expensive for
-                every call.
-
-                SIMPLER ALTERNATIVE: we instead compute the metric on
-                (predict_fn(X_eval) reordered, y_perm). This destroys
-                x↔y association the same way as a feature permutation
-                would — since model predictions are a function of X,
-                shuffling y against fixed predictions is equivalent to
-                shuffling the feature relative to predictions.
-
-                Wait — but this shuffles ALL features simultaneously,
-                not just feature_idx. That's wrong for per-feature
-                importance.
-
-                Actually for MVP, we take a different approach: don't
-                use block_permutation for per-feature. Instead, for
-                each permutation replicate p, use
-                ``rng.permutation(n_eval)`` to derive a permutation
-                index array, then set
-                ``X_work[:, ..., local_idx] = X_eval[perm, ..., local_idx]``
-                and compute ``metric_fn(predict_fn(X_work), y_eval)``.
-
-                This is STANDARD permutation importance. Block
-                permutation is achieved by using block_permutation
-                to generate the PERMUTATION INDEX (not a y-shuffle)
-                below. See the per-feature loop, which uses
-                ``block_permutation`` with a custom statistic_fn
-                returning the PERMUTATION indices themselves — this
-                is a novel use but leverages the same primitive for
-                seed-reproducible block-order shuffle.
-
-                For MVP-MVP: use ``np.random.RandomState(seed).permutation``
-                for non-block (block_size=1). When block_size>1, use
-                block_permutation indirectly via index-generation
-                logic below.
-                """
-                return 0.0  # unused; see real implementation below
-
-            # ---- Generate block-permuted indices (block-aware) ----
-            # Rather than use block_permutation's statistic-fn loop
-            # (which would recompute predictions each time), we
-            # generate the permutation index arrays directly and run
-            # predict_fn on the permuted X in a simple inner loop.
-            # This is O(N_permutations) predict_fn calls vs
-            # O(N_permutations × block_permutation-overhead) — same
-            # algorithmic complexity, less wrapping.
+            # Generate block-permuted indices directly (block-aware).
+            # Inline rather than calling hft_metrics.block_permutation —
+            # see the Phase 8C-α Agent-A M4 / Agent-D M5 comment at top
+            # of this module for the DRY trade-off rationale.
             rng = np.random.RandomState(seed)
 
             # Partition into blocks at the sample level
@@ -324,8 +319,13 @@ def compute_permutation_importance(
             if seed_null_values:
                 seed_mean_null = float(np.mean(seed_null_values))
                 per_seed_means.append(baseline_value - seed_mean_null)
-            else:
-                per_seed_means.append(0.0)
+                n_seeds_aggregated_actual += 1
+            # Post-audit (2026-04-20 Agent-D M3): DROP empty seeds
+            # entirely. Appending 0.0 shifts the cross-seed mean + inflates
+            # std (a failed seed is not evidence of "zero importance" — it
+            # is evidence of a pipeline failure on that seed). Downstream
+            # consumers read ``n_seeds_aggregated`` to judge reliability;
+            # they are miscalibrated if we pad with 0.0.
 
         # ---- Aggregate per-seed importances ----
         if all_null_values:
@@ -354,7 +354,11 @@ def compute_permutation_importance(
             ci_lower_95=ci_lower_95,
             ci_upper_95=ci_upper_95,
             n_permutations=config.n_permutations,
-            n_seeds_aggregated=config.n_seeds,
+            # Post-audit Agent-D M3: surface the ACTUAL seeds that
+            # contributed — not the configured ceiling. Consumers
+            # use this to down-weight features whose estimate rests
+            # on fewer-than-configured seeds.
+            n_seeds_aggregated=n_seeds_aggregated_actual,
             stability=stability,
         ))
 
@@ -369,7 +373,7 @@ def compute_permutation_importance(
         method=config.method,
         baseline_metric=baseline_metric_name,
         baseline_value=baseline_value,
-        block_size_days=config.block_size_days,
+        block_length_samples=config.block_length_samples,
         n_permutations=config.n_permutations,
         n_seeds=config.n_seeds,
         seed=config.seed,

@@ -114,7 +114,7 @@ class TestComputePermutationImportance:
             n_permutations=30,  # small for test speed
             n_seeds=2,
             subsample=-1,  # full
-            block_size_days=1,  # element-wise
+            block_length_samples=1,  # element-wise (no autocorrelation preservation)
             seed=42,
         )
 
@@ -165,7 +165,7 @@ class TestComputePermutationImportance:
             n_permutations=20,
             n_seeds=2,
             subsample=-1,
-            block_size_days=1,
+            block_length_samples=1,
             seed=123,
         )
         a = compute_permutation_importance(
@@ -304,4 +304,169 @@ class TestComputePermutationImportance:
                 predict_fn=_make_mock_predict_fn(0),
                 metric_fn=_pearson_metric,
                 config=cfg,
+            )
+
+
+class TestPostAuditFixes:
+    """Phase 8C-α post-audit regression tests (2026-04-20).
+
+    Each test fails against pre-fix code, validating that the 6 Agent-D
+    fixes + the round-2 degenerate-null guard remain in place.
+    """
+
+    # ---- Agent-D H1: block_size_days → block_length_samples rename ----
+
+    def test_block_size_days_deprecation_warning(self):
+        """Setting legacy ``block_size_days`` must emit DeprecationWarning
+        AND correctly populate ``block_length_samples`` (Agent-D H1)."""
+        import warnings
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cfg = ImportanceConfig(block_size_days=5)
+            assert cfg.block_length_samples == 5
+            deprecations = [w for w in caught
+                            if issubclass(w.category, DeprecationWarning)]
+            assert any("block_size_days is deprecated" in str(w.message)
+                       for w in deprecations), (
+                "Setting legacy block_size_days must emit DeprecationWarning"
+            )
+
+    def test_block_size_days_and_block_length_samples_mismatch_raises(self):
+        """If the caller passes BOTH old+new keys with different values,
+        ``__post_init__`` raises to prevent silent preference bugs
+        (Agent-D H1 mismatch path)."""
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            with pytest.raises(ValueError, match="disagree"):
+                ImportanceConfig(block_size_days=3, block_length_samples=5)
+
+    # ---- Agent-D H2: cross-feature RNG decorrelation ----
+
+    def test_per_feature_rng_decorrelation(self):
+        """Post-audit Agent-D H2: per-(feature, seed) RNG MUST produce
+        independent permutation sequences across features. Previously
+        every feature shared ``config.seed + seed_offset`` → rank-
+        correlated importance estimates.
+
+        Check: with a STABLE predict_fn (depends on only one feature),
+        the null-distribution permutation order for DIFFERENT features
+        at the same seed_offset must differ. Probe: capture the first
+        permutation array generated per feature and assert they are not
+        all identical.
+        """
+        rng = np.random.RandomState(0)
+        X = rng.randn(50, 3).astype(np.float64)
+        y = X[:, 0] * 2.0 + 0.1 * rng.randn(50)
+        cfg = ImportanceConfig(
+            enabled=True, n_permutations=1, n_seeds=1, subsample=-1, seed=42,
+        )
+
+        # Capture permutation seeds used per feature by monkey-patching
+        # np.random.RandomState to log which seeds were instantiated in
+        # the feature-loop.
+        original_rs = np.random.RandomState
+        seeds_used = []
+        def capturing_rs(s, *a, **kw):
+            seeds_used.append(s)
+            return original_rs(s, *a, **kw)
+
+        import lobtrainer.training.importance.permutation as mod
+        mod.np.random.RandomState = capturing_rs  # type: ignore
+        try:
+            compute_permutation_importance(
+                X=X, y=y, feature_names=["a", "b", "c"],
+                feature_indices=[0, 1, 2],
+                predict_fn=_make_mock_predict_fn(0),
+                metric_fn=_pearson_metric,
+                config=cfg,
+            )
+        finally:
+            mod.np.random.RandomState = original_rs  # type: ignore
+
+        # Subsample (disabled: -1) does not instantiate a seeded RS.
+        # Per-feature loop: 3 features × 1 seed → 3 distinct seeds.
+        per_feature_seeds = set(seeds_used)
+        assert len(per_feature_seeds) >= 3, (
+            f"Expected at least 3 distinct RNG seeds (one per feature), "
+            f"got {sorted(per_feature_seeds)}. If all features shared one "
+            f"seed, Agent-D H2 regressed — cross-feature comparisons "
+            f"will be rank-correlated."
+        )
+
+    # ---- Agent-D M2: NaN baseline fail-loud ----
+
+    def test_nan_baseline_raises(self):
+        """Post-audit Agent-D M2: non-finite baseline poisons every
+        downstream importance (baseline - null → NaN). Fail loud per §8."""
+        X = np.random.randn(50, 2).astype(np.float64)
+        y = np.random.randn(50)
+        cfg = ImportanceConfig(enabled=True, n_permutations=5, n_seeds=1,
+                                subsample=-1)
+        bad_metric = lambda preds, y: float("nan")
+        with pytest.raises(ValueError, match="baseline metric is non-finite"):
+            compute_permutation_importance(
+                X=X, y=y,
+                feature_names=["a", "b"], feature_indices=[0, 1],
+                predict_fn=_make_mock_predict_fn(0),
+                metric_fn=bad_metric, config=cfg,
+            )
+
+    # ---- Agent-D M3: failed-seed accounting ----
+
+    def test_failed_seed_dropped_from_n_seeds_aggregated(self):
+        """Post-audit Agent-D M3: if a seed's permutations all produce
+        non-finite metrics, the seed is DROPPED from per_seed_means
+        (not padded with 0.0). ``FeatureImportance.n_seeds_aggregated``
+        must reflect the ACTUAL count, not config.n_seeds.
+        """
+        X = np.random.randn(50, 2).astype(np.float64)
+        y = X[:, 0] * 2.0 + 0.1 * np.random.RandomState(0).randn(50)
+        cfg = ImportanceConfig(enabled=True, n_permutations=3, n_seeds=3,
+                                subsample=-1, seed=42)
+        # Metric fn that returns NaN on permuted inputs (simulating all-seed
+        # failure) but a finite baseline (the un-permuted call).
+        call_count = [0]
+        def flaky_metric(preds, y):
+            call_count[0] += 1
+            # First call is baseline (no permutation); return finite.
+            if call_count[0] == 1:
+                return 0.5
+            return float("nan")
+
+        artifact = compute_permutation_importance(
+            X=X, y=y,
+            feature_names=["a", "b"], feature_indices=[0, 1],
+            predict_fn=_make_mock_predict_fn(0),
+            metric_fn=flaky_metric, config=cfg,
+        )
+        for feat in artifact.features:
+            assert feat.n_seeds_aggregated == 0, (
+                f"Feature {feat.feature_name}: all permutations failed "
+                f"(NaN metric) → n_seeds_aggregated must be 0 (actual seeds "
+                f"that contributed), NOT {cfg.n_seeds} (configured). "
+                f"Got {feat.n_seeds_aggregated}."
+            )
+
+    # ---- Round-2 post-audit: degenerate n_blocks<2 guard in trainer ----
+
+    def test_block_length_samples_geq_n_eval_raises(self):
+        """Round-2 (arch-S3): trainer's inline block-permutation must
+        fail-loud when ``block_length_samples >= n_eval`` (same bug
+        Agent-A H2 fixed in hft_metrics.block_permutation). Silently
+        collapsing to 1 block produces a zero-width null distribution.
+        """
+        X = np.random.randn(50, 2).astype(np.float64)
+        y = np.random.randn(50)
+        # subsample forces n_eval=10; block_length_samples=10 → n_blocks=1
+        cfg = ImportanceConfig(
+            enabled=True, n_permutations=5, n_seeds=1,
+            subsample=10, block_length_samples=10, seed=42,
+        )
+        with pytest.raises(ValueError, match="degenerate"):
+            compute_permutation_importance(
+                X=X, y=y,
+                feature_names=["a", "b"], feature_indices=[0, 1],
+                predict_fn=_make_mock_predict_fn(0),
+                metric_fn=_pearson_metric, config=cfg,
             )

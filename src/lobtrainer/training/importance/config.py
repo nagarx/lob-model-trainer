@@ -32,7 +32,17 @@ IMPORTANCE_DEFAULT_METHOD: Literal["permutation"] = "permutation"
 IMPORTANCE_DEFAULT_N_PERMUTATIONS: int = 100
 IMPORTANCE_DEFAULT_N_SEEDS: int = 3
 IMPORTANCE_DEFAULT_SUBSAMPLE: int = 5000  # -1 = full eval split
-IMPORTANCE_DEFAULT_BLOCK_SIZE_DAYS: int = 1
+IMPORTANCE_DEFAULT_BLOCK_LENGTH_SAMPLES: int = 1
+# Post-audit (2026-04-20 Agent-D H1): renamed from ``block_size_days`` to
+# ``block_length_samples`` to match the code's actual semantics. Callers
+# that want DAY-preserving block permutation must pass
+# ``block_length_samples = n_samples_per_day`` explicitly — the trainer
+# has the per-split sample counts available via its data loader. The old
+# name silently implied autocorrelation preservation that the code did
+# not deliver (Politis & Romano 1994 semantics require block_length >
+# autocorrelation lag; block_length=1 is element-wise permutation).
+# Back-compat alias kept below for transition.
+IMPORTANCE_DEFAULT_BLOCK_SIZE_DAYS: int = IMPORTANCE_DEFAULT_BLOCK_LENGTH_SAMPLES
 IMPORTANCE_DEFAULT_SEED: int = 42
 IMPORTANCE_DEFAULT_EVAL_SPLIT: Literal["test", "val"] = "test"
 
@@ -67,8 +77,18 @@ class ImportanceConfig:
       subsample: Limit eval-split size (random draw with the same
         seed per importance run). -1 = use full split. Default 5000
         to keep compute tractable.
-      block_size_days: Block-permutation block size, in day units.
-        Preserves intraday autocorrelation. Default 1.
+      block_length_samples: Block-permutation block size, in SAMPLE units
+        (NOT day units — post-audit 2026-04-20 rename for semantic
+        accuracy). Default 1 = element-wise permutation (no
+        autocorrelation preservation). To preserve intraday
+        autocorrelation, caller must pass
+        ``block_length_samples = round(n_eval / n_days_in_eval)`` — the
+        trainer has this via its per-split sample counts. When n_eval
+        is a pre-subsample count, operator must scale by subsample
+        ratio.
+      block_size_days: DEPRECATED alias for ``block_length_samples``
+        (maintained for config back-compat until Phase 8C-β). Emits
+        DeprecationWarning on use. Remove 2026-10-31.
       seed: Base RNG seed. Per-seed seeds derived as
         ``range(seed, seed + n_seeds)``. Determinism contract §7.
       eval_split: "test" (default) or "val". Test is preferred — val
@@ -87,13 +107,43 @@ class ImportanceConfig:
     n_permutations: int = IMPORTANCE_DEFAULT_N_PERMUTATIONS
     n_seeds: int = IMPORTANCE_DEFAULT_N_SEEDS
     subsample: int = IMPORTANCE_DEFAULT_SUBSAMPLE
-    block_size_days: int = IMPORTANCE_DEFAULT_BLOCK_SIZE_DAYS
+    block_length_samples: int = IMPORTANCE_DEFAULT_BLOCK_LENGTH_SAMPLES
     seed: int = IMPORTANCE_DEFAULT_SEED
     eval_split: Literal["test", "val"] = IMPORTANCE_DEFAULT_EVAL_SPLIT
     baseline_metric: str = "auto"
 
+    # Back-compat deprecated alias (post-audit 2026-04-20 Agent-D H1).
+    # Use ``block_length_samples`` instead. If both are set to different
+    # values, ``__post_init__`` raises to prevent silent preference bugs.
+    # Removal target: 2026-10-31.
+    block_size_days: int = -1  # sentinel for "not explicitly set"
+
     def __post_init__(self) -> None:
         """Validate config at construction time (fail-loud per §5)."""
+        # -------- Back-compat alias resolution -------------------------
+        if self.block_size_days != -1:
+            # User passed the old name
+            import warnings
+            warnings.warn(
+                "ImportanceConfig.block_size_days is deprecated (2026-04-20) — "
+                "use block_length_samples instead. The old name was "
+                "misleading: the code always treated it as a SAMPLE count, "
+                "never a DAY count. See Phase 8C-α Agent-D H1. "
+                "Removal target: 2026-10-31.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            if (self.block_length_samples != IMPORTANCE_DEFAULT_BLOCK_LENGTH_SAMPLES
+                    and self.block_length_samples != self.block_size_days):
+                raise ValueError(
+                    f"ImportanceConfig: block_size_days={self.block_size_days} "
+                    f"and block_length_samples={self.block_length_samples} "
+                    f"disagree. Use only block_length_samples (the new name)."
+                )
+            object.__setattr__(
+                self, "block_length_samples", self.block_size_days,
+            )
+
         if self.n_permutations < 1:
             raise ValueError(
                 f"n_permutations must be >= 1, got {self.n_permutations}"
@@ -105,9 +155,10 @@ class ImportanceConfig:
                 f"subsample must be -1 (use full) or positive integer, "
                 f"got {self.subsample}"
             )
-        if self.block_size_days < 1:
+        if self.block_length_samples < 1:
             raise ValueError(
-                f"block_size_days must be >= 1, got {self.block_size_days}"
+                f"block_length_samples must be >= 1, got "
+                f"{self.block_length_samples}"
             )
         if self.method not in ("permutation",):
             raise ValueError(

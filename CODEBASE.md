@@ -2,8 +2,8 @@
 
 > **Version**: 0.4.0  
 > **Schema**: 2.2 (via `hft-contracts` package)  
-> **Tests**: 1149 collected (1084 passed + 65 skipped)  
-> **Last Updated**: 2026-04-20 (Phase 7 Stage 7.4 Round 4 closeout)  
+> **Tests**: 1167 collected (1099 passed + 68 skipped) — Phase 8C-α Stage C.1 added `training/importance/` pure-function package (+12 C.1 + 6 post-audit regression tests)  
+> **Last Updated**: 2026-04-20 (Phase 8C-α Stage C.1 + 2-round post-audit — `compute_permutation_importance` framework-agnostic pure function + `ImportanceConfig` frozen dataclass + `block_length_samples` rename + cross-feature RNG decorrelation + NaN-baseline fail-loud + failed-seed drop + degenerate-block guard)  
 > **Purpose**: Complete technical reference for LLMs and developers to understand, modify, and extend the codebase.
 >
 > **Scope**: This library focuses solely on **model training**. For dataset analysis, use `lob-dataset-analyzer`.
