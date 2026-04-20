@@ -32,10 +32,37 @@ class ClassificationStrategy(TrainingStrategy):
     def __init__(self, config, device):
         super().__init__(config, device)
         self._criterion: Optional[nn.Module] = None
+        # P0-V1-N1 fix (Phase I.A, 2026-04-20): mirror criterion with reduction='none'
+        # built once at initialize() to eliminate the per-batch mutate-save-restore
+        # pattern that was unsafe under num_workers > 0 (race on self._criterion.reduction)
+        # AND under validation-during-training (re-entrance on the same criterion instance).
+        self._criterion_unreduced: Optional[nn.Module] = None
 
     def initialize(self, train_loader: DataLoader, model: nn.Module) -> None:
-        """Compute class weights and create criterion."""
+        """Compute class weights and create criterion (+ unreduced mirror for weighted loss)."""
         self._criterion = self._create_criterion(train_loader)
+        # Build unreduced mirror ONCE per epoch. Shares the same class_weights / focal
+        # gamma / alpha as the primary criterion — no per-sample-weighting semantic drift.
+        self._criterion_unreduced = self._build_unreduced_mirror(self._criterion)
+
+    @staticmethod
+    def _build_unreduced_mirror(primary: nn.Module) -> nn.Module:
+        """Construct a reduction='none' criterion mirroring ``primary``'s configuration.
+
+        Invariant: the returned criterion must produce per-sample loss that, when
+        averaged (with equal weights), equals the primary criterion's scalar loss.
+        This is the reduction-contract for per-sample weighting in process_batch.
+        """
+        from lobtrainer.training.loss import FocalLoss
+        if isinstance(primary, FocalLoss):
+            return FocalLoss(
+                alpha=getattr(primary, "alpha", None),
+                gamma=getattr(primary, "gamma", 2.0),
+                reduction="none",
+            )
+        # nn.CrossEntropyLoss path (weighted or unweighted)
+        weight = getattr(primary, "weight", None)
+        return nn.CrossEntropyLoss(weight=weight, reduction="none")
 
     @property
     def criterion(self) -> Optional[nn.Module]:
@@ -147,23 +174,17 @@ class ClassificationStrategy(TrainingStrategy):
             sample_weights = sample_weights.to(self.device)
 
             output = model(features)
-            # Per-sample loss: use criterion's own forward with reduction='none'
-            # to preserve both class weights AND focal gamma when applicable.
-            from lobtrainer.training.loss import FocalLoss
-            if isinstance(self._criterion, FocalLoss):
-                # FocalLoss natively supports reduction='none'
-                saved_reduction = self._criterion.reduction
-                self._criterion.reduction = "none"
-                loss_unreduced = self._criterion(output.logits, labels)
-                self._criterion.reduction = saved_reduction
-            else:
-                # CrossEntropyLoss: extract class weight and compute per-sample
-                import torch.nn.functional as _F
-                _class_weight = getattr(self._criterion, "weight", None)
-                loss_unreduced = _F.cross_entropy(
-                    output.logits, labels,
-                    weight=_class_weight, reduction="none",
-                )
+            # P0-V1-N1 fix (Phase I.A, 2026-04-20): use the prebuilt reduction='none'
+            # mirror criterion instead of mutating self._criterion.reduction per-batch.
+            # The old mutate-save-restore pattern was unsafe under num_workers>0
+            # (concurrent process_batch calls corrupted the saved_reduction handshake)
+            # AND under validation-during-training (re-entrance on same instance).
+            # Mirror shares class weights / focal gamma+alpha with primary — same semantics.
+            if self._criterion_unreduced is None:
+                # Defensive: initialize() should have populated this. Rebuild lazily to
+                # preserve backward compatibility with callers that skip initialize().
+                self._criterion_unreduced = self._build_unreduced_mirror(self._criterion)
+            loss_unreduced = self._criterion_unreduced(output.logits, labels)
             loss = (loss_unreduced * sample_weights).mean()
         else:
             features, labels = batch_data

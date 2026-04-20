@@ -97,11 +97,20 @@ class HMHPClassificationStrategy(TrainingStrategy):
             sample_weights = sample_weights.to(self.device)
 
         output = model(features)
+        # P0-2 fix (Phase I.B.1, 2026-04-20): thread per-sample weights into the
+        # model's compute_loss via the extended (reduction, sample_weights) contract.
+        # The previous ``total_loss * sample_weights.mean()`` pattern was a silent no-op
+        # because AFML §4.5.1 weights normalize to mean ≈ 1.0 — per-sample reweighting
+        # (the whole point of uniqueness) was never reaching back-prop on HMHP paths.
+        # Now the model internally applies ``per_sample_loss * sample_weights`` before
+        # reducing, so non-uniform weights actually shape the gradient.
         total_batch_loss, loss_components = model.compute_loss(
-            output, labels, regression_targets=regression_targets
+            output,
+            labels,
+            regression_targets=regression_targets,
+            reduction="mean",
+            sample_weights=sample_weights,
         )
-        if sample_weights is not None:
-            total_batch_loss = total_batch_loss * sample_weights.mean()
 
         batch_size = features.size(0)
 

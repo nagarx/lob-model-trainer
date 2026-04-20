@@ -95,11 +95,16 @@ class HMHPRegressionStrategy(TrainingStrategy):
             sample_weights = sample_weights.to(self.device)
         output = model(features)
 
+        # P0-2 fix (Phase I.B.1, 2026-04-20): thread per-sample weights into compute_loss
+        # via the extended (reduction, sample_weights) contract. See hmhp_classification.py
+        # for rationale — AFML §4.5.1 uniqueness is actually active after this point on
+        # HMHP-R regression paths.
         loss, loss_components = model.compute_loss(
-            output, regression_targets=regression_targets
+            output,
+            regression_targets=regression_targets,
+            reduction="mean",
+            sample_weights=sample_weights,
         )
-        if sample_weights is not None:
-            loss = loss * sample_weights.mean()
 
         batch_size = features.size(0)
         metrics: Dict[str, float] = {"loss": loss.item()}

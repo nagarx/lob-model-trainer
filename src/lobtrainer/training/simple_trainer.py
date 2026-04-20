@@ -20,7 +20,15 @@ from typing import Dict, Optional
 
 import numpy as np
 
-from lobmodels.features.temporal import TemporalFeatureConfig, engineer_temporal_features
+# Phase IV (2026-04-20): canonical SSoT is ``hft_metrics.temporal``. The legacy
+# ``lobmodels.features.temporal`` path is a re-export shim that emits a
+# DeprecationWarning on every call to ``engineer_temporal_features``; importing
+# directly from hft_metrics bypasses the shim entirely. The local alias keeps
+# the rest of this file unchanged during the rename window (hft_metrics uses
+# ``engineer_features`` as the canonical verb-noun name; the legacy
+# ``engineer_temporal_features`` alias will be removed 2026-10-31).
+from hft_metrics import TemporalFeatureConfig
+from hft_metrics import engineer_features as engineer_temporal_features
 from lobmodels.models.simple import (
     BaseSimpleModel,
     TemporalRidge,

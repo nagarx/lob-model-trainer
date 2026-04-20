@@ -24,6 +24,111 @@ from lobtrainer.export.metadata import build_signal_metadata
 logger = logging.getLogger(__name__)
 
 
+def _derive_data_source(data_dir: Any) -> str:
+    """Infer the data_source tag from the export directory path.
+
+    Phase II (2026-04-20): used to populate the ``data_source`` field of
+    CompatibilityContract. Heuristic: directory name prefixed with ``basic_`` is
+    the off-exchange (CMBP-1) pipeline; otherwise MBO LOB.
+
+    This heuristic is documented as the canonical "infer from convention" fallback
+    until each DataConfig carries an explicit ``data_source: Literal[...]`` field.
+    Future DataConfig schema bump should make this explicit — see root CLAUDE.md
+    Change-Coordination Checklist (Phase II → Phase III).
+    """
+    name = Path(str(data_dir)).name
+    if name.startswith("basic_"):
+        return "off_exchange"
+    return "mbo_lob"
+
+
+def _build_compatibility_contract(
+    config: Any,
+    feature_set_ref: Optional[Dict[str, str]],
+    calibration_method: Optional[str],
+) -> Optional[Any]:
+    """Construct a ``hft_contracts.compatibility.CompatibilityContract`` from config.
+
+    Returns ``None`` when import fails (hft-contracts not installed in this venv)
+    so pre-Phase-II environments gracefully omit the new metadata block. Production
+    consumers see the full 11-key block; legacy consumers ignore the unrecognized key.
+
+    Phase II (2026-04-20). See hft_contracts.compatibility for the contract surface.
+    """
+    try:
+        from hft_contracts import SCHEMA_VERSION
+        from hft_contracts.compatibility import (
+            CompatibilityContract,
+            compute_label_strategy_hash,
+        )
+    except Exception as exc:  # broad: package missing / import chain broken
+        logger.warning(
+            "CompatibilityContract not constructed — hft_contracts unavailable: %s", exc
+        )
+        return None
+
+    try:
+        feature_layout = (
+            feature_set_ref["content_hash"]
+            if feature_set_ref and "content_hash" in feature_set_ref
+            else "default"
+        )
+        horizons_list = getattr(config.labels, "horizons", None) or getattr(
+            config.model, "hmhp_horizons", None
+        )
+        horizons_tuple = tuple(horizons_list) if horizons_list else None
+
+        # Label strategy hash captures the full LabelsConfig — strategy + horizons +
+        # thresholds + smoothing — so parameter variations don't collide under a
+        # flat strategy-name string.
+        label_hash = compute_label_strategy_hash(config.labels)
+
+        # Safely coerce feature_count / window_size — dataset configs use slightly
+        # different attribute names across asset classes.
+        feature_count = int(
+            getattr(config.data, "feature_count", None)
+            or getattr(config.data, "num_features", 0)
+        )
+        window_size = int(
+            getattr(config.data, "window_size", None)
+            or getattr(config.data, "sequence_length", 0)
+        )
+        if feature_count == 0 or window_size == 0:
+            logger.warning(
+                "CompatibilityContract has zero feature_count (%d) or window_size (%d) — "
+                "config surface may have drifted; check DataConfig attribute names.",
+                feature_count, window_size,
+            )
+
+        return CompatibilityContract(
+            contract_version=str(SCHEMA_VERSION),
+            schema_version=str(SCHEMA_VERSION),
+            feature_count=feature_count,
+            window_size=window_size,
+            feature_layout=str(feature_layout),
+            data_source=_derive_data_source(config.data.data_dir),
+            label_strategy_hash=label_hash,
+            calibration_method=calibration_method,
+            primary_horizon_idx=getattr(config.data, "horizon_idx", None),
+            horizons=horizons_tuple,
+            normalization_strategy=str(
+                getattr(config.data.normalization, "strategy", "unknown")
+            ),
+        )
+    except Exception as exc:
+        # Be forgiving at the boundary: if ANY field probe fails, log and skip the
+        # compatibility block rather than refusing to emit signals. The trainer
+        # must continue to produce outputs; a missing compatibility block is
+        # detectable downstream (legacy-manifest warning), whereas a crashed
+        # exporter loses the whole run.
+        logger.warning(
+            "CompatibilityContract construction failed (%s); emitting legacy "
+            "signal_metadata.json without compatibility block.",
+            exc,
+        )
+        return None
+
+
 def _feature_set_ref_dict(data_config: Any) -> Optional[Dict[str, str]]:
     """Extract feature_set_ref dict from DataConfig private cache (Phase 4 Batch 4c.4).
 
@@ -547,6 +652,41 @@ class SignalExporter:
         if horizons and horizon_idx is not None and horizon_idx < len(horizons):
             primary_horizon = f"H{horizons[horizon_idx]}"
 
+        # Phase II (2026-04-20): construct CompatibilityContract BEFORE passing to
+        # build_signal_metadata so the producer fingerprint is pinned at export time.
+        # The manifest consumer validates by recomputing from the serialized block —
+        # any tampering between producer and consumer is detected.
+        fs_ref = _feature_set_ref_dict(config.data)
+        # SB-3 Phase II hardening (2026-04-20): derive calibration_method from the
+        # APPLIED state (calibration_result is not None) rather than the configured
+        # flag (self._calibration != "none"). The configured flag was set to
+        # "variance_match" even on classification paths, where `_apply_calibration`
+        # short-circuits (regression-only). That produced a manifest claiming
+        # calibration with no calibrated_returns.npy file — which raises at LOAD
+        # time via the D10 orphan-file rule. Now: calibration_method reflects
+        # what actually happened, not what the caller asked for. A WARN log
+        # surfaces the mismatch so the operator knows the --calibrate flag was
+        # a no-op on their signal_type.
+        configured_calibration = getattr(self, "_calibration", "none")
+        calibration_applied = calibration_result is not None
+        signal_type = inference.get("signal_type", "unknown")
+        if configured_calibration != "none" and not calibration_applied:
+            logger.warning(
+                "Calibration flag %r was configured but not applied (signal_type=%r). "
+                "variance_match is regression-only. Setting calibration_method=None "
+                "in signal_metadata.json so the manifest matches the files on disk.",
+                configured_calibration, signal_type,
+            )
+        calibration_method = (
+            configured_calibration if calibration_applied else None
+        )
+        compatibility = _build_compatibility_contract(
+            config=config,
+            feature_set_ref=fs_ref,
+            calibration_method=calibration_method,
+        )
+        data_source_tag = _derive_data_source(config.data.data_dir)
+
         return build_signal_metadata(
             model_type=model_type_str,
             model_name=str(model_name),
@@ -561,7 +701,7 @@ class SignalExporter:
             horizon_idx=horizon_idx,
             data_dir=str(config.data.data_dir),
             feature_preset=getattr(config.data, "feature_preset", None),
-            feature_set_ref=_feature_set_ref_dict(config.data),
+            feature_set_ref=fs_ref,
             normalization_strategy=str(getattr(config.data.normalization, "strategy", "unknown")),
             prediction_stats=prediction_stats,
             spread_stats=spread_stats,
@@ -572,4 +712,8 @@ class SignalExporter:
             directional_rate=directional_rate,
             metrics=metrics_dict,
             calibration=calibration_result,
+            # Phase II additions
+            compatibility=compatibility,
+            data_source=data_source_tag,
+            calibration_method=calibration_method,
         )
