@@ -2,8 +2,8 @@
 
 > **Version**: 0.4.0  
 > **Schema**: 2.2 (via `hft-contracts` package)  
-> **Tests**: 1167 collected (1099 passed + 68 skipped) — Phase 8C-α Stage C.1 added `training/importance/` pure-function package (+12 C.1 + 6 post-audit regression tests)  
-> **Last Updated**: 2026-04-20 (Phase 8C-α Stage C.1 + 2-round post-audit — `compute_permutation_importance` framework-agnostic pure function + `ImportanceConfig` frozen dataclass + `block_length_samples` rename + cross-feature RNG decorrelation + NaN-baseline fail-loud + failed-seed drop + degenerate-block guard)  
+> **Tests**: 1183 collected (1118 passed + 65 skipped) — Phase 8C-α Integration Close-Out adds trainer wire-in: `PermutationImportanceCallback` (16 new callback unit tests) + `ImportanceConfig` field on `ExperimentConfig` via `_coerce_importance` (breaks schema.py ↔ training.importance.config circular) + `configs/bases/train/importance_default.yaml` partial base fragment  
+> **Last Updated**: 2026-04-20 (Phase 8C-α Integration Close-Out — Q7 trainer wire-in COMPLETE: `PermutationImportanceCallback` at `training/importance/callback.py` auto-registered by `train_from_config` when `config.importance is not None`; `make_pytorch_predict_fn` / `make_metric_fn_for_task` / `_extract_eval_tensors` factories; graceful-failure (observation-tier errors log+swallow, do NOT kill training); preserves Stage C.1 + 2-round post-audit: `compute_permutation_importance` pure function + `ImportanceConfig` + `block_length_samples` rename + RNG decorrelation + NaN-baseline fail-loud + failed-seed drop + degenerate-block guard)  
 > **Purpose**: Complete technical reference for LLMs and developers to understand, modify, and extend the codebase.
 >
 > **Scope**: This library focuses solely on **model training**. For dataset analysis, use `lob-dataset-analyzer`.

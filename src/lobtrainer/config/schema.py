@@ -19,9 +19,20 @@ Usage:
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
-from typing import Optional, List, Tuple, Any, Dict
+from typing import Optional, List, Tuple, Any, Dict, TYPE_CHECKING
 import json
 import yaml
+
+# Phase 8C-α Stage C.1 trainer wire-in (2026-04-20 post-audit round-2):
+# ImportanceConfig cannot be imported at schema.py module-load time —
+# doing so triggers lobtrainer.training.__init__.py → trainer.py →
+# lobtrainer.config (circular). Use TYPE_CHECKING guard for static
+# type-checkers; do runtime conversion via __post_init__ on
+# ExperimentConfig (see `_coerce_importance` below). dacite loaders
+# pass through the raw dict; we convert to ImportanceConfig after
+# the dataclass is constructed.
+if TYPE_CHECKING:
+    from lobtrainer.training.importance.config import ImportanceConfig  # noqa: F401
 
 
 # =============================================================================
@@ -132,6 +143,43 @@ class LabelingStrategy(str, Enum):
     No discrete classes. Output is float64 bps at each horizon.
     Goal: Predict return magnitude, not just direction.
     """
+
+
+def _coerce_importance(config: Any) -> None:
+    """Phase 8C-α Stage C.1 trainer wire-in helper.
+
+    Coerces ``config.importance`` from dict (YAML-load default) or
+    None → ImportanceConfig instance, OR leaves a pre-constructed
+    ImportanceConfig intact. Deferred import breaks the schema.py ↔
+    training.importance.config circular dependency at module load
+    time. ImportanceConfig's own ``__post_init__`` validates field
+    ranges (n_permutations >= 1, etc.), so we just trigger
+    construction.
+
+    Mutates ``config`` in place (ExperimentConfig is NOT frozen).
+    """
+    imp = getattr(config, "importance", None)
+    if imp is None:
+        return  # already None — disabled, nothing to do
+    if isinstance(imp, dict):
+        from lobtrainer.training.importance.config import ImportanceConfig
+        config.importance = ImportanceConfig(**imp)
+        return
+    # Round-3 post-audit Agent-4 H2 fix: real isinstance check instead
+    # of duck-typing. We're inside __post_init__ — the training package
+    # has finished importing its parents before this runs (called via
+    # dataclass machinery, not at module-import time) — so we can
+    # safely import and do a proper isinstance check. Duck-typing
+    # (hasattr 'enabled' + 'method') accepts arbitrary objects
+    # including partially-corrupt deserializations; strict check
+    # prevents silent garbage-in.
+    from lobtrainer.training.importance.config import ImportanceConfig
+    if isinstance(imp, ImportanceConfig):
+        return
+    raise TypeError(
+        f"ExperimentConfig.importance must be None, a dict, or an "
+        f"ImportanceConfig instance; got {type(imp).__name__}."
+    )
 
 
 @dataclass
@@ -1290,6 +1338,27 @@ class ExperimentConfig:
     cv: Optional[CVConfig] = None
     """Cross-validation configuration (T11). None = no CV."""
 
+    # Logical type: Optional["ImportanceConfig"]. Kept as Optional[Any]
+    # at runtime to avoid the schema.py ↔ training.importance.config
+    # circular import chain (see TYPE_CHECKING guard at module top).
+    # Actual type coercion (dict → ImportanceConfig) happens in
+    # ``__post_init__`` below via ``_coerce_importance``.
+    importance: Optional[Any] = None
+    """Phase 8C-α Stage C.1 trainer wire-in (2026-04-20): post-training
+    feature-permutation-importance configuration. When set AND
+    ``importance.enabled=True``, the trainer auto-registers
+    ``PermutationImportanceCallback`` which runs on_train_end to compute
+    per-feature importance + write ``outputs/<name>/feature_importance_v1.json``
+    for hft-ops Stage C.3 ledger routing. None = disabled (default,
+    zero compute overhead). OBSERVATION — NOT a treatment — so
+    fingerprint-excluded via `hft_ops.ledger.dedup._extract_fingerprint_fields`
+    (enabling importance does NOT change what gets trained; only adds
+    post-hoc analysis). Locked by
+    `test_dedup.py::test_importance_field_excluded_from_fingerprint`.
+    See `lobtrainer.training.importance.config.ImportanceConfig` for
+    field-level documentation + `lobtrainer.training.importance.callback`
+    for the invocation mechanism."""
+
     output_dir: str = "outputs"
     """Directory for checkpoints and logs."""
 
@@ -1304,6 +1373,13 @@ class ExperimentConfig:
         # T13: Resolve expected feature count and auto-derive model.input_size
         import logging as _log
         _t13_logger = _log.getLogger(__name__)
+
+        # Phase 8C-α Stage C.1 trainer wire-in (post-audit round-2):
+        # coerce importance from dict → ImportanceConfig. Deferred import
+        # breaks the schema.py ↔ training.importance.config circular
+        # dependency. See `_coerce_importance` below for the conversion
+        # + validation delegation to ImportanceConfig.__post_init__.
+        _coerce_importance(self)
 
         # Phase 6 6A.1 (2026-04-17, revised after validation audit):
         # `data.feature_set` is resolved AT TRAINER RUNTIME (inside

@@ -1,0 +1,77 @@
+# axis: train (importance sub-axis)
+# Enables post-training permutation importance on the trained model
+# (Phase 8C-α Stage C.1, wired 2026-04-20 post-audit round-2).
+#
+# Used by: any experiment wanting a post-hoc feature-importance audit.
+# Compose via:
+#   _base:
+#     - models/<model>.yaml
+#     - datasets/<dataset>.yaml
+#     - labels/<label>.yaml
+#     - train/regression_default.yaml  # or classification_default.yaml
+#     - train/importance_default.yaml  # <-- adds the importance block
+#
+# Ownership: top-level `importance:` block — orthogonal to `train.*`, so
+# this fragment does NOT overlap with train/regression_default.yaml or
+# train/classification_default.yaml. Both can be composed together.
+#
+# Compute cost (approximate, CPU-bound model-forward dominant):
+#   n_permutations × n_seeds × n_features forward passes on the
+#   subsample (default 5000). For a 98-feature model:
+#     - defaults (100 × 3 × 98 × 5000) ≈ 15-30 min per experiment
+#     - tight CI (500 × 5 × 98 × 5000) ≈ 2-4 hours
+#     - full eval (subsample=-1) ≈ 10-20 hours at 500 × 5
+#
+# Output: outputs/{experiment_name}/feature_importance_v1.json
+#   - Schema: hft_contracts.FeatureImportanceArtifact v2
+#   - Picked up automatically by hft-ops Stage C.3 ledger routing →
+#     hft-ops/ledger/feature_importance/{yyyy_mm}/<sha>.json
+#   - Referenced via ExperimentRecord.artifacts[]
+#
+# Stage C.5 consumer (Phase 8C-β, deferred): feedback-merge requires
+# a registered FeatureSet. Experiments using `data.feature_set: <name>`
+# are first-class feedback-merge candidates; experiments using ad-hoc
+# `data.feature_indices: [...]` or `data.feature_preset` emit a WARN
+# and produce artifacts that are dead-end for merge (acceptable for
+# one-off importance audits).
+
+_partial: true
+
+importance:
+  enabled: true          # Master switch. When false (or block omitted),
+                         # the trainer does NOT run the importance
+                         # callback — zero compute overhead.
+  method: permutation    # "permutation" for MVP (Phase 8C-α). Future:
+                         # "shap" / "integrated_gradients" (8D+).
+  n_permutations: 100    # Per-seed permutation replicate count. Higher
+                         # = tighter CI, longer compute. Statistical
+                         # minimum ~50 for crude CI; 100+ for reliable
+                         # CI on a metric with std ~0.03.
+  n_seeds: 3             # Random seeds aggregated. Min 2 for cross-
+                         # seed std estimate; Phase 8C-β feedback-merge
+                         # default K=5 — when you KNOW this experiment
+                         # will feed into merge, bump to 5.
+  subsample: 5000        # Eval-split subsample. -1 = use full split.
+                         # Default 5000 keeps compute tractable for a
+                         # ~50K val/test split. Seeded draw (config.seed).
+  block_length_samples: 1  # Block-permutation block size in SAMPLE
+                         # units (NOT day units — post-audit 2026-04-20
+                         # Agent-D H1 rename for semantic accuracy).
+                         # Default 1 = element-wise permutation (no
+                         # autocorrelation preservation). For day-
+                         # preserving blocks, set ≈ round(n_eval /
+                         # n_days_in_eval) — the trainer has per-split
+                         # sample counts available.
+  seed: 42               # Base RNG seed. Per-seed seeds derived as
+                         # range(seed, seed + n_seeds). Determinism
+                         # contract §7.
+  eval_split: "test"     # "test" (preferred) or "val". Test is
+                         # preferred — val was implicitly used for
+                         # early-stopping so the model is indirectly
+                         # optimized on it.
+  baseline_metric: "auto"  # "auto" resolves from config.labels.task_type:
+                         # regression → val_ic (spearman on primary
+                         # horizon); classification → val_accuracy
+                         # (argmax). Explicit overrides: "val_ic",
+                         # "val_macro_f1", "val_directional_accuracy",
+                         # etc.

@@ -132,9 +132,47 @@ class Trainer:
         self.config = config
         self._model = model
         self._preloaded_days = preloaded_days  # T11: bypass disk loading for CV folds
-        
+
         # Setup callbacks
-        self.callbacks = CallbackList(callbacks or [])
+        callbacks_list = list(callbacks or [])
+
+        # Phase 8C-α Integration Close-Out Round-3 post-audit Agent-4 H1
+        # fix: auto-register PermutationImportanceCallback here in
+        # `__init__` (NOT in `create_trainer`) so the scripts/train.py +
+        # hft-ops subprocess path — which EXPLICITLY passes callbacks=
+        # and bypasses `create_trainer`'s default-list builder — still
+        # gets the callback wired. Also covers CVTrainer which calls
+        # `Trainer(fold_config, ...)` directly. Precedence rule:
+        # user-supplied PermutationImportanceCallback wins (duck-typed
+        # class-name check to avoid pulling torch in the config path).
+        if getattr(config, "importance", None) is not None:
+            user_has_importance_cb = any(
+                type(cb).__name__ == "PermutationImportanceCallback"
+                for cb in callbacks_list
+            )
+            if not user_has_importance_cb:
+                try:
+                    from lobtrainer.training.importance.callback import (
+                        PermutationImportanceCallback,
+                    )
+                    callbacks_list.append(
+                        PermutationImportanceCallback(config.importance)
+                    )
+                except Exception:
+                    # Defensive: missing torch / circular import at
+                    # callback-module load would otherwise break
+                    # unrelated trainer construction. Log and continue
+                    # without the callback (observation-tier failure
+                    # should not kill training per §8).
+                    import logging as _log
+                    _log.getLogger(__name__).warning(
+                        "PermutationImportanceCallback auto-registration "
+                        "failed; training will proceed without importance "
+                        "audit. Check lobtrainer.training.importance.callback "
+                        "import + torch availability."
+                    )
+
+        self.callbacks = CallbackList(callbacks_list)
         self.callbacks.set_trainer(self)
         
         # Auto-detect device (CUDA > MPS > CPU)
@@ -1044,7 +1082,14 @@ def create_trainer(
                 log_file=output_dir / 'training_history.json',
             ),
         ]
+        # Phase 8C-α Integration Close-Out Round-3 post-audit note:
+        # PermutationImportanceCallback auto-registration moved to
+        # `Trainer.__init__` (see callback-registration block there).
+        # Moving it earlier ensures `scripts/train.py` path (which
+        # explicitly passes `callbacks=...` kwarg and bypasses this
+        # block entirely) still gets the callback wired, and covers
+        # CVTrainer which calls Trainer(fold_config, ...) directly.
         kwargs['callbacks'] = callbacks
-    
+
     return Trainer(config, **kwargs)
 
