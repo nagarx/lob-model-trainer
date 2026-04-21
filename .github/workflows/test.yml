@@ -1,0 +1,104 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs on the same ref when a new commit lands. Saves
+# runner minutes when a developer force-pushes a fix over a failing run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimum GITHUB_TOKEN permissions — OpenSSF least-privilege. This workflow
+# reads repo contents (this repo + three public siblings) and writes no
+# artifacts, so `contents: read` is sufficient.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    # Matrix-cell timeout: prevents a hung pytest run (e.g., a CPU-bound
+    # trainer integration test gone wrong) from tying up a runner.
+    # 45 min is generous — full suite runs in ~10-15 min locally, and CI
+    # is ~2x slower. Tune down post-V.A.2 baseline is established.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout (lob-model-trainer)
+        uses: actions/checkout@v4
+
+      # Three sibling checkouts per root CLAUDE.md §"Inter-Repo Topology"
+      # dep-graph verification (actual grep of src/): lobtrainer imports
+      # from hft_contracts (constants/feature_index.py, export/raw_features.py,
+      # export/exporter.py, training/trainer.py, training/importance/*.py),
+      # hft_metrics (regression_metrics.py, cv_trainer.py, gates.py,
+      # simple_trainer.py, importance/callback.py), and lobmodels
+      # (models/__init__.py, training/simple_trainer.py). All three
+      # declared as bare-name deps in pyproject.toml:17-55; pip's default
+      # PyPI resolver would fail on lobmodels (not published on PyPI).
+      - name: Checkout hft-contracts
+        uses: actions/checkout@v4
+        with:
+          repository: nagarx/hft-contracts
+          path: _deps/hft-contracts
+          ref: main
+
+      - name: Checkout hft-metrics
+        uses: actions/checkout@v4
+        with:
+          repository: nagarx/hft-metrics
+          path: _deps/hft-metrics
+          ref: main
+
+      - name: Checkout lob-models
+        uses: actions/checkout@v4
+        with:
+          repository: nagarx/lob-models
+          path: _deps/lob-models
+          ref: main
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install (three siblings first, then this repo with dev extras)
+        # Sibling editables installed bottom-up in the dep DAG so each
+        # step sees its upstream already resolved: hft-contracts (leaf
+        # per hft-pipeline-v2 conventions) → hft-metrics (depends on nothing
+        # sibling) → lob-models (depends on hft-metrics, declared as
+        # `hft-metrics>=0.1.4`) → lobtrainer (depends on all three).
+        # Heavy deps (torch, pandas, mlflow, xgboost, seaborn, matplotlib,
+        # scipy, statsmodels, scikit-learn) are declared in pyproject.toml's
+        # main `dependencies = [...]` list and install automatically; this
+        # is a heavy installation step (~3-4 min per matrix cell).
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e _deps/hft-contracts
+          pip install -e _deps/hft-metrics
+          pip install -e _deps/lob-models
+          pip install -e '.[dev]'
+          # Log resolved versions for triage.
+          python -c "import torch, numpy, hft_contracts, hft_metrics, lobmodels, sys; print(f'Python {sys.version.split()[0]}  |  torch {torch.__version__}  |  numpy {numpy.__version__}  |  hft_contracts {hft_contracts.__version__}  |  hft_metrics {hft_metrics.__version__}  |  lobmodels {lobmodels.__version__}')"
+
+      - name: Run tests
+        # Expected on fresh CI (2026-04-21): 1137 pass + 65 skipped per root
+        # CLAUDE.md Phase II close-out. The 65 skips are mostly GPU / real-data
+        # gated. Override pyproject's `-v --tb=short` for compact CI output.
+        run: pytest -q --tb=short -o addopts=""
+
+      - name: Lint (non-blocking)
+        # ruff is in the dev extra; config at pyproject.toml:83-89.
+        continue-on-error: true
+        run: ruff check src tests
