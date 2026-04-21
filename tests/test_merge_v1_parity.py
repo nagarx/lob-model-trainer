@@ -85,8 +85,18 @@ import re
 # `/home/runner/work/lob-model-trainer/lob-model-trainer/...` (nested repo
 # name) by consuming both occurrences.
 #
+# Character class ``[^"]+`` (V.A.0 audit C2 fix): the initial implementation
+# used ``[^"\s]+`` which REJECTED whitespace — breaking for any user with
+# a space in their home directory path (common on macOS, e.g.,
+# "/Users/My User/..."). YAML parse errors cite file paths inside
+# ``"..."`` pairs, so ``[^"]+`` is the correct bound (can't cross the
+# closing quote, can consume arbitrary filesystem-safe characters
+# including spaces).
+#
 # Covered cases:
 # - dev: `/Users/knight/code_local/HFT-pipeline-v2/lob-model-trainer/...`
+#   → `<REPO>/...`
+# - dev with spaces: `/Users/My User/HFT-pipeline-v2/lob-model-trainer/...`
 #   → `<REPO>/...`
 # - CI (GitHub Actions):
 #   `/home/runner/work/lob-model-trainer/lob-model-trainer/...`
@@ -98,7 +108,7 @@ import re
 # paths are the parity-breaking concern (YAML parse errors cite
 # the full path to the config file, which is always under the trainer
 # repo root).
-_ANY_TRAINER_REPO_PREFIX_RE = re.compile(r"/[^\"\s]+/lob-model-trainer")
+_ANY_TRAINER_REPO_PREFIX_RE = re.compile(r'/[^"]+/lob-model-trainer')
 
 
 def _normalize_abs_paths(text: str) -> str:
@@ -132,19 +142,27 @@ def _normalize_abs_paths(text: str) -> str:
     return _ANY_TRAINER_REPO_PREFIX_RE.sub("<REPO>", text)
 
 
-def _normalize_snapshot(s: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip environment-specific absolute paths from a snapshot's error message.
+def _normalize_snapshot(s: Any) -> Any:
+    """Recursively strip environment-specific absolute paths from any string
+    value nested in a snapshot.
 
-    ok-status snapshots pass through unchanged (no path leakage in resolved
-    dicts — PyYAML doesn't embed paths in the parsed result itself, only in
-    exception messages).
+    Current golden fixtures have flat error shape ``{status, exc_type, message}``.
+    This recursive normalizer (V.A.0 audit F5) future-proofs against
+    structured error reporting (e.g., v3 merge.py embedding nested error
+    detail with paths in a sub-object). Walking the tree makes the
+    comparison invariant against any reorganization of the snapshot
+    schema — the parity contract is about the STRUCTURAL content of
+    errors, not the specific placement of path strings.
 
-    error-status snapshots have their ``message`` field normalized via
-    ``_normalize_abs_paths``. ``exc_type`` and ``status`` are untouched —
-    those are structural invariants the parity test MUST lock.
+    Non-string values (status, exc_type, integers, None) pass through
+    unchanged. Only ``str`` values are passed through ``_normalize_abs_paths``.
     """
-    if s.get("status") == "error" and "message" in s:
-        return {**s, "message": _normalize_abs_paths(s["message"])}
+    if isinstance(s, dict):
+        return {k: _normalize_snapshot(v) for k, v in s.items()}
+    if isinstance(s, list):
+        return [_normalize_snapshot(v) for v in s]
+    if isinstance(s, str):
+        return _normalize_abs_paths(s)
     return s
 
 
