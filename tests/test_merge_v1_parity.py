@@ -77,6 +77,51 @@ _V1 = _load_archive_v1()
 # -----------------------------------------------------------------------------
 
 
+def _normalize_abs_paths(text: str) -> str:
+    """Replace absolute repo-path prefixes with a stable ``<REPO>`` placeholder.
+
+    v1 and v2 merge.py raise exceptions that sometimes embed absolute paths
+    (e.g., YAML ``ScannerError`` messages include the file path being parsed).
+    Golden fixtures generated on the developer's machine bake in that
+    developer's absolute path (e.g., ``/Users/knight/code_local/HFT-pipeline-v2/...``).
+    CI runs under a different absolute path (e.g.,
+    ``/home/runner/work/lob-model-trainer/lob-model-trainer/...``), so a naive
+    string comparison of error messages diverges — not because the parity
+    contract is broken, but because the paths are environment-specific.
+
+    This helper strips the repo-root absolute prefix from any string, mapping
+    both dev and CI paths to the same ``<REPO>`` token. The parity invariant
+    (same YAML input → same exception type + same structural message) is
+    preserved; only the environment-specific path prefix is normalized away.
+
+    Used symmetrically in ``_normalize_snapshot`` — both the golden (loaded
+    from JSON written on dev) and the actual (produced in CI) get normalized
+    before comparison. This preserves the goldens as-is (no regeneration
+    needed).
+
+    Fix introduced: Phase V.A.0 (2026-04-21). V.A.2 CI surfaced the latent
+    path-leakage issue; 18 parity test failures (6 configs × 3 Python
+    versions × ScannerError case) traced to absolute-path divergence.
+    """
+    return text.replace(str(_REPO_ROOT), "<REPO>")
+
+
+def _normalize_snapshot(s: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip environment-specific absolute paths from a snapshot's error message.
+
+    ok-status snapshots pass through unchanged (no path leakage in resolved
+    dicts — PyYAML doesn't embed paths in the parsed result itself, only in
+    exception messages).
+
+    error-status snapshots have their ``message`` field normalized via
+    ``_normalize_abs_paths``. ``exc_type`` and ``status`` are untouched —
+    those are structural invariants the parity test MUST lock.
+    """
+    if s.get("status") == "error" and "message" in s:
+        return {**s, "message": _normalize_abs_paths(s["message"])}
+    return s
+
+
 def _snapshot(resolve_fn, yaml_path: Path) -> Dict[str, Any]:
     """Run ``resolve_fn`` on ``yaml_path``; return {status, resolved|exc} dict.
 
@@ -189,10 +234,13 @@ class TestV1V2Parity:
         golden = _load_golden(rel_key)
         actual = _snapshot(resolve_inheritance, yaml_path)
 
-        assert actual == golden, (
+        # Normalize absolute paths on both sides so the parity invariant
+        # (same input → same {status, exc_type, message}) is checked without
+        # environment-specific path prefixes breaking the comparison.
+        assert _normalize_snapshot(actual) == _normalize_snapshot(golden), (
             f"v2 diverges from golden fixture for {rel_key}.\n"
-            f"Expected (v1 golden): {json.dumps(golden, sort_keys=True, indent=2)[:500]}\n"
-            f"Actual (v2): {json.dumps(actual, sort_keys=True, indent=2)[:500]}"
+            f"Expected (v1 golden, normalized): {json.dumps(_normalize_snapshot(golden), sort_keys=True, indent=2)[:500]}\n"
+            f"Actual (v2, normalized): {json.dumps(_normalize_snapshot(actual), sort_keys=True, indent=2)[:500]}"
         )
 
     def test_v1_archive_matches_golden_fixture(
@@ -220,7 +268,8 @@ class TestV1V2Parity:
         golden = _load_golden(rel_key)
         actual = _snapshot(_V1.resolve_inheritance, yaml_path)
 
-        assert actual == golden, (
+        # Normalize absolute paths on both sides — see test_v2_matches_golden_fixture.
+        assert _normalize_snapshot(actual) == _normalize_snapshot(golden), (
             f"Archived v1 diverges from golden fixture for {rel_key}. "
             f"Has the archive been tampered with?"
         )
@@ -243,10 +292,13 @@ class TestV1V2Parity:
         v1_out = _snapshot(_V1.resolve_inheritance, yaml_path)
         v2_out = _snapshot(resolve_inheritance, yaml_path)
 
-        assert v1_out == v2_out, (
+        # Normalize absolute paths — v1 and v2 may cite different YAML error
+        # paths (mostly when both fail on the same YAML), but they should
+        # produce identical structure.
+        assert _normalize_snapshot(v1_out) == _normalize_snapshot(v2_out), (
             f"v1 and v2 disagree on {rel_key}.\n"
-            f"v1: {v1_out}\n"
-            f"v2: {v2_out}"
+            f"v1 (normalized): {_normalize_snapshot(v1_out)}\n"
+            f"v2 (normalized): {_normalize_snapshot(v2_out)}"
         )
 
 

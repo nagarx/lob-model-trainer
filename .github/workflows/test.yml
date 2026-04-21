@@ -96,7 +96,14 @@ jobs:
         # Expected on fresh CI (2026-04-21): 1137 pass + 65 skipped per root
         # CLAUDE.md Phase II close-out. The 65 skips are mostly GPU / real-data
         # gated. Override pyproject's `-v --tb=short` for compact CI output.
-        run: pytest -q --tb=short -o addopts=""
+        #
+        # `--ignore=_deps` prevents pytest from recursing into sibling-repo
+        # checkouts (e.g., `_deps/hft-contracts/tests/test_provenance.py`
+        # would collide with our own potential tests of the same basename
+        # during pytest's rootdir discovery). Siblings are installed via
+        # `pip install -e _deps/...` above; their test files are not ours
+        # to run.
+        run: pytest -q --tb=short -o addopts="" --ignore=_deps
 
       - name: Lint (non-blocking)
         # ruff is in the dev extra; config at pyproject.toml:83-89.
