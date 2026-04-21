@@ -34,9 +34,18 @@ except DeprecationWarning:
     pytest.importorskip("lobtrainer.constants.feature_presets")
 
 
-# Monorepo root is 2 levels up from this test file.
-_TEST_DIR = Path(__file__).resolve().parent
-_MONOREPO_ROOT = _TEST_DIR.parent.parent
+# Monorepo root via SSoT helper (Phase V.A.0). The contracts/feature_sets/
+# directory lives at monorepo-root (NOT inside any sibling repo) — it's a
+# local-only coordination surface (per root CLAUDE.md §Multi-Agent
+# Coordination Class A). In standalone-clone CI environments where
+# lob-model-trainer is checked out alone, this directory is absent —
+# `require_monorepo_root` skips the enclosing module cleanly with an
+# actionable message instead of letting the resolver raise
+# `FeatureSetNotFound` at test time (which would surface as a test FAILURE
+# rather than SKIP — the wrong pytest disposition per hft-rules §6).
+from hft_contracts._testing import require_monorepo_root
+
+_MONOREPO_ROOT = require_monorepo_root("contracts/feature_sets")
 _REGISTRY_DIR = _MONOREPO_ROOT / "contracts" / "feature_sets"
 
 
