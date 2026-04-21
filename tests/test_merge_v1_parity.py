@@ -77,6 +77,30 @@ _V1 = _load_archive_v1()
 # -----------------------------------------------------------------------------
 
 
+import re
+
+# Regex-based path normalizer — strips ANY absolute path ending in
+# ``/lob-model-trainer`` and replaces with ``<REPO>``. Greedy `+` ensures
+# the longest match wins, which correctly handles CI's pathological case
+# `/home/runner/work/lob-model-trainer/lob-model-trainer/...` (nested repo
+# name) by consuming both occurrences.
+#
+# Covered cases:
+# - dev: `/Users/knight/code_local/HFT-pipeline-v2/lob-model-trainer/...`
+#   → `<REPO>/...`
+# - CI (GitHub Actions):
+#   `/home/runner/work/lob-model-trainer/lob-model-trainer/...`
+#   → `<REPO>/...`
+#
+# NOT matched: partial or relative paths — if a path doesn't end in
+# `/lob-model-trainer` (e.g., just `/home/runner/work/`), it's left
+# untouched. This is the correct behavior because only `/lob-model-trainer`
+# paths are the parity-breaking concern (YAML parse errors cite
+# the full path to the config file, which is always under the trainer
+# repo root).
+_ANY_TRAINER_REPO_PREFIX_RE = re.compile(r"/[^\"\s]+/lob-model-trainer")
+
+
 def _normalize_abs_paths(text: str) -> str:
     """Replace absolute repo-path prefixes with a stable ``<REPO>`` placeholder.
 
@@ -89,21 +113,23 @@ def _normalize_abs_paths(text: str) -> str:
     string comparison of error messages diverges — not because the parity
     contract is broken, but because the paths are environment-specific.
 
-    This helper strips the repo-root absolute prefix from any string, mapping
-    both dev and CI paths to the same ``<REPO>`` token. The parity invariant
-    (same YAML input → same exception type + same structural message) is
-    preserved; only the environment-specific path prefix is normalized away.
+    This helper uses a greedy regex to strip ANY absolute prefix ending in
+    ``/lob-model-trainer``, mapping both dev and CI paths to the same
+    ``<REPO>`` token. Symmetric application in ``_normalize_snapshot``
+    (both golden AND actual are normalized at comparison time) means goldens
+    don't need to be regenerated to fix the path divergence.
 
-    Used symmetrically in ``_normalize_snapshot`` — both the golden (loaded
-    from JSON written on dev) and the actual (produced in CI) get normalized
-    before comparison. This preserves the goldens as-is (no regeneration
-    needed).
+    The parity invariant (same YAML input → same exception type + same
+    structural message) is preserved; only the environment-specific path
+    prefix is normalized away.
 
     Fix introduced: Phase V.A.0 (2026-04-21). V.A.2 CI surfaced the latent
-    path-leakage issue; 18 parity test failures (6 configs × 3 Python
-    versions × ScannerError case) traced to absolute-path divergence.
+    path-leakage issue. First implementation used ``str.replace(str(_REPO_ROOT), ...)``
+    which only normalizes the CURRENT environment's prefix (not the golden's
+    embedded prefix); fixed with a regex that matches any monorepo layout
+    (dev's ``HFT-pipeline-v2`` parent OR CI's ``work/lob-model-trainer`` parent).
     """
-    return text.replace(str(_REPO_ROOT), "<REPO>")
+    return _ANY_TRAINER_REPO_PREFIX_RE.sub("<REPO>", text)
 
 
 def _normalize_snapshot(s: Dict[str, Any]) -> Dict[str, Any]:
