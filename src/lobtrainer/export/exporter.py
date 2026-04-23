@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 
+from lobtrainer.config.paths import resolve_labels_config
 from lobtrainer.export.raw_features import RawFeatureExtractor
 from lobtrainer.export.metadata import build_signal_metadata
 
@@ -67,66 +68,73 @@ def _build_compatibility_contract(
         )
         return None
 
-    try:
-        feature_layout = (
-            feature_set_ref["content_hash"]
-            if feature_set_ref and "content_hash" in feature_set_ref
-            else "default"
-        )
-        horizons_list = getattr(config.labels, "horizons", None) or getattr(
-            config.model, "hmhp_horizons", None
-        )
-        horizons_tuple = tuple(horizons_list) if horizons_list else None
+    # Phase A (2026-04-23): explicit defensive reads via ``resolve_labels_config``.
+    # The inner ``try / except Exception`` was deleted — any path-drift (wrong
+    # ``config.labels`` access, missing ``DataConfig.data`` attribute, etc.)
+    # now raises ``AttributeError`` loudly at the helper boundary. Silent-None
+    # was the anti-pattern that masked the Phase II producer-path bug cluster
+    # (see Phase A plan + lobtrainer.config.paths docstring). The outer
+    # ``except ImportError`` guard above preserves the pre-Phase-II soft-dep
+    # fallback; it is the only graceful-degradation path here.
+    labels_cfg = resolve_labels_config(config)
 
-        # Label strategy hash captures the full LabelsConfig — strategy + horizons +
-        # thresholds + smoothing — so parameter variations don't collide under a
-        # flat strategy-name string.
-        label_hash = compute_label_strategy_hash(config.labels)
+    feature_layout = (
+        feature_set_ref["content_hash"]
+        if feature_set_ref and "content_hash" in feature_set_ref
+        else "default"
+    )
+    horizons_list = labels_cfg.horizons or getattr(
+        config.model, "hmhp_horizons", None
+    )
+    horizons_tuple = tuple(horizons_list) if horizons_list else None
 
-        # Safely coerce feature_count / window_size — dataset configs use slightly
-        # different attribute names across asset classes.
-        feature_count = int(
-            getattr(config.data, "feature_count", None)
-            or getattr(config.data, "num_features", 0)
-        )
-        window_size = int(
-            getattr(config.data, "window_size", None)
-            or getattr(config.data, "sequence_length", 0)
-        )
-        if feature_count == 0 or window_size == 0:
-            logger.warning(
-                "CompatibilityContract has zero feature_count (%d) or window_size (%d) — "
-                "config surface may have drifted; check DataConfig attribute names.",
-                feature_count, window_size,
-            )
+    # Label strategy hash captures the full LabelsConfig — strategy + horizons +
+    # thresholds + smoothing — so parameter variations don't collide under a
+    # flat strategy-name string.
+    label_hash = compute_label_strategy_hash(labels_cfg)
 
-        return CompatibilityContract(
-            contract_version=str(SCHEMA_VERSION),
-            schema_version=str(SCHEMA_VERSION),
-            feature_count=feature_count,
-            window_size=window_size,
-            feature_layout=str(feature_layout),
-            data_source=_derive_data_source(config.data.data_dir),
-            label_strategy_hash=label_hash,
-            calibration_method=calibration_method,
-            primary_horizon_idx=getattr(config.data, "horizon_idx", None),
-            horizons=horizons_tuple,
-            normalization_strategy=str(
-                getattr(config.data.normalization, "strategy", "unknown")
-            ),
-        )
-    except Exception as exc:
-        # Be forgiving at the boundary: if ANY field probe fails, log and skip the
-        # compatibility block rather than refusing to emit signals. The trainer
-        # must continue to produce outputs; a missing compatibility block is
-        # detectable downstream (legacy-manifest warning), whereas a crashed
-        # exporter loses the whole run.
+    # Safely coerce feature_count — dataset configs use slightly different
+    # attribute names across asset classes (``feature_count`` vs ``num_features``).
+    feature_count = int(
+        getattr(config.data, "feature_count", None)
+        or getattr(config.data, "num_features", 0)
+    )
+    # Window size lives on ``DataConfig.sequence.window_size`` (the canonical
+    # location post-T9). A legacy ``DataConfig.window_size`` / ``sequence_length``
+    # surface never existed on current schemas, but we keep those fallbacks for
+    # defensive compatibility with any external DataConfig-shape callers.
+    sequence_cfg = getattr(config.data, "sequence", None)
+    window_size = int(
+        getattr(sequence_cfg, "window_size", None)
+        or getattr(config.data, "window_size", None)
+        or getattr(config.data, "sequence_length", 0)
+    )
+    if feature_count == 0 or window_size == 0:
         logger.warning(
-            "CompatibilityContract construction failed (%s); emitting legacy "
-            "signal_metadata.json without compatibility block.",
-            exc,
+            "CompatibilityContract has zero feature_count (%d) or window_size (%d) — "
+            "config surface may have drifted; check DataConfig attribute names.",
+            feature_count, window_size,
         )
-        return None
+
+    return CompatibilityContract(
+        contract_version=str(SCHEMA_VERSION),
+        schema_version=str(SCHEMA_VERSION),
+        feature_count=feature_count,
+        window_size=window_size,
+        feature_layout=str(feature_layout),
+        data_source=_derive_data_source(config.data.data_dir),
+        label_strategy_hash=label_hash,
+        calibration_method=calibration_method,
+        # Phase A (2026-04-23): source from canonical LabelsConfig, not the
+        # deprecated legacy ``DataConfig.horizon_idx`` field (schema.py:1472
+        # DeprecationWarning). Silent-wrong-fingerprint for non-zero
+        # primary horizons before this fix.
+        primary_horizon_idx=labels_cfg.primary_horizon_idx,
+        horizons=horizons_tuple,
+        normalization_strategy=str(
+            getattr(config.data.normalization, "strategy", "unknown")
+        ),
+    )
 
 
 def _feature_set_ref_dict(data_config: Any) -> Optional[Dict[str, str]]:
@@ -647,7 +655,12 @@ class SignalExporter:
 
         # Horizons
         horizons = inference.get("horizons") or getattr(config.model, "hmhp_horizons", None)
-        horizon_idx = getattr(config.data, "horizon_idx", None)
+        # Phase A (2026-04-23): canonical source is ``config.data.labels.primary_horizon_idx``
+        # (via helper), not the deprecated ``DataConfig.horizon_idx`` field. See
+        # schema.py:1472 for the deprecation. The helper also raises ``AttributeError``
+        # loudly when the canonical path is unavailable, so ``horizon_idx is None``
+        # here strictly means ``primary_horizon_idx`` was explicitly set to ``None``.
+        horizon_idx = resolve_labels_config(config).primary_horizon_idx
         primary_horizon = None
         if horizons and horizon_idx is not None and horizon_idx < len(horizons):
             primary_horizon = f"H{horizons[horizon_idx]}"

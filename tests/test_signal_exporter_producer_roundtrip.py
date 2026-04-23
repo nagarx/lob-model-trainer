@@ -8,16 +8,18 @@ code at ``_build_compatibility_contract()``. That producer path silently returne
 
 This test constructs a real ``ExperimentConfig`` (no fixture ``CompatibilityContract``),
 invokes ``_build_compatibility_contract()`` directly, pipes the result through
-``build_signal_metadata()``, and parses the produced metadata dict via
-``SignalManifest.from_dict()``. The chain mirrors what ``SignalExporter.export()``
-does at runtime, minus the Trainer+DataLoader infrastructure.
+``build_signal_metadata()``, writes the metadata dict to a temporary
+``signal_metadata.json``, and parses back via ``SignalManifest.from_signal_dir()``.
+The chain mirrors what ``SignalExporter.export()`` does at runtime, minus the
+Trainer+DataLoader infrastructure.
 
 Phase A (2026-04-23) TDD red-gate:
-    Runs RED pre-fix (broad ``except Exception`` silently swallows AttributeError
-    from ``config.labels`` access → returns None → no fingerprint in manifest).
-    The ``@pytest.mark.xfail(strict=True)`` marker keeps CI green while exposing
-    the bug. When C1 removes the xfail AND applies the fixes, this test turns
-    RED→GREEN visibly in the PR diff.
+    Ran RED pre-C1 (broad ``except Exception`` at ``exporter.py:118-129``
+    silently swallowed AttributeError from ``config.labels`` access →
+    returned None → no fingerprint in manifest). The ``@pytest.mark.xfail``
+    marker kept CI green while exposing the bug. C1 removed the xfail,
+    introduced :func:`resolve_labels_config`, and eliminated the silent
+    fallback. Test is now GREEN.
 
 Invariants locked (post-C1):
     1. ``_build_compatibility_contract(ExperimentConfig(), ...)`` returns a valid
@@ -29,9 +31,11 @@ Invariants locked (post-C1):
        fingerprint) produces identical hashes — no silent contract drift.
 """
 
+import json
 import re
-from typing import Any
+from pathlib import Path
 
+import numpy as np
 import pytest
 
 _hft_contracts = pytest.importorskip("hft_contracts")
@@ -79,22 +83,13 @@ def _build_config_with_primary_horizon_idx(primary_horizon_idx: int) -> Experime
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase A (2026-04-23) TDD red-gate: producer-path bug cluster. "
-        "`_build_compatibility_contract()` silently returns None because it reads "
-        "`config.labels.horizons` (canonical is `config.data.labels.horizons`). "
-        "The broad `except Exception` at exporter.py:118-129 masks the AttributeError. "
-        "Removed in C1 when `resolve_labels_config()` helper lands and the inner "
-        "try/except is eliminated."
-    ),
-)
 class TestPhaseAProducerRoundtrip:
     """Producer→consumer CompatibilityContract roundtrip.
 
-    These assertions fail pre-Phase-A because the producer path silently returns
-    None. When C1 ships, the xfail marker is removed and all assertions pass.
+    Locks the Phase A (C1) invariants that retire the canonical-path-drift
+    bug class. The xfail red-gate was removed by C1 when :func:`resolve_labels_config`
+    landed + the inner ``try / except Exception`` in
+    :func:`_build_compatibility_contract` was eliminated.
     """
 
     def test_build_compatibility_contract_returns_non_none(self) -> None:
@@ -185,20 +180,24 @@ class TestPhaseAProducerRoundtrip:
         )
         assert meta["compatibility_fingerprint"] == contract.fingerprint()
 
-    def test_signal_manifest_parses_producer_output_successfully(self) -> None:
-        """Consumer (SignalManifest) parses the producer's metadata dict — 3-way roundtrip.
+    def test_signal_manifest_parses_producer_output_successfully(
+        self, tmp_path: Path,
+    ) -> None:
+        """Consumer (``SignalManifest``) parses the producer's metadata — 3-way roundtrip.
 
-        This is the load-bearing invariant: producer emits → consumer parses →
-        recomputes fingerprint from the embedded block → asserts identical hash.
-        If any of these drift, downstream validators raise ContractError.
+        Load-bearing invariant: producer emits → written to disk →
+        :meth:`SignalManifest.from_signal_dir` parses → recomputes fingerprint
+        from the embedded block → asserts identical hash. If any of these
+        drift, downstream validators raise :class:`ContractError`.
         """
+        # Produce the full meta dict via the bug-bearing producer path.
         config = _build_config_with_primary_horizon_idx(primary_horizon_idx=1)
         contract = _build_compatibility_contract(
             config=config,
             feature_set_ref=None,
             calibration_method=None,
         )
-        assert contract is not None, "Pre-fix: producer returned None"
+        assert contract is not None, "C1 regression — producer returned None"
         meta = build_signal_metadata(
             model_type="logistic_lob",
             model_name="test",
@@ -209,12 +208,27 @@ class TestPhaseAProducerRoundtrip:
             checkpoint="dummy.pt",
             compatibility=contract,
         )
-        manifest = SignalManifest.from_dict(meta)
+        # Lay out a minimal valid classification signal directory.
+        # ``SignalManifest.from_signal_dir`` detects signal_type from files, so
+        # we write the minimum files + the manifest JSON.
+        signal_dir = tmp_path / "signals"
+        signal_dir.mkdir()
+        np.save(signal_dir / "predictions.npy", np.zeros(10, dtype=np.int64))
+        np.save(signal_dir / "labels.npy", np.zeros(10, dtype=np.int64))
+        np.save(signal_dir / "prices.npy", np.zeros(10, dtype=np.float64))
+        np.save(signal_dir / "spreads.npy", np.zeros(10, dtype=np.float64))
+        (signal_dir / "signal_metadata.json").write_text(json.dumps(meta))
+
+        manifest = SignalManifest.from_signal_dir(signal_dir)
+
         assert manifest.compatibility_fingerprint is not None
         assert manifest.compatibility is not None
+        # The load-bearing invariant: stored fingerprint == canonical recompute
+        # over the serialized block. Any drift here means producer and consumer
+        # canonicalize the contract differently.
         assert manifest.compatibility_fingerprint == manifest.compatibility.fingerprint(), (
-            "Producer-consumer drift: the stored fingerprint disagrees with the "
-            "canonical recompute over the serialized block."
+            "Producer-consumer drift: stored fingerprint disagrees with canonical "
+            "recompute over the serialized block."
         )
         assert manifest.compatibility.primary_horizon_idx == 1
         assert manifest.compatibility.horizons == (10, 60, 300)
