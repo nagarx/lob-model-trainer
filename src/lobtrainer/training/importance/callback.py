@@ -41,6 +41,7 @@ from typing import Any, Callable, List, Optional
 import numpy as np
 import torch
 
+from lobtrainer.config.paths import resolve_labels_config
 from lobtrainer.training.callbacks import Callback
 from lobtrainer.training.importance.config import (
     ImportanceConfig,
@@ -349,7 +350,18 @@ class PermutationImportanceCallback(Callback):
         # ---- Build predict_fn + metric_fn -----------------------------
         predict_fn = make_pytorch_predict_fn(trainer.model, trainer.device)
         task_type = self._resolve_task_type(trainer.config)
-        metric_fn = make_metric_fn_for_task(task_type, primary_horizon_idx=0)
+        # Phase A (2026-04-23) — bug #7b: thread primary_horizon_idx from the
+        # canonical ``config.data.labels`` (via ``resolve_labels_config`` helper).
+        # Pre-Phase-A, this was hardcoded to 0 — every HMHP-R feature-importance
+        # artifact was silently computed against H10 regardless of manifest.
+        try:
+            primary_idx = (
+                resolve_labels_config(trainer.config).primary_horizon_idx or 0
+            )
+        except AttributeError:
+            # Pre-T9 config without LabelsConfig — fall back to safe default.
+            primary_idx = 0
+        metric_fn = make_metric_fn_for_task(task_type, primary_horizon_idx=primary_idx)
 
         # ---- Resolve feature metadata ---------------------------------
         feature_names, feature_indices = self._resolve_feature_metadata(
@@ -405,18 +417,36 @@ class PermutationImportanceCallback(Callback):
 
     @staticmethod
     def _resolve_task_type(config: Any) -> str:
-        """Map trainer config → 'regression' or 'classification'.
+        """Map trainer config → ``'regression'`` or ``'classification'``.
 
-        Reads ``config.labels.task_type`` when present (canonical path);
-        falls back to heuristics based on ``config.model.model_type``
-        for legacy configs.
+        Reads the canonical ``config.data.labels.task`` via
+        :func:`resolve_labels_config` (Phase A, 2026-04-23). Falls back to
+        a model-type heuristic when the label config is absent or its
+        ``task`` is the sentinel ``"auto"``.
+
+        Phase A bug-fix notes:
+
+        * Pre-Phase-A, this read ``config.labels.task_type`` — BOTH wrong:
+          the canonical path is ``config.data.labels`` (not ``config.labels``,
+          which does not exist on ``ExperimentConfig``), AND the canonical
+          attribute on :class:`LabelsConfig` is ``task`` (not ``task_type``,
+          per schema.py:263). Both errors resolved by the helper + attribute
+          rename.
+        * Pre-T9 configs may not have a ``LabelsConfig`` attached (helper
+          raises ``AttributeError``). In that case, the legacy model-type
+          heuristic is preserved for backward compatibility.
         """
-        labels = getattr(config, "labels", None)
-        if labels is not None:
-            tt = getattr(labels, "task_type", None)
-            if tt:
-                return str(tt).lower()
-        # Legacy fallback: HMHP-R / *-regression → regression; else
+        try:
+            labels_cfg = resolve_labels_config(config)
+        except AttributeError:
+            labels_cfg = None  # Pre-T9 config — use heuristic fallback.
+        if labels_cfg is not None:
+            task = getattr(labels_cfg, "task", None)
+            # LabelsConfig.task = "auto" means "detect from metadata"; don't
+            # trust that literal as an authoritative answer here.
+            if task and task != "auto":
+                return str(task).lower()
+        # Legacy / "auto" fallback: HMHP-R / *-regression → regression; else
         # classification.
         model_type = str(
             getattr(getattr(config, "model", None), "model_type", "")
