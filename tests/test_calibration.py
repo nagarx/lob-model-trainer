@@ -163,15 +163,46 @@ class TestVarianceCalibrationEdgeCases:
         with pytest.raises(ValueError, match="labels is None"):
             calibrate_variance(np.array([1.0, 2.0, 3.0]), config=config)
 
-    def test_multi_horizon_labels_uses_first(self):
-        """Multi-horizon labels [N, H] uses first horizon."""
+    def test_2d_labels_raises_value_error(self):
+        """Phase A (2026-04-23): 2-D labels now raise per hft-rules §8 fail-loud.
+
+        Previously (pre-Phase-A), ``calibrate_variance`` silently collapsed
+        multi-horizon ``labels[:, 0]`` — this masked caller-side bugs where
+        the caller's ``primary_horizon_idx`` was non-zero, silently
+        mis-calibrating every HMHP-R experiment with a non-H0 primary horizon.
+
+        Post-Phase-A, multi-horizon slicing is the CALLER's responsibility
+        (see ``SignalExporter._apply_calibration``). Passing 2-D labels
+        directly is now a program bug and raises ``ValueError``.
+        """
         predictions = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        labels = np.column_stack([
-            np.array([10.0, 20.0, 30.0, 40.0, 50.0]),  # H0: std=14.14
-            np.array([1.0, 1.0, 1.0, 1.0, 1.0]),        # H1: std=0
+        labels_2d = np.column_stack([
+            np.array([10.0, 20.0, 30.0, 40.0, 50.0]),
+            np.array([1.0, 1.0, 1.0, 1.0, 1.0]),
         ])
-        result = calibrate_variance(predictions, labels)
-        assert result.target_std == float(np.std(labels[:, 0]))
+        with pytest.raises(ValueError, match="expects 1-D labels"):
+            calibrate_variance(predictions, labels_2d)
+
+    def test_2d_predictions_raises_value_error(self):
+        """Phase A (2026-04-23): 2-D predictions also raise per strict 1-D contract."""
+        preds_2d = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        labels = np.array([10.0, 20.0, 30.0])
+        with pytest.raises(ValueError, match="expects 1-D predictions"):
+            calibrate_variance(preds_2d, labels)
+
+    def test_metadata_kwarg_propagates_to_result(self):
+        """Phase A forward-compat: optional ``metadata`` dict threads through to
+        ``CalibrationResult.metadata`` + ``to_dict()``.
+
+        Purpose is observability for multi-method calibrators (quantile,
+        isotonic) that may need per-call provenance without schema changes.
+        """
+        predictions = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        labels = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
+        provenance = {"primary_horizon_idx": 1, "method_variant": "variance_match"}
+        result = calibrate_variance(predictions, labels, metadata=provenance)
+        assert result.metadata == provenance
+        assert result.to_dict()["metadata"] == provenance
 
     def test_determinism(self):
         """Same inputs produce identical outputs."""

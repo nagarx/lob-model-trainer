@@ -480,16 +480,28 @@ class SignalExporter:
         preds = inference["predicted_returns"]
         labels = inference.get("regression_labels")
 
-        # calibrate_variance accepts only 1D — use primary horizon for multi-horizon
+        # Phase A (2026-04-23): respect config.data.labels.primary_horizon_idx
+        # when slicing 2-D predictions/labels. Pre-Phase-A hardcoded [:, 0]
+        # silently mis-calibrated every HMHP-R experiment with
+        # primary_horizon_idx != 0. `calibrate_variance` is strict 1-D now —
+        # 2-D input raises ValueError (hft-rules §8 fail-loud).
+        primary_idx = (
+            resolve_labels_config(self._trainer.config).primary_horizon_idx or 0
+        )
         if preds.ndim == 2:
-            preds_1d = preds[:, 0]
-            labels_1d = labels[:, 0] if labels is not None else None
+            preds_1d = preds[:, primary_idx]
+            labels_1d = labels[:, primary_idx] if labels is not None else None
         else:
             preds_1d = preds
             labels_1d = labels
 
         config = VarianceCalibrationConfig(method="variance_match")
-        cal_result = calibrate_variance(preds_1d, labels_1d, config)
+        cal_result = calibrate_variance(
+            preds_1d,
+            labels_1d,
+            config,
+            metadata={"primary_horizon_idx": primary_idx},
+        )
 
         logger.info(
             f"Calibration: scale={cal_result.scale_factor:.4f}, "
@@ -627,6 +639,12 @@ class SignalExporter:
 
         if "predicted_returns" in inference:
             pr = inference["predicted_returns"]
+            # Phase A (2026-04-23) — bug #6b: stats for 2-D predictions MUST
+            # slice by the configured primary_horizon_idx, not hardcoded [:, 0].
+            # The stats land in signal_metadata.json and are read by
+            # hft-ops statistical_compare; wrong-column slicing silently
+            # misrepresented the primary horizon for every HMHP-R experiment.
+            stats_idx = resolve_labels_config(config).primary_horizon_idx or 0
             if pr.ndim == 1:
                 prediction_stats = {
                     "mean": float(np.mean(pr)),
@@ -636,8 +654,8 @@ class SignalExporter:
                 }
             else:
                 prediction_stats = {
-                    "mean": float(np.mean(pr[:, 0])),
-                    "std": float(np.std(pr[:, 0])),
+                    "mean": float(np.mean(pr[:, stats_idx])),
+                    "std": float(np.std(pr[:, stats_idx])),
                 }
 
             if "regression_labels" in inference:
@@ -649,7 +667,9 @@ class SignalExporter:
                     if pr.ndim == 1:
                         metrics_dict = compute_all_regression_metrics(rl, pr)
                     else:
-                        metrics_dict = compute_all_regression_metrics(rl[:, 0], pr[:, 0])
+                        metrics_dict = compute_all_regression_metrics(
+                            rl[:, stats_idx], pr[:, stats_idx]
+                        )
                 except Exception as e:
                     logger.warning(f"Could not compute regression metrics: {e}")
 

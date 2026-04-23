@@ -21,7 +21,7 @@ Reference:
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -57,6 +57,11 @@ class CalibrationResult:
         target_mean: Target mean used for calibration.
         target_std: Target std used for calibration.
         n_samples: Number of samples calibrated.
+        metadata: Optional observability / provenance context (Phase A, 2026-04-23).
+            Forward-compat hook for non-variance-match calibrators (quantile,
+            isotonic) that may need per-call metadata (e.g., primary_horizon_idx).
+            ``to_dict()`` propagates this block verbatim so downstream consumers
+            can inspect calibration provenance without schema changes.
     """
     calibrated: np.ndarray
     scale_factor: float
@@ -65,10 +70,11 @@ class CalibrationResult:
     target_mean: float
     target_std: float
     n_samples: int
+    metadata: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> dict:
         """Serialize calibration stats (no numpy arrays)."""
-        return {
+        result: Dict[str, Any] = {
             "scale_factor": self.scale_factor,
             "pred_mean": self.pred_mean,
             "pred_std": self.pred_std,
@@ -80,12 +86,17 @@ class CalibrationResult:
             "calibrated_min": float(np.min(self.calibrated)),
             "calibrated_max": float(np.max(self.calibrated)),
         }
+        if self.metadata is not None:
+            result["metadata"] = dict(self.metadata)
+        return result
 
 
 def calibrate_variance(
     predictions: np.ndarray,
     labels: Optional[np.ndarray] = None,
     config: Optional[VarianceCalibrationConfig] = None,
+    *,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> CalibrationResult:
     """Calibrate prediction magnitudes via variance matching.
 
@@ -100,20 +111,48 @@ def calibrate_variance(
     Because it is a monotone linear transform, Spearman IC is preserved exactly.
 
     Args:
-        predictions: Raw model predictions in bps, shape (N,).
-        labels: Regression labels in bps, shape (N,) or (N, H).
-            Used to compute target_std/mean if config.compute_from_labels=True.
-        config: Calibration configuration. Defaults to VarianceCalibrationConfig().
+        predictions: Raw model predictions in bps, shape ``(N,)``. Strict
+            1-D contract — 2-D / higher-dim input raises :class:`ValueError`.
+        labels: Regression labels in bps, shape ``(N,)``. Used to compute
+            ``target_std / mean`` when ``config.compute_from_labels=True``.
+            Strict 1-D contract — 2-D input raises :class:`ValueError`. Phase A
+            (2026-04-23) tightened this from the previous silent ``labels[:, 0]``
+            fallback, which masked caller-side bugs where the caller's
+            ``primary_horizon_idx`` was non-zero.
+        config: Calibration configuration. Defaults to
+            :class:`VarianceCalibrationConfig`.
+        metadata: Optional observability / provenance dict propagated to
+            :class:`CalibrationResult.metadata` (Phase A forward-compat for
+            non-variance-match calibrators). Pure passthrough — never consumed
+            by the calibration math itself.
 
     Returns:
-        CalibrationResult with calibrated predictions and stats.
+        :class:`CalibrationResult` with calibrated predictions and stats.
 
     Raises:
+        ValueError: If predictions or labels are not 1-D (shape contract).
         ValueError: If predictions are empty or have zero variance.
-        ValueError: If compute_from_labels=True but labels is None.
+        ValueError: If ``compute_from_labels=True`` but ``labels`` is ``None``.
     """
     if config is None:
         config = VarianceCalibrationConfig()
+
+    # Phase A (2026-04-23): strict 1-D contract. Multi-horizon slicing is the
+    # CALLER's responsibility so the caller's primary_horizon_idx knowledge
+    # is honored explicitly — the previous silent ``labels[:, 0]`` fallback
+    # masked caller-side bugs (hft-rules §8: never silently drop data).
+    if predictions.ndim != 1:
+        raise ValueError(
+            f"calibrate_variance expects 1-D predictions; got shape "
+            f"{predictions.shape}. Callers must slice multi-horizon predictions "
+            f"via their primary_horizon_idx at the call site."
+        )
+    if labels is not None and np.asarray(labels).ndim != 1:
+        raise ValueError(
+            f"calibrate_variance expects 1-D labels; got shape "
+            f"{np.asarray(labels).shape}. Callers must slice multi-horizon "
+            f"labels via their primary_horizon_idx at the call site."
+        )
 
     if config.method == "none":
         return CalibrationResult(
@@ -124,6 +163,7 @@ def calibrate_variance(
             target_mean=float(np.mean(predictions)),
             target_std=float(np.std(predictions)),
             n_samples=len(predictions),
+            metadata=metadata,
         )
 
     predictions = np.asarray(predictions, dtype=np.float64)
@@ -147,10 +187,8 @@ def calibrate_variance(
                 "compute_from_labels=True but labels is None. "
                 "Provide labels or set compute_from_labels=False."
             )
+        # Labels already enforced 1-D at the strict contract above.
         labels = np.asarray(labels, dtype=np.float64)
-        # Handle multi-horizon labels: use first horizon
-        if labels.ndim == 2:
-            labels = labels[:, 0]
         target_std = float(np.std(labels))
         target_mean = float(np.mean(labels))
     else:
@@ -175,4 +213,5 @@ def calibrate_variance(
         target_mean=target_mean,
         target_std=target_std,
         n_samples=len(predictions),
+        metadata=metadata,
     )
