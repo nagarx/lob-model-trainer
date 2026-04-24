@@ -1517,6 +1517,329 @@ class TestDataConfigPydantic:
         assert "feature_count" in dumped
 
 
+class TestExperimentConfigPydantic:
+    """Phase A.5.3i (2026-04-24 KEYSTONE) regression locks for ExperimentConfig.
+
+    KEYSTONE commit of Phase A.5 Scope D — closes the entire migration
+    cycle. ExperimentConfig is the top-level composite holding all 8
+    already-migrated sub-configs. Exercises the complete trust-chain:
+    ``from_dict`` → ``model_validate`` → recursive nested-BaseModel
+    construction with full validator fire-through.
+
+    Retires 4 bug classes at the TYPE layer:
+
+    1. Silent mutation (``config.output_dir = X`` raises)
+    2. Extra-field acceptance (``ExperimentConfig(names='foo')`` raises)
+    3. Canonical-path-drift (``config.labels`` AttributeError — no such
+       field on ExperimentConfig; canonical is ``config.data.labels``)
+    4. Silent-None field access (typed fields enforced by Pydantic)
+
+    Key NEW patterns introduced in A.5.3i (not present in A.5.3a-h):
+
+    - ``@field_validator("importance", mode="before")`` replaces the
+      ``_coerce_importance(self)`` helper that mutated post-construction.
+    - ``object.__setattr__(self, "model", ...)`` for T13 auto-derive
+      under frozen=True (matches DataConfig's T9 + ModelConfig's params
+      self-mutation pattern).
+    - ``from_dict`` body rewritten to ``cls.model_validate(data)``; dacite
+      retired from dependency tree.
+    - CLI override pattern: outer ``config.model_copy(update={...})``
+      with ``_top_overrides`` accumulator dict (3 production sites:
+      cli.py, scripts/train.py, scripts/export_signals.py).
+    """
+
+    # --- Core hardening (inherited SafeBaseModel semantics) -----------------
+
+    def test_frozen_rejects_mutation(self):
+        """Top-level public field assignment raises ValidationError."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ExperimentConfig
+        cfg = ExperimentConfig()
+        with pytest.raises(ValidationError):
+            cfg.output_dir = "/tmp/foo"  # type: ignore[misc]
+        with pytest.raises(ValidationError):
+            cfg.name = "bar"  # type: ignore[misc]
+        with pytest.raises(ValidationError):
+            cfg.data = cfg.data  # even reassigning same value raises  # type: ignore[misc]
+
+    def test_extra_forbid_rejects_typo(self):
+        """Typo ``names`` (for ``name``) rejected by extra='forbid'."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ExperimentConfig
+        with pytest.raises(ValidationError):
+            ExperimentConfig(names="foo")  # type: ignore[call-arg]
+
+    def test_canonical_path_drift_catches_config_labels(self):
+        """Bug class #1 (canonical-path-drift) retired at type layer:
+        ``config.labels`` does NOT exist (canonical is ``config.data.labels``).
+        Pydantic returns AttributeError on missing field access — same
+        mode as Python default, but with a clear "no such attribute"
+        diagnostic (no silent None-coalesce).
+        """
+        from lobtrainer.config.schema import ExperimentConfig
+        cfg = ExperimentConfig()
+        with pytest.raises(AttributeError):
+            cfg.labels  # type: ignore[attr-defined]
+
+    def test_strict_rejects_string_name(self):
+        """Strict mode — for typed str field, string value is valid;
+        testing that int is rejected under strict."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ExperimentConfig
+        with pytest.raises(ValidationError):
+            ExperimentConfig(name=42)  # type: ignore[arg-type]
+
+    # --- from_dict delegates to model_validate ------------------------------
+
+    def test_from_dict_delegates_to_model_validate(self):
+        """A.5.3i dacite retirement — from_dict body is now
+        ``cls.model_validate(data)``. Still returns valid ExperimentConfig."""
+        from lobtrainer.config.schema import ExperimentConfig
+        cfg = ExperimentConfig.from_dict({
+            "name": "smoke",
+            "data": {"feature_count": 98},
+            "model": {"input_size": 98},
+        })
+        assert cfg.name == "smoke"
+        assert cfg.data.feature_count == 98
+        assert cfg.model.input_size == 98
+
+    def test_from_dict_rejects_base_key(self):
+        """``_base`` inheritance belongs to from_yaml; from_dict rejects."""
+        from lobtrainer.config.schema import ExperimentConfig
+        with pytest.raises(ValueError, match="_base key found"):
+            ExperimentConfig.from_dict({"_base": "foo.yaml"})
+
+    def test_from_dict_normalizes_scientific_notation_strings(self):
+        """Preserved behavior: YAML parsers sometimes emit scientific
+        notation as string (e.g., "1e-8"). Our _normalize_config_types
+        pre-processor converts before strict-mode type check fires."""
+        from lobtrainer.config.schema import ExperimentConfig
+        cfg = ExperimentConfig.from_dict({
+            "name": "sci",
+            "data": {"feature_count": 98, "normalization": {"eps": "1e-8"}},
+            "model": {"input_size": 98},
+        })
+        assert cfg.data.normalization.eps == 1e-8
+        assert isinstance(cfg.data.normalization.eps, float)
+
+    # --- importance @field_validator(mode="before") -------------------------
+
+    def test_importance_field_coerces_dict_to_config(self):
+        """A.5.3i moved _coerce_importance from __post_init__ mutation
+        to @field_validator(mode='before'). Dict → ImportanceConfig
+        coercion preserved; ImportanceConfig's own validators fire."""
+        from lobtrainer.config.schema import ExperimentConfig
+        cfg = ExperimentConfig(
+            name="imp",
+            data={"feature_count": 98},
+            model={"input_size": 98},
+            importance={
+                "enabled": True,
+                "method": "permutation",
+                "n_permutations": 5,
+                "block_length_samples": 10,
+                "eval_split": "test",
+            },
+        )
+        assert type(cfg.importance).__name__ == "ImportanceConfig"
+        assert cfg.importance.enabled is True
+
+    def test_importance_field_none_passes_through(self):
+        """Default None (no importance analysis) stays None."""
+        from lobtrainer.config.schema import ExperimentConfig
+        cfg = ExperimentConfig()
+        assert cfg.importance is None
+
+    def test_importance_field_rejects_bad_type(self):
+        """TypeError for anything other than None / dict / ImportanceConfig."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ExperimentConfig
+        with pytest.raises(ValidationError):
+            ExperimentConfig(importance="invalid_string")
+
+    # --- T13 auto-derive via object.__setattr__ -----------------------------
+
+    def test_t13_auto_derive_model_input_size(self):
+        """With model.input_size=0 (sentinel), T13 auto-derives from
+        data.feature_count. Uses object.__setattr__ inside
+        @model_validator(mode='after') — frozen bypass pattern."""
+        from lobtrainer.config.schema import ExperimentConfig
+        cfg = ExperimentConfig.from_dict({
+            "name": "t13",
+            "data": {"feature_count": 40},
+            "model": {"input_size": 0},  # auto-derive sentinel
+        })
+        assert cfg.model.input_size == 40
+        # Params dict also updated in-place for num_features / input_size keys
+        # (preserved behavior from pre-migration)
+        if "num_features" in cfg.model.params:
+            assert cfg.model.params["num_features"] == 40
+
+    def test_t13_raises_on_explicit_mismatch(self):
+        """Pre-migration behavior preserved: explicit input_size ≠ resolved
+        feature_count raises ValueError (wrapped by Pydantic as
+        ValidationError)."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ExperimentConfig
+        with pytest.raises(ValidationError, match="!= resolved"):
+            ExperimentConfig.from_dict({
+                "name": "mismatch",
+                "data": {"feature_count": 40},
+                "model": {"input_size": 98},
+            })
+
+    # --- model_copy + CLI override pattern ----------------------------------
+
+    def test_model_copy_re_fires_validators(self):
+        """Inherited SafeBaseModel.model_copy(update=...) override re-runs
+        validators — catches invalid user overrides at CLI time."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ExperimentConfig
+        cfg = ExperimentConfig.from_dict({
+            "name": "orig", "data": {"feature_count": 98}, "model": {"input_size": 98}
+        })
+        # Valid update — works
+        cfg2 = cfg.model_copy(update={"output_dir": "/new/path"})
+        assert cfg2.output_dir == "/new/path"
+        # Invalid update — re-firing validators catches it
+        with pytest.raises(ValidationError):
+            cfg.model_copy(update={"name": 42})  # int rejected under strict str
+
+    def test_cli_override_pattern_atomic(self):
+        """Two-layer override pattern: inner sub-config model_copy + outer
+        ExperimentConfig model_copy — matches cli.py apply_overrides path
+        (post-A.5.3i). Both layers' validators fire."""
+        from lobtrainer.config.schema import ExperimentConfig
+        cfg = ExperimentConfig()
+        # Build new TrainConfig inline
+        new_train = cfg.train.model_copy(update={"epochs": 50, "batch_size": 32})
+        # Swap into outer via single model_copy
+        cfg2 = cfg.model_copy(update={
+            "train": new_train,
+            "output_dir": "/new/out",
+        })
+        assert cfg2.train.epochs == 50
+        assert cfg2.train.batch_size == 32
+        assert cfg2.output_dir == "/new/out"
+        # Original untouched (pure semantics)
+        assert cfg.train.epochs == 100
+        assert cfg.output_dir == "outputs"
+
+    # --- Live-YAML corpus regression (ship-blocker per plan v4) -------------
+
+    def test_live_yaml_corpus_loads_without_validation_error(self):
+        """CRITICAL (plan v4 ship-blocker): every production + test-fixture
+        YAML under configs/experiments/ must load via
+        ``ExperimentConfig.from_yaml(path)`` WITHOUT ValidationError.
+
+        Under ``extra='forbid'``, any YAML with a latent typo (or a field
+        post-A.5.3i rejects) would silently accept pre-migration but fail
+        post-migration. This test catches operator-facing regressions at
+        CI time, not in production. Partial bases are excluded (they
+        require merge resolution; tested separately by test_partial_base_*).
+
+        Exclusions:
+          - ``configs/archive/**`` — historical, pre-migration schemas
+            (operator has explicitly moved out of active use)
+          - ``nvda_tlob_triple_barrier_11mo_v1.yaml`` — pre-existing
+            yaml.SafeLoader syntax error (line 124 uses Python-style
+            ``\"\"\"`` triple-quote comments which are NOT valid YAML).
+            This file has been broken since before Phase A.5; needs a
+            full rewrite (descriptive comments → YAML # comments) in a
+            separate follow-up. Unrelated to A.5.3i migration.
+        """
+        import glob
+        from pathlib import Path
+        from lobtrainer.config.schema import ExperimentConfig
+        from lobtrainer.config.merge import is_partial_base
+
+        configs_dir = Path(__file__).parent.parent / "configs"
+        yaml_paths = sorted(configs_dir.glob("**/*.yaml"))
+        assert len(yaml_paths) > 0, "no YAMLs found under configs/"
+
+        # Pre-existing yaml-syntax-error YAMLs (not related to A.5.3i).
+        # Document each exclusion so future contributors can resurrect.
+        _KNOWN_YAML_SYNTAX_BROKEN = {
+            "nvda_tlob_triple_barrier_11mo_v1.yaml",
+        }
+
+        errors = []
+        for path in yaml_paths:
+            if is_partial_base(path):
+                continue  # partial bases are standalone-invalid by design
+            # Skip archive (historical, may have pre-migration schemas)
+            if "archive" in path.parts:
+                continue
+            if path.name in _KNOWN_YAML_SYNTAX_BROKEN:
+                continue
+            try:
+                _ = ExperimentConfig.from_yaml(str(path))
+            except Exception as e:
+                errors.append(f"{path.relative_to(configs_dir)}: {type(e).__name__}: {str(e)[:200]}")
+        assert not errors, (
+            "\nLive-YAML corpus regression post-A.5.3i:\n"
+            + "\n".join(f"  - {e}" for e in errors)
+        )
+
+    def test_partial_base_rejected_on_direct_load(self):
+        """Partial bases (``_partial: true``) cannot be loaded standalone —
+        must be composed via multi-base inheritance. Pre-migration behavior
+        preserved; test locks the clear error message."""
+        import glob
+        from pathlib import Path
+        from lobtrainer.config.schema import ExperimentConfig
+        from lobtrainer.config.merge import is_partial_base
+
+        configs_dir = Path(__file__).parent.parent / "configs"
+        partials = [p for p in configs_dir.glob("**/*.yaml") if is_partial_base(p)]
+        if not partials:
+            pytest.skip("no partial bases in corpus")
+        # Try loading ONE partial directly — must raise clearly
+        with pytest.raises(ValueError, match="Partial base"):
+            ExperimentConfig.from_yaml(str(partials[0]))
+
+    # --- Fingerprint byte-stability (hft-contracts cross-repo invariant) ---
+
+    def test_to_dict_produces_pure_dict(self):
+        """to_dict() output is pure nested dict — no BaseModel leak, no
+        Enum leak, no tuple-with-yaml-tag leak. Preserves YAML round-trip
+        byte-identity + ensures hft-ops fingerprint computation (via
+        compute_fingerprint → sanitize_for_hash on this dict) is stable."""
+        from lobtrainer.config.schema import ExperimentConfig
+        cfg = ExperimentConfig()
+        d = cfg.to_dict()
+        # Top-level is dict
+        assert isinstance(d, dict)
+        # All values pure — walk recursively
+        def _walk(obj):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    assert isinstance(k, (str, int, float, bool, type(None))), (
+                        f"non-primitive dict key: {k!r} ({type(k).__name__})"
+                    )
+                    _walk(v)
+            elif isinstance(obj, (list, tuple)):
+                for item in obj:
+                    _walk(item)
+            else:
+                assert isinstance(obj, (str, int, float, bool, type(None))), (
+                    f"non-primitive leaf: {obj!r} ({type(obj).__name__})"
+                )
+        _walk(d)
+
+    # --- Registry completeness check ----------------------------------------
+
+    def test_registry_contains_experiment_config(self):
+        """Regression: ensure _PYDANTIC_CONFIG_CLASSES includes the full
+        9-class set post-A.5.3i. Guards against future contributors
+        forgetting to append new classes."""
+        from lobtrainer.config.schema import _PYDANTIC_CONFIG_CLASSES, ExperimentConfig
+        assert ExperimentConfig in _PYDANTIC_CONFIG_CLASSES
+        # All 9 migrated classes
+        assert len(_PYDANTIC_CONFIG_CLASSES) == 9
+
+
 class TestModelConfigPydantic:
     """Phase A.5.3h (2026-04-24) regression locks for ModelConfig migration.
 

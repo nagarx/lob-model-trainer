@@ -13,25 +13,27 @@
     "description": "Temporal Ridge on E4 time-based data targeting H60 (5-minute returns).\nTests whether temporal features add value over single-feature baseline.\n",
     "log_level": "INFO",
     "model": {
-      "alpha": 1.0,
-      "features": {
-        "include_momentum": true,
-        "include_volatility": true,
-        "rolling_windows": [
-          5,
-          10,
-          20
-        ],
-        "signal_indices": [
-          85,
-          84,
-          86,
-          56,
-          45
-        ],
-        "top_k_signals": 3
-      },
-      "model_type": "temporal_ridge"
+      "model_type": "temporal_ridge",
+      "params": {
+        "alpha": 1.0,
+        "features": {
+          "include_momentum": true,
+          "include_volatility": true,
+          "rolling_windows": [
+            5,
+            10,
+            20
+          ],
+          "signal_indices": [
+            85,
+            84,
+            86,
+            56,
+            45
+          ],
+          "top_k_signals": 3
+        }
+      }
     },
     "name": "TemporalRidge_E4_H60",
     "output_dir": "outputs/experiments/e4_temporal_ridge_h60",

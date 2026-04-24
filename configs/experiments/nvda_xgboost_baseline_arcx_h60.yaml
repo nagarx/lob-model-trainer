@@ -11,9 +11,13 @@
 #       --config configs/experiments/nvda_xgboost_baseline_arcx_h60.yaml
 # =============================================================================
 
-experiment:
-  name: "NVDA XGBoost Baseline H60 — ARCX"
-  description: "Cross-exchange comparison: XGBoost on 119 features at 1-minute horizon (ARCX)"
+# Phase A.5.3i (2026-04-24): schema-corrected.
+# Pre-migration: top-level `experiment:`/`output:` blocks were silently dropped
+# by dacite (ExperimentConfig has `name:`/`description:`/`output_dir:` at root,
+# not wrapped). `model:` flat xgboost hyperparameters were also dropped
+# (ModelConfig has `params:` for opaque passthrough).
+name: "NVDA XGBoost Baseline H60 — ARCX"
+description: "Cross-exchange comparison: XGBoost on 119 features at 1-minute horizon (ARCX)"
 
 data:
   data_dir: "../data/exports/nvda_arcx_128feat"
@@ -22,12 +26,14 @@ data:
   horizon_idx: 3
 
 model:
-  n_estimators: 500
-  max_depth: 6
-  learning_rate: 0.05
-  subsample: 0.8
-  colsample_bytree: 0.8
-  early_stopping_rounds: 50
+  model_type: xgboost
+  # Phase A.5.3i: xgboost-specific hyperparameters nested under `params:`.
+  params:
+    n_estimators: 500
+    max_depth: 6
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    early_stopping_rounds: 50
 
-output:
-  output_dir: "outputs/xgboost_baseline_arcx_h60"
+output_dir: "outputs/xgboost_baseline_arcx_h60"

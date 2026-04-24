@@ -13,32 +13,35 @@
     "description": "GradientBoosting on 53 temporal features. Nonlinear alternative to Ridge.\n",
     "log_level": "INFO",
     "model": {
-      "features": {
-        "include_momentum": true,
-        "include_volatility": true,
-        "rolling_windows": [
-          5,
-          10,
-          20
-        ],
-        "signal_indices": [
-          85,
-          84,
-          86,
-          56,
-          45
-        ],
-        "top_k_signals": 3
-      },
-      "huber_delta": 0.9,
-      "learning_rate": 0.05,
-      "loss_type": "huber",
-      "max_depth": 5,
-      "max_train_samples": 50000,
-      "min_samples_leaf": 50,
+      "input_size": 0,
       "model_type": "temporal_gradboost",
-      "n_estimators": 200,
-      "subsample": 0.8
+      "params": {
+        "features": {
+          "include_momentum": true,
+          "include_volatility": true,
+          "rolling_windows": [
+            5,
+            10,
+            20
+          ],
+          "signal_indices": [
+            85,
+            84,
+            86,
+            56,
+            45
+          ],
+          "top_k_signals": 3
+        },
+        "huber_delta": 0.9,
+        "learning_rate": 0.05,
+        "loss_type": "huber",
+        "max_depth": 5,
+        "max_train_samples": 50000,
+        "min_samples_leaf": 50,
+        "n_estimators": 200,
+        "subsample": 0.8
+      }
     },
     "name": "TemporalGradBoost_NVDA_H10",
     "output_dir": "outputs/experiments/nvda_temporal_gradboost_h10",

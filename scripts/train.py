@@ -277,19 +277,37 @@ def apply_overrides(config: ExperimentConfig, args) -> ExperimentConfig:
     Phase A.5.3g (2026-04-24): DataConfig migrated to frozen Pydantic
     BaseModel. ``config.data.data_dir = ...`` now raises. Same
     model_copy(update=...) pattern applied to the single DataConfig CLI
-    override (``--data-dir``). ExperimentConfig stays @dataclass through
-    A.5.3i; ``config.output_dir = ...`` still works at this stage.
+    override (``--data-dir``).
+
+    Phase A.5.3i (2026-04-24 KEYSTONE): ExperimentConfig itself migrated
+    to frozen Pydantic BaseModel. Top-level ``config.output_dir = ...``
+    also raises. Same pattern applied — ``config = config.model_copy(
+    update={"output_dir": ...})`` re-fires all ExperimentConfig
+    validators (including T13 auto-derive + T9 deprecation warnings).
+
+    NOTE: ``config.data = config.data.model_copy(...)`` at the START of
+    this function is still a TOP-LEVEL FIELD ASSIGNMENT on
+    ExperimentConfig (``config.data = X``) which now ALSO raises under
+    frozen=True. Refactored to use the same ``config.model_copy`` idiom
+    with an outer accumulator so all overrides are applied atomically.
     """
     from typing import Any, Dict
 
+    # Accumulate all overrides at both levels; apply in one model_copy
+    # per frozen layer.
     _data_overrides: Dict[str, Any] = {}
     if args.data_dir is not None:
         _data_overrides["data_dir"] = args.data_dir
+
+    _top_overrides: Dict[str, Any] = {}
     if _data_overrides:
-        config.data = config.data.model_copy(update=_data_overrides)
+        # Build new DataConfig first (its own validators fire), then stash
+        # the new DataConfig in the outer overrides dict for atomic
+        # ExperimentConfig.model_copy below.
+        _top_overrides["data"] = config.data.model_copy(update=_data_overrides)
 
     if args.output_dir is not None:
-        config.output_dir = args.output_dir
+        _top_overrides["output_dir"] = args.output_dir
 
     _train_overrides: Dict[str, Any] = {}
     if args.epochs is not None:
@@ -301,7 +319,13 @@ def apply_overrides(config: ExperimentConfig, args) -> ExperimentConfig:
     if args.seed is not None:
         _train_overrides["seed"] = args.seed
     if _train_overrides:
-        config.train = config.train.model_copy(update=_train_overrides)
+        # Same two-layer pattern: build the new TrainConfig (inner
+        # validators fire), stash in top-overrides dict for atomic
+        # ExperimentConfig.model_copy below.
+        _top_overrides["train"] = config.train.model_copy(update=_train_overrides)
+
+    if _top_overrides:
+        config = config.model_copy(update=_top_overrides)
 
     return config
 

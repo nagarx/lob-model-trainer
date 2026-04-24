@@ -270,16 +270,19 @@ class TestPermutationImportanceCallback:
         config = ExperimentConfig(
             name="test_happy", output_dir=str(tmp_path),
         )
-        # Phase A.5.3h (2026-04-24): ModelConfig is now frozen Pydantic;
-        # direct field assignment raises. Use model_copy(update=...) with
-        # a real regression-capable Enum value (ModelType.HMHP_REGRESSION,
-        # whose .value='hmhp_regression' contains the substring 'regression'
-        # that the task-type resolver heuristic keys on — matches legacy
-        # behavior without relying on a synthetic string that ModelType
-        # Enum would reject under strict).
-        config.model = config.model.model_copy(
-            update={"model_type": "hmhp_regression"}
-        )
+        # Phase A.5.3h (2026-04-24): ModelConfig is now frozen Pydantic.
+        # Phase A.5.3i (2026-04-24 KEYSTONE): ExperimentConfig is now also
+        # frozen. Two-layer pattern — build the new ModelConfig via inner
+        # model_copy, swap into outer ExperimentConfig via outer model_copy.
+        # Use ModelType.HMHP_REGRESSION (.value='hmhp_regression', contains
+        # the substring 'regression' that the task-type resolver heuristic
+        # keys on — matches legacy behavior without relying on a synthetic
+        # string that ModelType Enum would reject under strict).
+        config = config.model_copy(update={
+            "model": config.model.model_copy(
+                update={"model_type": "hmhp_regression"}
+            ),
+        })
         trainer = _MockTrainer(
             model=_TinyLinearModel(n_features=3, seq_len=5, out_dim=1),
             device=torch.device("cpu"),
@@ -375,6 +378,16 @@ class TestExperimentConfigImportanceField:
         assert c.importance.seed == 999
 
     def test_invalid_type_raises(self):
-        """Garbage input raises TypeError with actionable message."""
-        with pytest.raises(TypeError, match="must be None, a dict, or"):
+        """Garbage input raises ValidationError with actionable message.
+
+        Phase A.5.3i (2026-04-24 KEYSTONE): the ``_coerce_importance(self)``
+        helper (which raised TypeError) was replaced by a
+        ``@field_validator(mode='before')`` on ExperimentConfig. Per
+        Pydantic convention, validators raise ``ValueError`` (converted
+        to ``ValidationError`` by Pydantic) rather than TypeError —
+        unifies the failure mode across every config boundary (callers
+        catch ValidationError uniformly).
+        """
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="must be None, a dict, or"):
             ExperimentConfig(importance=42)  # int, not valid

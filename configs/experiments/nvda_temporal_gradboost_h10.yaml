@@ -26,21 +26,24 @@ data:
 
 model:
   model_type: temporal_gradboost
-  n_estimators: 200
-  max_depth: 5
-  learning_rate: 0.05
-  subsample: 0.8
-  min_samples_leaf: 50
-  loss_type: huber
-  huber_delta: 0.9
-  max_train_samples: 50000
-
-  features:
-    signal_indices: [85, 84, 86, 56, 45]
-    top_k_signals: 3
-    rolling_windows: [5, 10, 20]
-    include_volatility: true
-    include_momentum: true
+  input_size: 0  # Phase A.5.3i: T13 auto-derive from data.feature_count=128
+  # Phase A.5.3i (2026-04-24): extra='forbid' on ModelConfig; nest
+  # gradboost-specific hyperparameters under `params:` (opaque passthrough).
+  params:
+    n_estimators: 200
+    max_depth: 5
+    learning_rate: 0.05
+    subsample: 0.8
+    min_samples_leaf: 50
+    loss_type: huber
+    huber_delta: 0.9
+    max_train_samples: 50000
+    features:
+      signal_indices: [85, 84, 86, 56, 45]
+      top_k_signals: 3
+      rolling_windows: [5, 10, 20]
+      include_volatility: true
+      include_momentum: true
 
 train:
   task_type: regression

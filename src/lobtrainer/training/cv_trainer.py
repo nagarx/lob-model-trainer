@@ -243,17 +243,22 @@ class CVTrainer:
         Phase A.5.3e (2026-04-24): TrainConfig is now a frozen Pydantic
         BaseModel — direct field mutation raises ValidationError. Build
         the new TrainConfig via SafeBaseModel's ``model_copy(update=...)``
-        (re-validates the cross-field task_type ↔ loss_type invariant)
-        and re-attach to the copied ExperimentConfig (still @dataclass, so
-        field re-assignment works for self.train).
+        (re-validates the cross-field task_type ↔ loss_type invariant).
+
+        Phase A.5.3i (2026-04-24 KEYSTONE): ExperimentConfig itself is
+        now also frozen. Cannot use ``copy.deepcopy + field assignment``
+        anymore. Atomic ``config.model_copy(update={"output_dir": ...,
+        "train": ..., "name": ...})`` — all 3 fields updated in a single
+        re-validation pass. Pydantic's ``model_copy`` already produces a
+        fresh BaseModel instance without aliasing (no need for
+        ``copy.deepcopy``).
         """
-        fold_cfg = copy.deepcopy(self.config)
-        fold_cfg.output_dir = str(
-            Path(self.config.output_dir) / f"cv_fold_{fold_idx}"
-        )
-        # Phase A.5.3e: frozen TrainConfig — replace via model_copy.
-        fold_cfg.train = self.config.train.model_copy(
-            update={"seed": self.config.train.seed + fold_idx}
-        )
-        fold_cfg.name = f"{self.config.name}_fold{fold_idx}"
-        return fold_cfg
+        return self.config.model_copy(update={
+            "output_dir": str(
+                Path(self.config.output_dir) / f"cv_fold_{fold_idx}"
+            ),
+            "train": self.config.train.model_copy(
+                update={"seed": self.config.train.seed + fold_idx}
+            ),
+            "name": f"{self.config.name}_fold{fold_idx}",
+        })

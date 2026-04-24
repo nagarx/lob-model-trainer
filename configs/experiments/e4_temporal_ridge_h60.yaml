@@ -28,14 +28,16 @@ data:
 
 model:
   model_type: temporal_ridge
-  alpha: 1.0
-
-  features:
-    signal_indices: [85, 84, 86, 56, 45]
-    top_k_signals: 3
-    rolling_windows: [5, 10, 20]
-    include_volatility: true
-    include_momentum: true
+  # Phase A.5.3i (2026-04-24): extra='forbid' on ModelConfig; hyperparameters
+  # nested under `params:` (opaque passthrough to model factory).
+  params:
+    alpha: 1.0
+    features:
+      signal_indices: [85, 84, 86, 56, 45]
+      top_k_signals: 3
+      rolling_windows: [5, 10, 20]
+      include_volatility: true
+      include_momentum: true
 
 train:
   task_type: regression

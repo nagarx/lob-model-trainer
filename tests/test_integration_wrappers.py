@@ -220,12 +220,16 @@ class TestBuildFoldConfig:
         assert "cv_fold_2" in fold_cfg.output_dir
 
     def test_seed_per_fold(self):
-        """Phase A.5.3e (2026-04-24): TrainConfig is now frozen Pydantic
-        BaseModel; direct mutation raises ValidationError. Use model_copy
-        to swap in a new TrainConfig with the desired seed."""
+        """Phase A.5.3e (2026-04-24): TrainConfig is now frozen Pydantic.
+        Phase A.5.3i (2026-04-24 KEYSTONE): ExperimentConfig is now also
+        frozen — cannot assign ``cfg.train = X`` either. Two-layer
+        model_copy pattern matches cli.py + CVTrainer._build_fold_config.
+        """
         from lobtrainer.training.cv_trainer import CVTrainer
         cfg = ExperimentConfig()
-        cfg.train = cfg.train.model_copy(update={"seed": 42})
+        cfg = cfg.model_copy(update={
+            "train": cfg.train.model_copy(update={"seed": 42}),
+        })
         cv = CVTrainer(cfg)
         fold0 = cv._build_fold_config(0)
         fold1 = cv._build_fold_config(1)

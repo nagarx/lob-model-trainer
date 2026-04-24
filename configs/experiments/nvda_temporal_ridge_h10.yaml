@@ -28,14 +28,19 @@ data:
 
 model:
   model_type: temporal_ridge
-  alpha: 1.0
-
-  features:
-    signal_indices: [85, 84, 86, 56, 45]
-    top_k_signals: 3
-    rolling_windows: [5, 10, 20]
-    include_volatility: true
-    include_momentum: true
+  input_size: 0  # Phase A.5.3i: T13 auto-derive from data.feature_count=128
+  # Phase A.5.3i (2026-04-24): ModelConfig uses extra='forbid'. Model-
+  # specific hyperparameters nested under `params:` (opaque passthrough
+  # to the model factory). Pre-migration these were at top level of
+  # `model:` and silently dropped by dacite.
+  params:
+    alpha: 1.0
+    features:
+      signal_indices: [85, 84, 86, 56, 45]
+      top_k_signals: 3
+      rolling_windows: [5, 10, 20]
+      include_volatility: true
+      include_momentum: true
 
 train:
   task_type: regression

@@ -284,10 +284,16 @@ class TestToDictFiltersPrivateFields:
         # resolver populated the cache. to_dict() must hide the cache.
         #
         # Phase A.5.3g (2026-04-24): DataConfig is frozen Pydantic; public
-        # `feature_set` field assignment raises. Construct via model_copy
-        # which re-runs validators; PrivateAttr writes still work as-is.
+        # `feature_set` field assignment raises.
+        # Phase A.5.3i (2026-04-24 KEYSTONE): ExperimentConfig itself is
+        # now also frozen — ``cfg.data = ...`` assignment also raises.
+        # Use outer model_copy + nested inner model_copy pattern (matches
+        # cli.py + CVTrainer._build_fold_config). PrivateAttr writes still
+        # work via direct attribute assignment (mutable under frozen).
         cfg = self._make_experiment_config()
-        cfg.data = cfg.data.model_copy(update={"feature_set": "momentum_v1"})
+        cfg = cfg.model_copy(update={
+            "data": cfg.data.model_copy(update={"feature_set": "momentum_v1"}),
+        })
         cfg.data._feature_indices_resolved = [0, 5, 12, 84, 85]
         cfg.data._feature_set_ref_resolved = ("momentum_v1", "a" * 64)
 
@@ -302,13 +308,15 @@ class TestToDictFiltersPrivateFields:
         # End-to-end R3: write to YAML, read back, verify the cache
         # state never crosses the serialization boundary.
         #
-        # Phase A.5.3g (2026-04-24): DataConfig is frozen Pydantic; public
-        # `feature_set` field assignment raises. Use model_copy for the
-        # public setter; PrivateAttr write still works via direct assign.
+        # Phase A.5.3i (2026-04-24 KEYSTONE): both ExperimentConfig AND
+        # DataConfig are frozen; use outer model_copy + nested inner
+        # model_copy. PrivateAttr write still works via direct assign.
         from lobtrainer.config import ExperimentConfig
 
         cfg = self._make_experiment_config()
-        cfg.data = cfg.data.model_copy(update={"feature_set": "test_v1"})
+        cfg = cfg.model_copy(update={
+            "data": cfg.data.model_copy(update={"feature_set": "test_v1"}),
+        })
         cfg.data._feature_indices_resolved = [0, 5, 12]
 
         yaml_path = tmp_path / "roundtrip.yaml"

@@ -130,29 +130,39 @@ def apply_overrides(config: ExperimentConfig, args: argparse.Namespace) -> Exper
     Returns:
         Modified configuration with overrides applied
     """
-    # Phase A.5.3g (2026-04-24): DataConfig is a frozen Pydantic BaseModel
-    # post-migration — direct field mutation raises ValidationError. Same
-    # _train_overrides dict pattern from A.5.3e/f.1 applied to the single
-    # known DataConfig CLI override (`--data-dir`). If future CLI flags
-    # expand, accumulate them here alongside data_dir.
+    # Phase A.5.3i (2026-04-24 KEYSTONE): every config layer is now a frozen
+    # Pydantic BaseModel — both the nested sub-configs (DataConfig post-A.5.3g,
+    # TrainConfig post-A.5.3e) AND the outer ExperimentConfig itself. All
+    # direct field mutations raise ValidationError.
+    #
+    # UNIFIED two-layer pattern:
+    #
+    # (a) Inner layer: accumulate per-sub-config CLI overrides into a dict,
+    #     build the new sub-config via ``SubConfig.model_copy(update=...)``
+    #     (re-fires inner validators — e.g., TrainConfig's cross-field
+    #     task_type ↔ loss_type invariant, DataConfig's mutual-exclusion
+    #     check).
+    #
+    # (b) Outer layer: stash the new sub-configs + any top-level scalar
+    #     overrides (``output_dir``) into ``_top_overrides``, apply in one
+    #     ``config.model_copy(update=_top_overrides)`` pass (re-fires
+    #     ExperimentConfig's validators — T13 auto-derive + T9 deprecation
+    #     warnings).
+    #
+    # This pattern scales: future CLI flags at any config depth add one
+    # inner block + one key to ``_top_overrides``.
+    _top_overrides: Dict[str, Any] = {}
+
+    # DataConfig overrides (--data-dir)
     _data_overrides: Dict[str, Any] = {}
     if getattr(args, 'data_dir', None) is not None:
         _data_overrides["data_dir"] = args.data_dir
     if _data_overrides:
-        config.data = config.data.model_copy(update=_data_overrides)
+        _top_overrides["data"] = config.data.model_copy(update=_data_overrides)
 
-    # Phase A.5.3e (2026-04-24) + A.5.3f.1 hardening (2026-04-24 post-audit):
-    # TrainConfig is a frozen Pydantic BaseModel post-migration; direct field
-    # mutation raises ValidationError. Accumulate CLI overrides into a dict
-    # and apply via TrainConfig.model_copy(update=...) in a single pass —
-    # preserves the SafeBaseModel re-validation contract (cross-field
-    # task_type ↔ loss_type invariant fires on CLI override path too).
-    #
+    # TrainConfig overrides (--epochs, --batch-size, --learning-rate, --seed)
     # A.5.3f.1 hardening caught by 3-agent audit: the ORIGINAL A.5.3e fix
-    # missed the ``epochs`` field (it sat in a separate if-block before the
-    # batch_size/learning_rate/seed block that was actually migrated).
-    # ``lobtrainer train --epochs 10`` would have raised ValidationError on
-    # every invocation. Now all 4 fields consolidated into ONE override pass.
+    # missed ``epochs`` — now all 4 fields consolidated into ONE override.
     _train_overrides: Dict[str, Any] = {}
     if getattr(args, 'epochs', None) is not None:
         _train_overrides["epochs"] = args.epochs
@@ -163,11 +173,15 @@ def apply_overrides(config: ExperimentConfig, args: argparse.Namespace) -> Exper
     if getattr(args, 'seed', None) is not None:
         _train_overrides["seed"] = args.seed
     if _train_overrides:
-        config.train = config.train.model_copy(update=_train_overrides)
+        _top_overrides["train"] = config.train.model_copy(update=_train_overrides)
 
-    # Output overrides — ExperimentConfig still @dataclass, mutation works.
+    # ExperimentConfig-level scalars (--output-dir)
     if getattr(args, 'output_dir', None) is not None:
-        config.output_dir = args.output_dir
+        _top_overrides["output_dir"] = args.output_dir
+
+    # Atomic re-validation via outer model_copy (fires T13 + T9 validators).
+    if _top_overrides:
+        config = config.model_copy(update=_top_overrides)
 
     return config
 

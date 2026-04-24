@@ -165,41 +165,14 @@ class LabelingStrategy(str, Enum):
     """
 
 
-def _coerce_importance(config: Any) -> None:
-    """Phase 8C-α Stage C.1 trainer wire-in helper.
-
-    Coerces ``config.importance`` from dict (YAML-load default) or
-    None → ImportanceConfig instance, OR leaves a pre-constructed
-    ImportanceConfig intact. Deferred import breaks the schema.py ↔
-    training.importance.config circular dependency at module load
-    time. ImportanceConfig's own ``__post_init__`` validates field
-    ranges (n_permutations >= 1, etc.), so we just trigger
-    construction.
-
-    Mutates ``config`` in place (ExperimentConfig is NOT frozen).
-    """
-    imp = getattr(config, "importance", None)
-    if imp is None:
-        return  # already None — disabled, nothing to do
-    if isinstance(imp, dict):
-        from lobtrainer.training.importance.config import ImportanceConfig
-        config.importance = ImportanceConfig(**imp)
-        return
-    # Round-3 post-audit Agent-4 H2 fix: real isinstance check instead
-    # of duck-typing. We're inside __post_init__ — the training package
-    # has finished importing its parents before this runs (called via
-    # dataclass machinery, not at module-import time) — so we can
-    # safely import and do a proper isinstance check. Duck-typing
-    # (hasattr 'enabled' + 'method') accepts arbitrary objects
-    # including partially-corrupt deserializations; strict check
-    # prevents silent garbage-in.
-    from lobtrainer.training.importance.config import ImportanceConfig
-    if isinstance(imp, ImportanceConfig):
-        return
-    raise TypeError(
-        f"ExperimentConfig.importance must be None, a dict, or an "
-        f"ImportanceConfig instance; got {type(imp).__name__}."
-    )
+# Phase A.5.3i (2026-04-24 KEYSTONE): the ``_coerce_importance(config)``
+# helper that previously mutated ``config.importance`` in ExperimentConfig's
+# ``__post_init__`` has been REPLACED by a ``@field_validator("importance",
+# mode="before")`` on ExperimentConfig itself (see the class definition
+# below). The validator path avoids the post-construction mutation entirely
+# (incompatible with ``frozen=True``) and fires at field-coercion time,
+# BEFORE the strict type check. Functionality preserved; see
+# ``ExperimentConfig._coerce_importance_field`` for the new home.
 
 
 class SourceConfig(SafeBaseModel):
@@ -1868,51 +1841,73 @@ class CVConfig(SafeBaseModel):
 
 
 # =============================================================================
-# Phase A.5.3b (2026-04-24): module-level registry of Pydantic-migrated config
-# classes. Consumed by ``ExperimentConfig.from_dict`` to build dacite's
-# ``type_hooks`` table so dacite routes dict → BaseModel construction through
-# ``model_validate`` (which runs validators) instead of treating BaseModel as
-# a dataclass (which it isn't — dacite would fail).
+# Phase A.5.3b (2026-04-24): placeholder for the module-level registry of
+# Pydantic-migrated config classes. Originally built the
+# ``_PYDANTIC_TYPE_HOOKS`` dacite-bridge table so dacite could route dict
+# → BaseModel construction through ``model_validate``.
 #
-# **Subsequent A.5.3c-h commits add ONE line each** to ``_PYDANTIC_CONFIG_CLASSES``
-# — every migrated class auto-registers its hook via the factory below. This
-# minimizes merge-conflict surface (one-line append vs function-body patch).
+# **Phase A.5.3i (2026-04-24 KEYSTONE)**: dacite retired + registry
+# RELOCATED to AFTER ``ExperimentConfig`` definition so ``ExperimentConfig``
+# can be included in the list (forward-reference impossible at this point
+# in module load order). See registry definition later in this file.
 #
-# **A.5.3i retires this registry entirely** when ``ExperimentConfig`` itself
-# becomes ``SafeBaseModel`` and ``from_dict`` delegates to
-# ``cls.model_validate(data)`` directly — dacite drops out of the dependency
-# tree at that point.
-#
-# Default-argument ``_cls=cls`` in the lambda is the standard Python
-# closure-capture pattern — without it, every lambda in the comprehension
-# would close over the SAME ``cls`` variable (late binding), firing with the
-# last loop value for all entries. Tested implicitly by the A.5.3a
-# ``TestLabelsConfigPydantic`` suite.
+# ``_PYDANTIC_TYPE_HOOKS`` retired (no consumer after from_dict rewrite).
 # =============================================================================
-_PYDANTIC_CONFIG_CLASSES: List[type] = [
-    LabelsConfig,         # A.5.3a (commit 1507b87)
-    SequenceConfig,       # A.5.3b (commit f32288f)
-    NormalizationConfig,  # A.5.3c (commit 52516e5 — first Enum-field class)
-    SourceConfig,         # A.5.3d (commit f54a838)
-    TrainConfig,          # A.5.3e (commit 7c91170 — 2 Enum fields + cross-field)
-    CVConfig,             # A.5.3f (commit 26f6f2a)
-    DataConfig,           # A.5.3g (commit dd23333 — composite + PrivateAttr + in-validator derivation)
-    ModelConfig,          # A.5.3h (this commit — final leaf; Enum + nested tuple + params self-mutation)
-    # A.5.3i (ExperimentConfig root) closes the migration — dacite dropped.
-]
-
-_PYDANTIC_TYPE_HOOKS: Dict[type, Any] = {
-    cls: (lambda d, _cls=cls: _cls.model_validate(d) if isinstance(d, dict) else d)
-    for cls in _PYDANTIC_CONFIG_CLASSES
-}
 
 
-@dataclass
-class ExperimentConfig:
+class ExperimentConfig(SafeBaseModel):
     """
     Top-level configuration combining all sub-configs.
 
     This is the main configuration object used throughout the codebase.
+
+    **Phase A.5.3i (2026-04-24)**: migrated from ``@dataclass`` to Pydantic
+    v2 ``BaseModel`` via shared ``SafeBaseModel`` base — the KEYSTONE
+    commit closing the entire Phase A.5 Scope D cycle. Every config class
+    in the hierarchy is now a frozen Pydantic model; dacite retired from
+    the dependency tree.
+
+    Retires 4 bug classes empirically proven at LabelsConfig (A.5.3a):
+
+    1. **Canonical-path-drift** — ``config.labels`` vs ``config.data.labels``
+       type-rejected at ``model_validate`` time (no such attribute on
+       ExperimentConfig; Pydantic ``extra='forbid'`` enforces).
+    2. **Silent mutation** — ``config.output_dir = X`` raises
+       ValidationError under ``frozen=True``; callers use
+       ``config.model_copy(update={"output_dir": X})`` which re-fires
+       validators.
+    3. **Extra-field acceptance** — typo ``names: "foo"`` (for ``name``)
+       rejected at ``model_validate`` time by ``extra='forbid'``.
+    4. **Silent-None field access** — typed fields discoverable via
+       ``.model_fields``; validators catch missing-required + type
+       mismatch at construction.
+
+    Subsystem coordination:
+
+    - ``dacite`` dependency retired (previously bridged dict→dataclass
+      for BaseModel children via ``_PYDANTIC_TYPE_HOOKS`` table). Pydantic
+      v2 handles nested BaseModel construction natively via
+      ``cls.model_validate(data)``.
+    - ``_coerce_importance`` helper (Phase 8C-α) inlined as a
+      ``@field_validator(mode="before")`` on the ``importance`` field —
+      no post-construction mutation needed.
+    - T13 auto-derivation of ``model.input_size`` uses
+      ``object.__setattr__(self, "model", ...)`` inside
+      ``@model_validator(mode="after")`` — the Pydantic v2-sanctioned
+      escape hatch for in-validator cross-field self-mutation under
+      ``frozen=True``.
+    - ``from_dict`` body rewritten to ``cls.model_validate(data)``; public
+      ``from_yaml``/``to_yaml``/``to_dict``/``to_json`` API preserved
+      (backward compatibility — zero call-site breakage across 37+ known
+      consumer sites).
+
+    CLI override pattern (all 3 production sites):
+
+        # Before A.5.3i (mutation):
+        config.output_dir = args.output_dir
+
+        # After A.5.3i (model_copy re-validates):
+        config = config.model_copy(update={"output_dir": args.output_dir})
 
     Usage:
         >>> config = ExperimentConfig.from_yaml("configs/baseline.yaml")
@@ -1926,13 +1921,13 @@ class ExperimentConfig:
     description: str = ""
     """Experiment description."""
 
-    data: DataConfig = field(default_factory=DataConfig)
+    data: DataConfig = Field(default_factory=DataConfig)
     """Data loading configuration."""
 
-    model: ModelConfig = field(default_factory=ModelConfig)
+    model: ModelConfig = Field(default_factory=ModelConfig)
     """Model architecture configuration."""
 
-    train: TrainConfig = field(default_factory=TrainConfig)
+    train: TrainConfig = Field(default_factory=TrainConfig)
     """Training hyperparameters."""
 
     cv: Optional[CVConfig] = None
@@ -1941,8 +1936,10 @@ class ExperimentConfig:
     # Logical type: Optional["ImportanceConfig"]. Kept as Optional[Any]
     # at runtime to avoid the schema.py ↔ training.importance.config
     # circular import chain (see TYPE_CHECKING guard at module top).
-    # Actual type coercion (dict → ImportanceConfig) happens in
-    # ``__post_init__`` below via ``_coerce_importance``.
+    # Phase A.5.3i (2026-04-24): coercion moved from __post_init__
+    # helper (`_coerce_importance`) into ``@field_validator(mode="before")``
+    # below — fires before strict type check, no post-construction
+    # mutation needed.
     importance: Optional[Any] = None
     """Phase 8C-α Stage C.1 trainer wire-in (2026-04-20): post-training
     feature-permutation-importance configuration. When set AND
@@ -1965,21 +1962,84 @@ class ExperimentConfig:
     log_level: str = "INFO"
     """Logging level: DEBUG, INFO, WARNING, ERROR."""
 
-    tags: List[str] = field(default_factory=list)
-    """Tags for experiment tracking."""
-    
-    def __post_init__(self) -> None:
-        """Validate cross-config consistency."""
+    tags: List[str] = Field(default_factory=list)
+    """Tags for experiment tracking.
+
+    Phase A.5.3i: kept as ``List[str]`` (not Tuple) — tags are user
+    observational metadata, mutated throughout experiment lifecycle.
+    Under frozen=True the LIST REFERENCE cannot be reassigned
+    (``config.tags = [...]`` raises), but list-content mutation
+    (``config.tags.append("x")``) remains permitted (Python does not
+    freeze mutable-container contents). Matches legacy semantics.
+    """
+
+    @field_validator("importance", mode="before")
+    @classmethod
+    def _coerce_importance_field(cls, v: Any) -> Any:
+        """Coerce YAML dict → ImportanceConfig at field-validation time.
+
+        Phase A.5.3i (2026-04-24): replaces the module-level
+        ``_coerce_importance(self)`` helper that previously mutated
+        ``config.importance`` in ``__post_init__``. Under frozen=True,
+        post-construction field assignment raises; this validator runs
+        BEFORE the field type check (Optional[Any] accepts anything,
+        but we want typed semantics).
+
+        Accepts:
+          - ``None`` (explicit disabled — default) → None
+          - ``dict`` (YAML-load default when ``importance:`` is specified)
+            → ImportanceConfig(**dict) (ImportanceConfig __post_init__
+            validates ranges + raises on bad values)
+          - ``ImportanceConfig`` instance (test code / programmatic
+            construction) → passed through
+
+        Deferred import breaks the schema.py ↔ training.importance.config
+        circular dependency — safe because this validator fires at
+        field-coercion time (after training package has finished loading
+        for any caller that constructed ExperimentConfig).
+
+        Round-3 post-audit Agent-4 H2 fix preserved: real ``isinstance``
+        check (not duck-typing) — strict check prevents silent
+        garbage-in from partially-corrupt deserializations.
+        """
+        if v is None:
+            return None
+        from lobtrainer.training.importance.config import ImportanceConfig
+        if isinstance(v, dict):
+            return ImportanceConfig(**v)
+        if isinstance(v, ImportanceConfig):
+            return v
+        # Phase A.5.3i: ``raise ValueError`` (not TypeError) so Pydantic v2
+        # wraps as ``ValidationError`` — consistent with every other
+        # @field_validator in this module (unified failure mode at all
+        # config boundaries; callers catch ValidationError uniformly).
+        raise ValueError(
+            f"ExperimentConfig.importance must be None, a dict, or an "
+            f"ImportanceConfig instance; got {type(v).__name__}."
+        )
+
+    @model_validator(mode="after")
+    def _validate_all(self) -> "ExperimentConfig":
+        """Pydantic equivalent of the legacy ``__post_init__``.
+
+        Preserves every invariant from the dataclass version:
+
+        - Phase 6 6A.1 `data.feature_set` + `model.input_size=0` fail-fast
+          (resolver-time auto-derivation deferred to Phase 7 lobtrainer-core
+          split)
+        - T13 auto-derive `model.input_size=0` → resolved_input_size (from
+          sources / feature_preset / feature_indices / feature_count, in
+          priority order). Under frozen=True, uses
+          ``object.__setattr__(self, "model", new_model)`` — the Pydantic
+          v2-sanctioned escape hatch for in-validator self-mutation.
+        - normalization.exclude_features bounds check
+        - T9 deprecation warnings for legacy labeling_strategy / horizon_idx
+
+        Returns self (Pydantic convention).
+        """
         # T13: Resolve expected feature count and auto-derive model.input_size
         import logging as _log
         _t13_logger = _log.getLogger(__name__)
-
-        # Phase 8C-α Stage C.1 trainer wire-in (post-audit round-2):
-        # coerce importance from dict → ImportanceConfig. Deferred import
-        # breaks the schema.py ↔ training.importance.config circular
-        # dependency. See `_coerce_importance` below for the conversion
-        # + validation delegation to ImportanceConfig.__post_init__.
-        _coerce_importance(self)
 
         # Phase 6 6A.1 (2026-04-17, revised after validation audit):
         # `data.feature_set` is resolved AT TRAINER RUNTIME (inside
@@ -2034,27 +2094,33 @@ class ExperimentConfig:
             if self.model.input_size == 0:
                 # Auto-derive (T13).
                 #
-                # Phase A.5.3h (2026-04-24): ModelConfig is now frozen
-                # Pydantic BaseModel. Direct ``self.model.input_size = X``
-                # assignment raises ValidationError. Use SafeBaseModel's
-                # validator-re-running model_copy(update=...) to atomically
-                # update BOTH input_size AND the in-params-dict mirror
-                # (``params["num_features"]`` or ``params["input_size"]``),
-                # ensuring the ModelConfig validator re-fires on the
-                # coherent updated state.
+                # Phase A.5.3i (2026-04-24 KEYSTONE): BOTH ExperimentConfig
+                # AND ModelConfig are now frozen Pydantic BaseModels.
+                # Two-layer mutation pattern:
                 #
-                # ExperimentConfig itself is still @dataclass through
-                # A.5.3h; the OUTER ``self.model = ...`` assignment works.
-                # A.5.3i keystone migrates ExperimentConfig to BaseModel —
-                # THIS assignment will then require object.__setattr__.
+                #   (a) INNER: ModelConfig.model_copy(update=...) re-fires
+                #       the ModelConfig validator on the coherent updated
+                #       state (input_size + params["num_features"]).
+                #
+                #   (b) OUTER: ``object.__setattr__(self, "model", ...)``
+                #       is the Pydantic v2-sanctioned escape hatch for
+                #       in-validator cross-field self-mutation under
+                #       frozen=True. Same pattern as DataConfig's T9
+                #       labels auto-derivation (A.5.3g) + ModelConfig's
+                #       params self-mutation (A.5.3h). Direct
+                #       ``self.model = ...`` would raise ValidationError.
+                #       ``self.model_copy(update={"model": ...})`` would
+                #       recursively re-trigger this validator → infinite
+                #       loop. object.__setattr__ bypasses both paths.
                 _new_params = dict(self.model.params)
                 for _key in ("num_features", "input_size"):
                     if _key in _new_params:
                         _new_params[_key] = resolved_input_size
-                self.model = self.model.model_copy(update={
+                _new_model = self.model.model_copy(update={
                     "input_size": resolved_input_size,
                     "params": _new_params,
                 })
+                object.__setattr__(self, "model", _new_model)
                 _t13_logger.info(
                     "Auto-derived model.input_size = %d", resolved_input_size
                 )
@@ -2096,6 +2162,12 @@ class ExperimentConfig:
                 DeprecationWarning,
                 stacklevel=2,
             )
+
+        # Phase A.5.3i (2026-04-24): Pydantic @model_validator(mode="after")
+        # requires explicit return of self (or a new instance). Legacy
+        # @dataclass __post_init__ returned None implicitly; Pydantic is
+        # stricter to support "validator-returns-new-instance" use cases.
+        return self
 
     def to_dict(self) -> dict:
         """Convert config to dictionary for serialization.
@@ -2177,15 +2249,37 @@ class ExperimentConfig:
         """
         Create config from dictionary.
 
-        Uses dacite with type casting for robust parsing of YAML/JSON input.
-        Handles common parsing issues like scientific notation strings.
+        Phase A.5.3i (2026-04-24 KEYSTONE): ``dacite`` retired. Pydantic
+        v2 ``model_validate`` handles nested BaseModel construction
+        natively — recursively routes each nested field dict through the
+        corresponding BaseModel's construction pipeline (including every
+        ``@field_validator`` / ``@model_validator`` for Enum coercion,
+        list→tuple conversion, cross-field invariants, etc.).
 
-        Note: _base inheritance is resolved in from_yaml(), not here.
-        If a _base key leaks into a from_dict() call, it means inheritance
-        was not resolved — raise an error directing the caller to from_yaml().
+        Preserves all pre-A.5.3i behavior:
+
+        - ``_base`` inheritance rejection (inheritance belongs in
+          ``from_yaml``, not ``from_dict`` — resolved BEFORE the dict
+          reaches here).
+        - ``_normalize_config_types`` YAML-quirk preprocessing (scientific
+          notation strings → float; "true"/"false" strings → bool;
+          integer strings → int). Applied BEFORE ``model_validate`` so
+          strict mode sees pre-normalized values.
+
+        Gains from Pydantic-native construction:
+
+        - Every sub-config's validators fire (dacite's ``type_hooks`` table
+          only routed construction; it did not re-run validators on
+          already-constructed BaseModels).
+        - Unknown-field rejection via ``extra='forbid'`` — typo
+          ``feature_cont: 98`` (for ``feature_count``) raises
+          ValidationError with the exact field path (previously silently
+          dropped by dacite).
+        - Type rejection under strict mode — string-to-int, bool-to-int,
+          list-to-tuple all rejected without explicit coercers (subclasses
+          that want YAML-compat provide ``@field_validator(mode="before")``
+          bridges).
         """
-        from dacite import from_dict, Config as DaciteConfig
-
         if "_base" in data:
             raise ValueError(
                 "_base key found in config dict. Config inheritance is only "
@@ -2196,25 +2290,7 @@ class ExperimentConfig:
         # Preprocess data to handle YAML parsing quirks
         data = _normalize_config_types(data)
 
-        # Phase A.5.3b (2026-04-24): dacite ``type_hooks`` table hoisted to
-        # module-level ``_PYDANTIC_TYPE_HOOKS`` built from
-        # ``_PYDANTIC_CONFIG_CLASSES`` registry. A.5.3c-h commits add ONE line
-        # each to the registry — merge-conflict surface minimized. A.5.3i
-        # retires dacite entirely by switching from_dict body to
-        # ``cls.model_validate(data)``.
-        #
-        # Each hook is defensive: runs ONLY when the value is a dict (not an
-        # already-constructed BaseModel). Supports callers that construct
-        # nested Pydantic models programmatically before passing to
-        # ExperimentConfig(...) — a pattern in test code.
-        return from_dict(
-            data_class=cls,
-            data=data,
-            config=DaciteConfig(
-                cast=[Enum, Path, float, int, bool],
-                type_hooks=_PYDANTIC_TYPE_HOOKS,
-            ),
-        )
+        return cls.model_validate(data)
 
     @classmethod
     def from_yaml(cls, path: str) -> "ExperimentConfig":
@@ -2401,3 +2477,35 @@ def save_config(config: ExperimentConfig, path: str) -> None:
     else:
         raise ValueError(f"Unsupported config format: {path}. Use .yaml, .yml, or .json")
 
+
+# =============================================================================
+# Migrated-class registry (Phase A.5.3i relocation)
+# =============================================================================
+#
+# Placed AFTER ``ExperimentConfig`` (forward-reference impossible earlier
+# in module load order — the registry would reference an undefined name).
+# The registry is retained post-dacite-retirement as:
+#
+#   - **Parametrized regression-test target** — ``TestPydanticHardeningCoverageGaps``
+#     in test_config.py iterates this list for pickle/deepcopy round-trip
+#     sweeps. Every migrated class gets uniform cross-class coverage.
+#   - **Audit / discovery aid** — ``grep _PYDANTIC_CONFIG_CLASSES`` is a
+#     single-query "which classes use SafeBaseModel?" — future contributors
+#     are reminded via this grep that the pattern is convention.
+#
+# ``_PYDANTIC_TYPE_HOOKS`` (ex-dacite bridge table) retired in A.5.3i —
+# ``ExperimentConfig.from_dict`` now delegates to ``cls.model_validate(data)``
+# which handles nested BaseModel construction natively.
+# =============================================================================
+
+_PYDANTIC_CONFIG_CLASSES: List[type] = [
+    LabelsConfig,         # A.5.3a (commit 1507b87)
+    SequenceConfig,       # A.5.3b (commit f32288f)
+    NormalizationConfig,  # A.5.3c (commit 52516e5 — first Enum-field class)
+    SourceConfig,         # A.5.3d (commit f54a838)
+    TrainConfig,          # A.5.3e (commit 7c91170 — 2 Enum fields + cross-field)
+    CVConfig,             # A.5.3f (commit 26f6f2a)
+    DataConfig,           # A.5.3g (commit dd23333 — composite + PrivateAttr + in-validator derivation)
+    ModelConfig,          # A.5.3h (commit dd2bf20 — last leaf; Enum + nested tuple + params self-mutation)
+    ExperimentConfig,     # A.5.3i (this commit — KEYSTONE; dacite retired; closes A.5 Scope D)
+]

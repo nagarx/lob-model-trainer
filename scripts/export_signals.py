@@ -82,10 +82,15 @@ def main():
     config = ExperimentConfig.from_yaml(args.config)
 
     # Phase A.5.3f.1 hardening (2026-04-24): TrainConfig is a frozen Pydantic
-    # BaseModel (A.5.3e). Direct field mutation raises ValidationError. Use
-    # SafeBaseModel.model_copy(update=...) to re-validate the updated config.
+    # BaseModel (A.5.3e). Phase A.5.3i (2026-04-24 KEYSTONE):
+    # ExperimentConfig itself is now also frozen. Two-layer mutation:
+    # (a) build the new TrainConfig via inner model_copy (re-fires TrainConfig
+    #     validators), (b) swap the new TrainConfig into the outer
+    #     ExperimentConfig via outer model_copy (re-fires ExperimentConfig
+    #     validators including T13 auto-derive).
     if args.batch_size is not None:
-        config.train = config.train.model_copy(update={"batch_size": args.batch_size})
+        _new_train = config.train.model_copy(update={"batch_size": args.batch_size})
+        config = config.model_copy(update={"train": _new_train})
 
     # Setup trainer (creates model, normalizer, dataloaders)
     trainer = Trainer(config, callbacks=[])
