@@ -1207,16 +1207,46 @@ class DeepLOBMode(str, Enum):
     """Extended architecture: All 98 features."""
 
 
-@dataclass
-class ModelConfig:
+class ModelConfig(SafeBaseModel):
     """
     Configuration for model architecture.
 
     New format (Phase 3): 7 named fields + opaque params dict.
     Old format (pre-Phase 3): 37 flat fields with model-prefixed names.
 
-    The __post_init__ auto-migrates old flat format to new format, so existing
-    YAML configs and test code continue to work without modification.
+    The post-init validator auto-migrates old flat format to new format, so
+    existing YAML configs and test code continue to work without modification.
+
+    **Phase A.5.3h (2026-04-24)**: migrated from ``@dataclass`` to Pydantic
+    v2 ``BaseModel`` via shared ``SafeBaseModel`` base — final leaf before
+    the ExperimentConfig root keystone (A.5.3i). The most field-heavy class
+    in the cycle (~40 fields), with 4 distinct hardening pattern intersections:
+
+    1. ``ModelType`` Enum string→instance coercer (A.5.3c pattern).
+    2. ``hmhp_horizons: List[int]`` → ``Tuple[int, ...]`` with default
+       ``(10, 20, 50, 100, 200)`` + ``None``-→-default + list-→-tuple
+       coercer (A.5.3a.1 immutability pattern + auto-default for legacy
+       None input).
+    3. ``logistic_feature_indices: Optional[List[int]]`` → ``Optional[Tuple[int, ...]]``
+       + list-→-tuple coercer (A.5.3a.1 pattern).
+    4. ``hmhp_cascade_connections: Optional[List[Tuple[int, int]]]`` →
+       ``Optional[Tuple[Tuple[int, int], ...]]`` + NESTED list-of-lists
+       → tuple-of-tuples coercer (YAML yields lists, strict rejects).
+
+    **CRITICAL self-mutation pattern**: ``_build_params_from_legacy()``
+    populates ``self.params`` when the user supplied no explicit params
+    dict. Under frozen=True, direct field assignment raises; uses
+    ``object.__setattr__(self, "params", ...)`` — the Pydantic v2-sanctioned
+    escape hatch for in-validator cross-field self-mutation (same pattern
+    as DataConfig's T9 labels auto-derivation, A.5.3g).
+
+    ``params: dict = Field(default_factory=dict)`` — the inner dict's
+    CONTENTS remain mutable even under frozen=True because Python does
+    not auto-freeze mutable-container CONTENTS (only the field-slot
+    assignment is blocked). This matches the legacy @dataclass behavior
+    and is load-bearing for T13 auto-derivation at
+    ExperimentConfig._validate_all (:1887-1896) which updates
+    ``params["num_features"]`` / ``params["input_size"]`` in-place.
 
     New YAML format::
 
@@ -1238,6 +1268,10 @@ class ModelConfig:
           tlob_hidden_dim: 64
           tlob_num_layers: 4
           dropout: 0.2
+
+    Retires same 4 bug classes as other SafeBaseModel subclasses. Sets
+    up ExperimentConfig (A.5.3i) to be the final @dataclass → BaseModel
+    cut in the cycle.
     """
 
     # =========================================================================
@@ -1246,7 +1280,12 @@ class ModelConfig:
 
     model_type: ModelType = ModelType.LSTM
     """Model architecture type. Use 'name' for new configs; model_type is
-    preserved for backward compatibility with existing YAML files."""
+    preserved for backward compatibility with existing YAML files.
+
+    Phase A.5.3h: YAML operators pass strings (``model_type: "tlob"``);
+    under strict=True, a @field_validator(mode="before") coerces string
+    → ModelType instance before the strict type check fires.
+    """
 
     input_size: int = 98
     """Input feature dimension. MUST match data.feature_count."""
@@ -1254,14 +1293,29 @@ class ModelConfig:
     num_classes: int = 3
     """Number of output classes."""
 
-    params: dict = field(default_factory=dict)
+    params: Dict[str, Any] = Field(default_factory=dict)
     """Architecture-specific parameters passed through to the model's config class.
     Keys map directly to the model's config dataclass fields (e.g., TLOBConfig).
-    Injected automatically at creation time: num_features, num_classes, sequence_length, task_type."""
+    Injected automatically at creation time: num_features, num_classes, sequence_length, task_type.
+
+    Phase A.5.3h: ``dict`` → ``Dict[str, Any]`` for explicit type annotation.
+    The dict's contents remain mutable post-construction (load-bearing for
+    T13 auto-derivation at ExperimentConfig._validate_all); only the field-
+    slot ASSIGNMENT is blocked by frozen=True.
+    """
 
     # HMHP-specific (needed by strategies)
-    hmhp_horizons: Optional[List[int]] = None
-    """Prediction horizons for HMHP models. None for non-HMHP."""
+    hmhp_horizons: Tuple[int, ...] = (10, 20, 50, 100, 200)
+    """Prediction horizons for HMHP models. Default to the canonical
+    5-horizon set; non-HMHP models still receive the default (legacy
+    contract: post-construction hmhp_horizons is never None).
+
+    Phase A.5.3h: ``Optional[List[int]] = None`` (auto-set in __post_init__)
+    → ``Tuple[int, ...]`` with explicit default tuple. @field_validator(mode="before")
+    converts None (explicit YAML null) → default tuple AND list → tuple.
+    True immutability (A.5.3a.1 pattern) closes the container-mutation
+    bypass.
+    """
 
     hmhp_use_regression: bool = False
     """Whether HMHP classification uses dual regression heads."""
@@ -1271,7 +1325,7 @@ class ModelConfig:
     """DeepLOB mode: 'benchmark' (40 LOB features) or 'extended' (all features)."""
 
     # =========================================================================
-    # Legacy fields (auto-migrated to params in __post_init__)
+    # Legacy fields (auto-migrated to params in _validate_all)
     # These exist ONLY for backward compatibility with existing YAML configs.
     # New configs should use the 'params' dict directly.
     # =========================================================================
@@ -1313,12 +1367,24 @@ class ModelConfig:
 
     # Logistic legacy
     logistic_pooling: str = "last"
-    logistic_feature_indices: Optional[List[int]] = None
+    logistic_feature_indices: Optional[Tuple[int, ...]] = None
+    """Optional subset of feature indices for LogisticLOB.
+
+    Phase A.5.3h: ``Optional[List[int]]`` → ``Optional[Tuple[int, ...]]``
+    for container immutability. @field_validator(mode="before") coerces
+    list input → tuple (YAML-compat).
+    """
 
     # HMHP legacy (architecture params — migrate to params dict)
     hmhp_cascade_mode: str = "full"
     hmhp_state_fusion: str = "gate"
-    hmhp_cascade_connections: Optional[List[Tuple[int, int]]] = None
+    hmhp_cascade_connections: Optional[Tuple[Tuple[int, int], ...]] = None
+    """Optional cascade-graph edges (from, to) for HMHP horizon dependencies.
+
+    Phase A.5.3h: ``Optional[List[Tuple[int, int]]]`` → ``Optional[Tuple[Tuple[int, int], ...]]``
+    with NESTED list-of-lists → tuple-of-tuples coercer (YAML yields
+    lists at BOTH levels: ``[[0, 1], [1, 2]]``).
+    """
     hmhp_encoder_type: str = "tlob"
     hmhp_encoder_hidden_dim: int = 64
     hmhp_num_encoder_layers: int = 2
@@ -1326,17 +1392,68 @@ class ModelConfig:
     hmhp_state_dim: int = 32
     hmhp_use_confirmation: bool = True
     hmhp_regression_loss_type: str = "huber"
-    hmhp_optimal_features_by_horizon: Optional[dict] = None
-    hmhp_loss_weights: Optional[dict] = None
+    hmhp_optimal_features_by_horizon: Optional[Dict[Any, Any]] = None
+    """Optional per-horizon feature subsets. YAML input is Dict[int, List[int]]
+    or Dict[int, List[str]]; typed as Dict[Any, Any] to avoid strict-mode
+    issues on heterogeneous value types."""
+    hmhp_loss_weights: Optional[Dict[str, float]] = None
+    """Optional per-loss-component weights (e.g., ``{"ce": 1.0, "consistency": 0.1}``)."""
 
-    def __post_init__(self) -> None:
-        # Set default horizons
-        if self.hmhp_horizons is None:
-            self.hmhp_horizons = [10, 20, 50, 100, 200]
+    # --- Enum + container coercers (mode="before" bridges under strict=True) ---
 
+    @field_validator("model_type", mode="before")
+    @classmethod
+    def _coerce_model_type_string(cls, v: Any) -> Any:
+        """Accept YAML string input (e.g. ``model_type: "tlob"``) under strict=True."""
+        if isinstance(v, str):
+            return ModelType(v)
+        return v
+
+    @field_validator("hmhp_horizons", mode="before")
+    @classmethod
+    def _coerce_hmhp_horizons(cls, v: Any) -> Any:
+        """Legacy contract: None → default tuple; list → tuple (A.5.3a.1)."""
+        if v is None:
+            return (10, 20, 50, 100, 200)
+        if isinstance(v, list):
+            return tuple(v)
+        return v
+
+    @field_validator("logistic_feature_indices", mode="before")
+    @classmethod
+    def _coerce_logistic_feature_indices(cls, v: Any) -> Any:
+        """list → tuple coercer for YAML-compat (A.5.3a.1)."""
+        if isinstance(v, list):
+            return tuple(v)
+        return v
+
+    @field_validator("hmhp_cascade_connections", mode="before")
+    @classmethod
+    def _coerce_hmhp_cascade_connections(cls, v: Any) -> Any:
+        """NESTED list-of-lists → tuple-of-tuples. YAML yields
+        ``[[0, 1], [1, 2]]`` (outer list, inner lists); strict mode
+        rejects both without explicit coercion."""
+        if isinstance(v, list):
+            return tuple(tuple(pair) if isinstance(pair, list) else pair for pair in v)
+        return v
+
+    @model_validator(mode="after")
+    def _validate_all(self) -> "ModelConfig":
+        """Pydantic equivalent of the legacy ``__post_init__``.
+
+        Preserves every invariant from the dataclass version:
+        - input_size >= 0 (T13 auto-derive sentinel)
+        - num_classes >= 2
+        - dropout in [0, 1]
+        - auto-migration of legacy flat fields to ``params`` dict if empty
+
+        Phase A.5.3h: ``self.params = ...`` assignment raises under
+        frozen=True. Uses ``object.__setattr__(self, "params", ...)`` —
+        same pattern as DataConfig's T9 labels auto-derivation.
+        """
         # Validate core fields that stay on ModelConfig
         # T13: allow input_size=0 as sentinel for auto-derivation
-        # (resolved in ExperimentConfig.__post_init__)
+        # (resolved in ExperimentConfig._validate_all)
         if self.input_size < 0:
             raise ValueError(
                 f"input_size must be >= 0 (0=auto-derive), "
@@ -1350,8 +1467,14 @@ class ModelConfig:
         # Auto-migrate legacy flat fields into params dict if params is empty.
         # This ensures old YAML configs (with flat tlob_hidden_dim etc.) work
         # seamlessly — the legacy fields populate params for create_model().
+        #
+        # Phase A.5.3h: under frozen=True, ``self.params = ...`` raises.
+        # ``object.__setattr__`` is the Pydantic v2-sanctioned escape hatch
+        # for in-validator cross-field self-mutation (plan v4 line 3725).
         if not self.params:
-            self.params = self._build_params_from_legacy()
+            object.__setattr__(self, "params", self._build_params_from_legacy())
+
+        return self
 
     @property
     def name(self) -> str:
@@ -1391,12 +1514,19 @@ class ModelConfig:
             }
 
         elif mt == "logistic":
+            # Phase A.5.3h (2026-04-24): logistic_feature_indices is now
+            # Tuple[int, ...]; convert to list for lob-models LogisticLOBConfig
+            # which typed-declares ``feature_indices: Optional[List[int]]``.
             return {
                 "num_features": self.input_size,
                 "num_classes": self.num_classes,
                 "pooling": self.logistic_pooling,
                 "dropout": self.dropout,
-                "feature_indices": self.logistic_feature_indices,
+                "feature_indices": (
+                    list(self.logistic_feature_indices)
+                    if self.logistic_feature_indices is not None
+                    else None
+                ),
             }
 
         elif mt == "deeplob":
@@ -1440,9 +1570,20 @@ class ModelConfig:
             # Note: num_classes is passed to create_hmhp() as explicit kwarg
             # but create_hmhp_regressor() hardcodes it. We include it here
             # and let _create_hmhp_model handle the per-factory logic.
+            #
+            # Phase A.5.3h (2026-04-24): trainer's self.hmhp_horizons is now
+            # Tuple[int, ...] + self.hmhp_cascade_connections is
+            # Tuple[Tuple[int, int], ...]. But lob-models' HMHPConfig declares
+            # ``horizons: List[int]`` + uses ``sorted(self.horizons)``-based
+            # validation (sorted returns list — tuple vs list inequality is
+            # ALWAYS True, fires a spurious "horizons must be in ascending
+            # order" at dataclass __post_init__). Convert to list here to
+            # honor the lob-models typed contract + preserve pre-migration
+            # fingerprint byte-identity (compute_fingerprint canonicalizes
+            # tuples to lists via sanitize_for_hash — equivalent hash).
             p = {
                 "num_features": self.input_size,
-                "horizons": self.hmhp_horizons,
+                "horizons": list(self.hmhp_horizons),
                 "encoder_type": self.hmhp_encoder_type,
                 "hidden_dim": self.hmhp_encoder_hidden_dim,
                 "num_encoder_layers": self.hmhp_num_encoder_layers,
@@ -1453,7 +1594,13 @@ class ModelConfig:
                 "dropout": self.dropout,
             }
             if mt == "hmhp":
-                p["cascade_connections"] = self.hmhp_cascade_connections
+                # cascade_connections: list-of-tuples in lob-models HMHPConfig
+                # (not nested list) — honor that typed contract.
+                p["cascade_connections"] = (
+                    list(self.hmhp_cascade_connections)
+                    if self.hmhp_cascade_connections is not None
+                    else None
+                )
                 p["optimal_features_by_horizon"] = self.hmhp_optimal_features_by_horizon
                 p["use_confirmation"] = self.hmhp_use_confirmation
                 p["use_regression"] = self.hmhp_use_regression
@@ -1749,9 +1896,9 @@ _PYDANTIC_CONFIG_CLASSES: List[type] = [
     SourceConfig,         # A.5.3d (commit f54a838)
     TrainConfig,          # A.5.3e (commit 7c91170 — 2 Enum fields + cross-field)
     CVConfig,             # A.5.3f (commit 26f6f2a)
-    DataConfig,           # A.5.3g (this commit — composite + PrivateAttr + in-validator derivation)
-    # A.5.3h appends one line:
-    # ModelConfig — final leaf before ExperimentConfig root.
+    DataConfig,           # A.5.3g (commit dd23333 — composite + PrivateAttr + in-validator derivation)
+    ModelConfig,          # A.5.3h (this commit — final leaf; Enum + nested tuple + params self-mutation)
+    # A.5.3i (ExperimentConfig root) closes the migration — dacite dropped.
 ]
 
 _PYDANTIC_TYPE_HOOKS: Dict[type, Any] = {
@@ -1885,12 +2032,29 @@ class ExperimentConfig:
                 resolved_input_size = self.data.feature_count
 
             if self.model.input_size == 0:
-                # Auto-derive (T13)
-                self.model.input_size = resolved_input_size
-                # Update params dict (built during ModelConfig.__post_init__)
+                # Auto-derive (T13).
+                #
+                # Phase A.5.3h (2026-04-24): ModelConfig is now frozen
+                # Pydantic BaseModel. Direct ``self.model.input_size = X``
+                # assignment raises ValidationError. Use SafeBaseModel's
+                # validator-re-running model_copy(update=...) to atomically
+                # update BOTH input_size AND the in-params-dict mirror
+                # (``params["num_features"]`` or ``params["input_size"]``),
+                # ensuring the ModelConfig validator re-fires on the
+                # coherent updated state.
+                #
+                # ExperimentConfig itself is still @dataclass through
+                # A.5.3h; the OUTER ``self.model = ...`` assignment works.
+                # A.5.3i keystone migrates ExperimentConfig to BaseModel —
+                # THIS assignment will then require object.__setattr__.
+                _new_params = dict(self.model.params)
                 for _key in ("num_features", "input_size"):
-                    if _key in self.model.params:
-                        self.model.params[_key] = resolved_input_size
+                    if _key in _new_params:
+                        _new_params[_key] = resolved_input_size
+                self.model = self.model.model_copy(update={
+                    "input_size": resolved_input_size,
+                    "params": _new_params,
+                })
                 _t13_logger.info(
                     "Auto-derived model.input_size = %d", resolved_input_size
                 )

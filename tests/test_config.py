@@ -1517,6 +1517,236 @@ class TestDataConfigPydantic:
         assert "feature_count" in dumped
 
 
+class TestModelConfigPydantic:
+    """Phase A.5.3h (2026-04-24) regression locks for ModelConfig migration.
+
+    ModelConfig is the last leaf before the A.5.3i ExperimentConfig keystone.
+    Most field-heavy class in the cycle (~40 fields), exercising 4 distinct
+    hardening patterns simultaneously:
+
+    1. ModelType Enum string→instance coercer (A.5.3c pattern)
+    2. hmhp_horizons: List[int] → Tuple[int, ...] with default + None-→-default
+       + list-→-tuple coercer (A.5.3a.1 immutability + legacy None contract)
+    3. logistic_feature_indices: Optional[Tuple[int, ...]] + coercer
+    4. hmhp_cascade_connections: Optional[Tuple[Tuple[int, int], ...]] NESTED
+       coercer (YAML yields list-of-lists; strict rejects)
+
+    Plus: critical self-mutation via object.__setattr__ for
+    _build_params_from_legacy() in _validate_all (under frozen=True,
+    ``self.params = ...`` raises; same pattern as DataConfig's T9 labels
+    derivation).
+    """
+
+    # --- Core hardening (inherited SafeBaseModel semantics) -----------------
+
+    def test_frozen_rejects_mutation(self):
+        """Public field assignment raises ValidationError under frozen=True."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ModelConfig
+        m = ModelConfig()
+        with pytest.raises(ValidationError):
+            m.input_size = 40  # type: ignore[misc]
+        with pytest.raises(ValidationError):
+            m.num_classes = 5  # type: ignore[misc]
+        with pytest.raises(ValidationError):
+            m.hmhp_horizons = (100,)  # type: ignore[misc]
+
+    def test_extra_forbid_rejects_typo(self):
+        """Typo ``input_sze`` (for ``input_size``) rejected by extra='forbid'."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ModelConfig
+        with pytest.raises(ValidationError):
+            ModelConfig(input_sze=98)  # type: ignore[call-arg]
+
+    def test_strict_rejects_string_input_size(self):
+        """Strict mode — string-to-int rejected on input_size."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ModelConfig
+        with pytest.raises(ValidationError):
+            ModelConfig(input_size="98")  # type: ignore[arg-type]
+
+    def test_strict_rejects_bool_num_classes(self):
+        """Strict mode — bool rejected (no bool-is-int coercion)."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ModelConfig
+        with pytest.raises(ValidationError):
+            ModelConfig(num_classes=True)  # type: ignore[arg-type]
+
+    # --- Domain invariants preserved from @dataclass __post_init__ ----------
+
+    def test_input_size_negative_rejected(self):
+        """T13 sentinel: input_size=0 allowed (auto-derive); negative rejected."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ModelConfig
+        # Zero ALLOWED (auto-derive sentinel)
+        m = ModelConfig(input_size=0)
+        assert m.input_size == 0
+        # Negative REJECTED
+        with pytest.raises(ValidationError, match="input_size must be >= 0"):
+            ModelConfig(input_size=-1)
+
+    def test_num_classes_too_small_rejected(self):
+        """num_classes >= 2 invariant preserved."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ModelConfig
+        with pytest.raises(ValidationError, match="num_classes must be >= 2"):
+            ModelConfig(num_classes=1)
+
+    def test_dropout_range_enforced(self):
+        """dropout ∈ [0, 1] invariant preserved."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ModelConfig
+        with pytest.raises(ValidationError, match="dropout must be in"):
+            ModelConfig(dropout=-0.1)
+        with pytest.raises(ValidationError, match="dropout must be in"):
+            ModelConfig(dropout=1.5)
+
+    # --- Enum coercion for YAML string input --------------------------------
+
+    def test_model_type_accepts_yaml_string(self):
+        """YAML ``model_type: "tlob"`` → ModelType.TLOB (pre-validator bridge)."""
+        from lobtrainer.config.schema import ModelConfig, ModelType
+        m = ModelConfig(model_type="tlob")
+        assert m.model_type == ModelType.TLOB
+
+    def test_model_type_invalid_string_rejected(self):
+        """Unknown model_type string rejected — Enum coercer raises."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ModelConfig
+        with pytest.raises(ValidationError):
+            ModelConfig(model_type="bogus_architecture")
+
+    # --- hmhp_horizons Tuple[int,...] immutability pattern ------------------
+
+    def test_hmhp_horizons_default_is_canonical_tuple(self):
+        """Legacy contract preserved: default hmhp_horizons is the canonical 5-horizon tuple."""
+        from lobtrainer.config.schema import ModelConfig
+        m = ModelConfig()
+        assert m.hmhp_horizons == (10, 20, 50, 100, 200)
+        assert isinstance(m.hmhp_horizons, tuple)
+
+    def test_hmhp_horizons_accepts_yaml_list(self):
+        """YAML ``hmhp_horizons: [10, 60, 300]`` coerced to tuple."""
+        from lobtrainer.config.schema import ModelConfig
+        m = ModelConfig(hmhp_horizons=[10, 60, 300])
+        assert m.hmhp_horizons == (10, 60, 300)
+        assert isinstance(m.hmhp_horizons, tuple)
+
+    def test_hmhp_horizons_none_becomes_default(self):
+        """Legacy contract: explicit None (from YAML ``null``) → canonical default tuple."""
+        from lobtrainer.config.schema import ModelConfig
+        m = ModelConfig(hmhp_horizons=None)
+        assert m.hmhp_horizons == (10, 20, 50, 100, 200)
+
+    def test_hmhp_horizons_is_immutable_post_coercion(self):
+        """After list→tuple coercion, the field IS tuple (no .append)."""
+        from lobtrainer.config.schema import ModelConfig
+        m = ModelConfig(hmhp_horizons=[10, 60])
+        with pytest.raises(AttributeError):
+            m.hmhp_horizons.append(300)  # type: ignore[union-attr]
+
+    # --- logistic_feature_indices Optional[Tuple[int,...]] ------------------
+
+    def test_logistic_feature_indices_accepts_yaml_list(self):
+        """YAML ``logistic_feature_indices: [0, 5, 12]`` coerced to tuple."""
+        from lobtrainer.config.schema import ModelConfig
+        m = ModelConfig(model_type="logistic", logistic_feature_indices=[0, 5, 12])
+        assert m.logistic_feature_indices == (0, 5, 12)
+        assert isinstance(m.logistic_feature_indices, tuple)
+
+    def test_logistic_feature_indices_none_stays_none(self):
+        """Optional: None stays None (not converted to tuple)."""
+        from lobtrainer.config.schema import ModelConfig
+        m = ModelConfig(logistic_feature_indices=None)
+        assert m.logistic_feature_indices is None
+
+    # --- hmhp_cascade_connections Optional[Tuple[Tuple[int, int], ...]] -----
+
+    def test_hmhp_cascade_connections_accepts_nested_yaml_lists(self):
+        """YAML ``hmhp_cascade_connections: [[0, 1], [1, 2]]`` — outer + inner
+        list-to-tuple coercion both fire (strict rejects both without coercer).
+        """
+        from lobtrainer.config.schema import ModelConfig
+        m = ModelConfig(hmhp_cascade_connections=[[0, 1], [1, 2]])
+        assert m.hmhp_cascade_connections == ((0, 1), (1, 2))
+        assert isinstance(m.hmhp_cascade_connections, tuple)
+        assert all(isinstance(p, tuple) for p in m.hmhp_cascade_connections)
+
+    def test_hmhp_cascade_connections_none_stays_none(self):
+        """Optional: None stays None."""
+        from lobtrainer.config.schema import ModelConfig
+        m = ModelConfig(hmhp_cascade_connections=None)
+        assert m.hmhp_cascade_connections is None
+
+    # --- params auto-derivation via object.__setattr__ ----------------------
+
+    def test_params_auto_derived_when_empty(self):
+        """Legacy contract: empty params populated from legacy flat fields
+        via ``object.__setattr__`` in _validate_all."""
+        from lobtrainer.config.schema import ModelConfig
+        # Default (LSTM) → params built from legacy lstm_* fields
+        m = ModelConfig(model_type="lstm", hidden_size=128, num_layers=3)
+        assert m.params  # non-empty
+        assert m.params.get("hidden_size") == 128
+        assert m.params.get("num_layers") == 3
+
+    def test_params_preserved_when_explicit(self):
+        """If user supplies explicit params, _validate_all does NOT overwrite."""
+        from lobtrainer.config.schema import ModelConfig
+        explicit = {"hidden_dim": 999, "custom_key": "value"}
+        m = ModelConfig(model_type="tlob", params=explicit)
+        assert m.params == explicit  # unchanged
+
+    def test_params_dict_contents_remain_mutable(self):
+        """Load-bearing: under frozen=True, ``self.params = {}`` raises, but
+        ``self.params["key"] = value`` succeeds (Python does not auto-freeze
+        mutable-container CONTENTS). This is required for T13 auto-derivation
+        at ExperimentConfig._validate_all which updates params in-place."""
+        from lobtrainer.config.schema import ModelConfig
+        m = ModelConfig(model_type="tlob", input_size=0)
+        # Dict-content mutation succeeds (not a field assignment)
+        m.params["num_features"] = 40
+        assert m.params["num_features"] == 40
+
+    # --- model_copy re-fires validators (A.5.3h correctness) ----------------
+
+    def test_model_copy_revalidates_on_invalid_update(self):
+        """Inherited model_copy override re-runs validators on update."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import ModelConfig
+        m = ModelConfig(model_type="tlob", input_size=98)
+        # Invalid update — num_classes < 2
+        with pytest.raises(ValidationError, match="num_classes must be >= 2"):
+            m.model_copy(update={"num_classes": 1})
+
+    def test_model_copy_preserves_params_on_valid_update(self):
+        """Valid model_copy update preserves the rebuilt params dict.
+        Load-bearing for T13 auto-derivation: when
+        ``config.model = config.model.model_copy(update={"input_size": 98})``
+        the ModelConfig validator re-fires, but params is already non-empty
+        (populated by the prior construction), so _build_params_from_legacy
+        is skipped — the caller-supplied update's ``params`` (if any) takes
+        precedence."""
+        from lobtrainer.config.schema import ModelConfig
+        m = ModelConfig(model_type="tlob", input_size=0)
+        assert m.params  # non-empty post-construction
+        m2 = m.model_copy(update={"input_size": 98, "params": {"hidden_dim": 128}})
+        assert m2.input_size == 98
+        assert m2.params == {"hidden_dim": 128}
+
+    # --- Full YAML-round-trip positive smoke --------------------------------
+
+    def test_defaults_preserved(self):
+        """Positive control — defaults match pre-migration @dataclass."""
+        from lobtrainer.config.schema import ModelConfig, ModelType
+        m = ModelConfig()
+        assert m.model_type == ModelType.LSTM
+        assert m.input_size == 98
+        assert m.num_classes == 3
+        assert m.dropout == 0.2
+        assert m.hmhp_horizons == (10, 20, 50, 100, 200)
+
+
 # =============================================================================
 # Phase A.5.3f.1 post-audit hardening regression locks (2026-04-24).
 #

@@ -270,8 +270,16 @@ class TestPermutationImportanceCallback:
         config = ExperimentConfig(
             name="test_happy", output_dir=str(tmp_path),
         )
-        # Set a model_type hint that the task-type resolver picks up
-        config.model.model_type = "regression"  # heuristic path
+        # Phase A.5.3h (2026-04-24): ModelConfig is now frozen Pydantic;
+        # direct field assignment raises. Use model_copy(update=...) with
+        # a real regression-capable Enum value (ModelType.HMHP_REGRESSION,
+        # whose .value='hmhp_regression' contains the substring 'regression'
+        # that the task-type resolver heuristic keys on — matches legacy
+        # behavior without relying on a synthetic string that ModelType
+        # Enum would reject under strict).
+        config.model = config.model.model_copy(
+            update={"model_type": "hmhp_regression"}
+        )
         trainer = _MockTrainer(
             model=_TinyLinearModel(n_features=3, seq_len=5, out_dim=1),
             device=torch.device("cpu"),

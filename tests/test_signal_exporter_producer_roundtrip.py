@@ -78,7 +78,7 @@ def _build_config_with_primary_horizon_idx(primary_horizon_idx: int) -> Experime
                 task="classification",
             ),
         ),
-        model=ModelConfig(model_type="logistic_lob", input_size=98, num_classes=3),
+        model=ModelConfig(model_type="logistic", input_size=98, num_classes=3),
         train=TrainConfig(epochs=1),
     )
 
@@ -165,7 +165,7 @@ class TestPhaseAProducerRoundtrip:
         )
         assert contract is not None, "Pre-fix: producer returned None"
         meta = build_signal_metadata(
-            model_type="logistic_lob",
+            model_type="logistic",
             model_name="test",
             parameters=294,
             signal_type="classification",
@@ -199,7 +199,7 @@ class TestPhaseAProducerRoundtrip:
         )
         assert contract is not None, "C1 regression — producer returned None"
         meta = build_signal_metadata(
-            model_type="logistic_lob",
+            model_type="logistic",
             model_name="test",
             parameters=294,
             signal_type="classification",
