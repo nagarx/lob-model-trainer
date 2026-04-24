@@ -32,7 +32,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from lobtrainer.config import load_config, save_config, ExperimentConfig
 from lobtrainer.training.trainer import Trainer
@@ -138,19 +138,27 @@ def apply_overrides(config: ExperimentConfig, args: argparse.Namespace) -> Exper
     if getattr(args, 'epochs', None) is not None:
         config.train.epochs = args.epochs
     
+    # Phase A.5.3e (2026-04-24): TrainConfig is a frozen Pydantic BaseModel
+    # post-migration; direct field mutation raises ValidationError. Accumulate
+    # CLI overrides into a dict and apply via TrainConfig.model_copy(update=...)
+    # in a single pass — preserves the SafeBaseModel re-validation contract
+    # (cross-field task_type ↔ loss_type invariant fires on CLI override path
+    # too). Replaces the pre-A.5.3e per-field assignment pattern that only
+    # worked under @dataclass mutability.
+    _train_overrides: Dict[str, Any] = {}
     if getattr(args, 'batch_size', None) is not None:
-        config.train.batch_size = args.batch_size
-    
+        _train_overrides["batch_size"] = args.batch_size
     if getattr(args, 'learning_rate', None) is not None:
-        config.train.learning_rate = args.learning_rate
-    
+        _train_overrides["learning_rate"] = args.learning_rate
     if getattr(args, 'seed', None) is not None:
-        config.train.seed = args.seed
-    
-    # Output overrides
+        _train_overrides["seed"] = args.seed
+    if _train_overrides:
+        config.train = config.train.model_copy(update=_train_overrides)
+
+    # Output overrides — ExperimentConfig still @dataclass, mutation works.
     if getattr(args, 'output_dir', None) is not None:
         config.output_dir = args.output_dir
-    
+
     return config
 
 

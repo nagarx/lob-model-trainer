@@ -1375,12 +1375,22 @@ class ModelConfig:
 # =============================================================================
 
 
-@dataclass
-class TrainConfig:
+class TrainConfig(SafeBaseModel):
     """
     Configuration for training hyperparameters.
+
+    **Phase A.5.3e (2026-04-24)**: migrated to SafeBaseModel. Contains 2
+    Enum fields (``task_type``, ``loss_type``) requiring string→Enum
+    coercion under strict=True (same pattern as NormalizationConfig.strategy),
+    plus 2 module-local frozenset constants (``_CLASSIFICATION_LOSSES``,
+    ``_REGRESSION_LOSSES``) promoted to class-level ``ClassVar[frozenset]``
+    for cross-field validation in ``_validate_all``. Cross-field invariant:
+    classification task_type incompatible with regression loss_type (and
+    vice versa) — enforced identically to legacy @dataclass behavior.
+
+    Retires same 4 bug classes as other SafeBaseModel subclasses.
     """
-    
+
     batch_size: int = 64
     """Batch size for training."""
     
@@ -1481,37 +1491,89 @@ class TrainConfig:
     Only used when loss_type='focal'.
     """
     
-    def __post_init__(self) -> None:
+    # Phase A.5.3e (2026-04-24): module-local frozensets promoted to
+    # class-level ClassVar[frozenset[LossType]] for discoverability +
+    # cross-field validation access. Unannotated class-level frozensets
+    # under Pydantic v2 would leak into model_dump() per v3-A discipline.
+    _CLASSIFICATION_LOSSES: ClassVar[frozenset] = frozenset({
+        LossType.CROSS_ENTROPY, LossType.WEIGHTED_CE, LossType.FOCAL,
+    })
+    _REGRESSION_LOSSES: ClassVar[frozenset] = frozenset({
+        LossType.MSE, LossType.HUBER, LossType.HETEROSCEDASTIC, LossType.GMADL,
+    })
+
+    @field_validator("task_type", mode="before")
+    @classmethod
+    def _coerce_task_type_string(cls, v: Any) -> Any:
+        """Accept YAML string input (e.g. 'regression') under strict=True.
+
+        Same pattern as NormalizationConfig.strategy (A.5.3c). Strict mode
+        rejects string→Enum coercion; pre-validator converts before type check.
+        """
+        if isinstance(v, str):
+            return TaskType(v)
+        return v
+
+    @field_validator("loss_type", mode="before")
+    @classmethod
+    def _coerce_loss_type_string(cls, v: Any) -> Any:
+        """Accept YAML string input (e.g. 'cross_entropy') under strict=True."""
+        if isinstance(v, str):
+            return LossType(v)
+        return v
+
+    @model_validator(mode="after")
+    def _validate_all(self) -> "TrainConfig":
+        """Pydantic equivalent of legacy ``__post_init__``.
+
+        Added math.isfinite checks on float fields per A.5.3a.1 pattern
+        (strict=True doesn't reject NaN — IEEE 754 valid — so explicit
+        isfinite gates catch it). Cross-field task_type ↔ loss_type
+        compatibility check uses the ClassVar frozensets.
+        """
         if self.batch_size < 1:
             raise ValueError(f"batch_size must be >= 1, got {self.batch_size}")
+        if not math.isfinite(self.learning_rate):
+            raise ValueError(
+                f"learning_rate must be finite (not NaN/Inf), "
+                f"got {self.learning_rate!r}"
+            )
         if self.learning_rate <= 0:
             raise ValueError(f"learning_rate must be > 0, got {self.learning_rate}")
         if self.epochs < 1:
             raise ValueError(f"epochs must be >= 1, got {self.epochs}")
+        if not math.isfinite(self.focal_gamma):
+            raise ValueError(
+                f"focal_gamma must be finite (not NaN/Inf), "
+                f"got {self.focal_gamma!r}"
+            )
         if self.focal_gamma < 0:
             raise ValueError(f"focal_gamma must be >= 0, got {self.focal_gamma}")
-        if self.focal_alpha is not None and (self.focal_alpha < 0 or self.focal_alpha > 1):
-            raise ValueError(f"focal_alpha must be in [0, 1], got {self.focal_alpha}")
+        if self.focal_alpha is not None:
+            if not math.isfinite(self.focal_alpha):
+                raise ValueError(
+                    f"focal_alpha must be finite (not NaN/Inf), "
+                    f"got {self.focal_alpha!r}"
+                )
+            if self.focal_alpha < 0 or self.focal_alpha > 1:
+                raise ValueError(f"focal_alpha must be in [0, 1], got {self.focal_alpha}")
 
-        # Cross-validate loss_type against task_type to prevent silent misconfiguration.
-        # Classification strategies only support CE/Focal/WeightedCE.
-        # Regression loss is controlled by model.regression_loss_type, not train.loss_type.
-        _CLASSIFICATION_LOSSES = {LossType.CROSS_ENTROPY, LossType.WEIGHTED_CE, LossType.FOCAL}
-        _REGRESSION_LOSSES = {LossType.MSE, LossType.HUBER, LossType.HETEROSCEDASTIC, LossType.GMADL}
-
-        if self.task_type == TaskType.REGRESSION and self.loss_type in _CLASSIFICATION_LOSSES:
+        # Cross-field task_type ↔ loss_type compatibility (uses ClassVar
+        # frozensets promoted from module-local scope).
+        if self.task_type == TaskType.REGRESSION and self.loss_type in self._CLASSIFICATION_LOSSES:
             raise ValueError(
                 f"loss_type='{self.loss_type.value}' is a classification loss but "
                 f"task_type='{self.task_type.value}'. For regression, use one of: "
-                f"{sorted(lt.value for lt in _REGRESSION_LOSSES)}."
+                f"{sorted(lt.value for lt in self._REGRESSION_LOSSES)}."
             )
-        if self.task_type != TaskType.REGRESSION and self.loss_type in _REGRESSION_LOSSES:
+        if self.task_type != TaskType.REGRESSION and self.loss_type in self._REGRESSION_LOSSES:
             raise ValueError(
                 f"loss_type='{self.loss_type.value}' is a regression loss but "
                 f"task_type='{self.task_type.value}'. For classification, use one of: "
-                f"{sorted(lt.value for lt in _CLASSIFICATION_LOSSES)}. "
+                f"{sorted(lt.value for lt in self._CLASSIFICATION_LOSSES)}. "
                 f"For regression loss control, set model.regression_loss_type instead."
             )
+        return self
 
 
 # =============================================================================
@@ -1573,9 +1635,10 @@ _PYDANTIC_CONFIG_CLASSES: List[type] = [
     LabelsConfig,         # A.5.3a (commit 1507b87)
     SequenceConfig,       # A.5.3b (commit f32288f)
     NormalizationConfig,  # A.5.3c (commit 52516e5 — first Enum-field class)
-    SourceConfig,         # A.5.3d (this commit)
-    # A.5.3e-h append one line each:
-    # TrainConfig, CVConfig, DataConfig, ModelConfig — in dependency order.
+    SourceConfig,         # A.5.3d (commit f54a838)
+    TrainConfig,          # A.5.3e (this commit — 2 Enum fields + cross-field)
+    # A.5.3f-h append one line each:
+    # CVConfig, DataConfig, ModelConfig — in dependency order.
 ]
 
 _PYDANTIC_TYPE_HOOKS: Dict[type, Any] = {

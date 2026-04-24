@@ -238,11 +238,22 @@ class CVTrainer:
         return results
 
     def _build_fold_config(self, fold_idx: int) -> ExperimentConfig:
-        """Build per-fold config with distinct output_dir and seed."""
+        """Build per-fold config with distinct output_dir and seed.
+
+        Phase A.5.3e (2026-04-24): TrainConfig is now a frozen Pydantic
+        BaseModel — direct field mutation raises ValidationError. Build
+        the new TrainConfig via SafeBaseModel's ``model_copy(update=...)``
+        (re-validates the cross-field task_type ↔ loss_type invariant)
+        and re-attach to the copied ExperimentConfig (still @dataclass, so
+        field re-assignment works for self.train).
+        """
         fold_cfg = copy.deepcopy(self.config)
         fold_cfg.output_dir = str(
             Path(self.config.output_dir) / f"cv_fold_{fold_idx}"
         )
-        fold_cfg.train.seed = self.config.train.seed + fold_idx
+        # Phase A.5.3e: frozen TrainConfig — replace via model_copy.
+        fold_cfg.train = self.config.train.model_copy(
+            update={"seed": self.config.train.seed + fold_idx}
+        )
         fold_cfg.name = f"{self.config.name}_fold{fold_idx}"
         return fold_cfg

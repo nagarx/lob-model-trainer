@@ -110,23 +110,31 @@ class TestTrainConfig:
         assert config.seed == 42
     
     def test_invalid_batch_size(self):
-        """Batch size must be >= 1."""
-        with pytest.raises(ValueError, match="batch_size must be >= 1"):
+        """Batch size must be >= 1.
+
+        Phase A.5.3e (2026-04-24): Pydantic wraps ValueError as
+        ValidationError; match= substring still fires.
+        """
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="batch_size must be >= 1"):
             TrainConfig(batch_size=0)
-    
+
     def test_invalid_learning_rate(self):
         """Learning rate must be > 0."""
-        with pytest.raises(ValueError, match="learning_rate must be > 0"):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="learning_rate must be > 0"):
             TrainConfig(learning_rate=0)
 
     def test_classification_task_rejects_huber_loss(self):
-        """Regression loss_type on classification task_type must raise ValueError."""
-        with pytest.raises(ValueError, match="regression loss"):
+        """Regression loss_type on classification task_type must raise."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="regression loss"):
             TrainConfig(task_type=TaskType.MULTICLASS, loss_type=LossType.HUBER)
 
     def test_regression_task_rejects_cross_entropy_loss(self):
-        """Classification loss_type on regression task_type must raise ValueError."""
-        with pytest.raises(ValueError, match="classification loss"):
+        """Classification loss_type on regression task_type must raise."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="classification loss"):
             TrainConfig(task_type=TaskType.REGRESSION, loss_type=LossType.CROSS_ENTROPY)
 
     def test_regression_task_accepts_huber_loss(self):
@@ -1104,3 +1112,116 @@ class TestSourceConfigPydantic:
         assert len(dc.sources) == 2
         assert dc.sources[0].role == "primary"
         assert dc.sources[1].role == "auxiliary"
+
+
+class TestTrainConfigPydantic:
+    """Phase A.5.3e (2026-04-24) regression locks for TrainConfig migration.
+
+    TrainConfig has 2 Enum fields (task_type, loss_type) + cross-field
+    task↔loss compatibility. Uses the NormalizationConfig.strategy pattern
+    for string→Enum coercion (A.5.3c precedent) + the LabelsConfig pattern
+    for ClassVar frozenset constants (_CLASSIFICATION_LOSSES / _REGRESSION_LOSSES).
+    """
+
+    def test_frozen_rejects_mutation(self):
+        """Field assignment raises ValidationError (inherited from SafeBaseModel)."""
+        from pydantic import ValidationError
+        cfg = TrainConfig()
+        with pytest.raises(ValidationError):
+            cfg.learning_rate = 1e-5  # type: ignore[misc]
+
+    def test_extra_forbid_rejects_typo(self):
+        """Typo ``leraning_rate`` (for ``learning_rate``) rejected (inherited)."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            TrainConfig(leraning_rate=1e-3)  # type: ignore[call-arg]
+
+    def test_strict_rejects_string_batch_size(self):
+        """Strict mode — string-to-int rejected (inherited)."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            TrainConfig(batch_size="64")  # type: ignore[arg-type]
+
+    def test_strict_rejects_bool_batch_size(self):
+        """bool-to-int rejected (inherited — bug #3 from A.5.3a.1)."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            TrainConfig(batch_size=True)  # type: ignore[arg-type]
+
+    def test_nan_learning_rate_rejected(self):
+        """NaN learning_rate passes strict float type check but fails
+        explicit math.isfinite (A.5.3a.1 pattern). A NaN learning_rate
+        would silently produce NaN gradients on first backward pass —
+        poisons every metric downstream."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="finite"):
+            TrainConfig(learning_rate=float("nan"))
+        with pytest.raises(ValidationError, match="finite"):
+            TrainConfig(learning_rate=float("inf"))
+
+    def test_nan_focal_gamma_rejected(self):
+        """focal_gamma NaN check (A.5.3a.1 pattern)."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="finite"):
+            TrainConfig(focal_gamma=float("nan"))
+
+    def test_nan_focal_alpha_rejected(self):
+        """focal_alpha NaN check — Optional[float] so None path doesn't
+        hit isfinite; non-None NaN must be rejected."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="finite"):
+            TrainConfig(
+                task_type=TaskType.MULTICLASS,
+                loss_type=LossType.FOCAL,
+                focal_alpha=float("nan"),
+            )
+
+    def test_task_type_accepts_yaml_string_input(self):
+        """YAML-style string → Enum coercion (A.5.3c pattern)."""
+        cfg = TrainConfig(task_type="regression", loss_type="huber")
+        assert cfg.task_type == TaskType.REGRESSION
+        assert cfg.loss_type == LossType.HUBER
+
+    def test_loss_type_invalid_string_rejected(self):
+        """Invalid Enum value raises (clean error from Enum constructor)."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            TrainConfig(loss_type="not_a_real_loss")
+
+    def test_model_copy_revalidates_cross_field_task_loss(self):
+        """Inherited model_copy override MUST re-run _validate_all,
+        rejecting task↔loss incompatibility on update.
+
+        Without this, ``cfg.model_copy(update={"loss_type": LossType.HUBER})``
+        on a classification config would silently produce an invalid
+        TrainConfig (HUBER is regression-only). Sweep axis mutation paths
+        are the primary consumer of this guard."""
+        from pydantic import ValidationError
+        cfg = TrainConfig(task_type=TaskType.MULTICLASS, loss_type=LossType.FOCAL)
+        # Invalid: switching loss to regression on classification task
+        with pytest.raises(ValidationError, match="regression loss"):
+            cfg.model_copy(update={"loss_type": LossType.HUBER})
+        # Valid: consistent pair — classification + CE
+        cfg2 = cfg.model_copy(update={"loss_type": LossType.CROSS_ENTROPY})
+        assert cfg2.loss_type == LossType.CROSS_ENTROPY
+
+    def test_class_constants_not_in_model_dump(self):
+        """v3-A ClassVar discipline — promoted frozensets MUST NOT leak
+        into model_dump output. Without ClassVar annotations, Pydantic
+        would expose these as model fields, breaking YAML round-trips."""
+        cfg = TrainConfig()
+        dump = cfg.model_dump()
+        assert "_CLASSIFICATION_LOSSES" not in dump, (
+            f"_CLASSIFICATION_LOSSES leaked into model_dump: {list(dump.keys())}"
+        )
+        assert "_REGRESSION_LOSSES" not in dump
+        # Positive control: real fields ARE in model_dump
+        assert "task_type" in dump
+        assert "loss_type" in dump
+
+    def test_class_constants_accessible_as_class_attrs(self):
+        """Defensive — ClassVar annotation must NOT break class-level access."""
+        assert LossType.CROSS_ENTROPY in TrainConfig._CLASSIFICATION_LOSSES
+        assert LossType.FOCAL in TrainConfig._CLASSIFICATION_LOSSES
+        assert LossType.HUBER in TrainConfig._REGRESSION_LOSSES
+        assert LossType.MSE in TrainConfig._REGRESSION_LOSSES
