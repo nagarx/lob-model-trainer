@@ -62,13 +62,24 @@ class TestNormalizationConfig:
         assert config.strategy == NormalizationStrategy.ZSCORE_PER_DAY
     
     def test_default_exclude_features_empty(self):
-        """Default exclude_features is empty (avoids out-of-bounds on 40-feature data)."""
+        """Default exclude_features is empty (avoids out-of-bounds on 40-feature data).
+
+        Phase A.5.3c (2026-04-24): exclude_features type changed from
+        List[int] to Tuple[int, ...] for true immutability. Empty default
+        is now ``()`` not ``[]``.
+        """
         config = NormalizationConfig()
-        assert config.exclude_features == []
-    
+        assert config.exclude_features == ()
+
     def test_invalid_eps(self):
-        """Eps must be > 0."""
-        with pytest.raises(ValueError, match="eps must be > 0"):
+        """Eps must be > 0.
+
+        Phase A.5.3c: Pydantic wraps `raise ValueError(...)` from
+        @model_validator as pydantic.ValidationError — `match=` substring
+        still fires on the wrapped message.
+        """
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="eps must be > 0"):
             NormalizationConfig(eps=0)
 
 
@@ -853,3 +864,137 @@ class TestSequenceConfigPydantic:
         cfg2 = cfg.model_copy(update={"stride": 50})
         assert cfg2.stride == 50
         assert cfg2.window_size == 100  # unchanged
+
+
+class TestNormalizationConfigPydantic:
+    """Phase A.5.3c (2026-04-24) regression locks for NormalizationConfig migration.
+
+    NormalizationConfig is the FIRST Pydantic-migrated class in the Phase A.5
+    cycle with an Enum field (``strategy: NormalizationStrategy``). The
+    ``@field_validator(mode="before")`` pattern below is the precedent for
+    all future enum-field migrations (A.5.3e TrainConfig.task_type,
+    A.5.3g DataConfig.labeling_strategy, A.5.3h ModelConfig.model_type/
+    deeplob_mode).
+
+    Also exercises:
+    - Tuple[int, ...] immutability on exclude_features (A.5.3a.1 pattern)
+    - NaN-finite check on eps + clip_value (A.5.3a.1 pattern)
+    - Inherited SafeBaseModel semantics (frozen/extra_forbid/strict/model_copy)
+    """
+
+    def test_frozen_rejects_mutation(self):
+        """Field assignment raises ValidationError (inherited from SafeBaseModel)."""
+        from pydantic import ValidationError
+        cfg = NormalizationConfig()
+        with pytest.raises(ValidationError):
+            cfg.eps = 1e-5  # type: ignore[misc]
+
+    def test_extra_forbid_rejects_typo(self):
+        """Typo ``clippy_value`` (for ``clip_value``) raises ValidationError."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            NormalizationConfig(clippy_value=5.0)  # type: ignore[call-arg]
+
+    def test_strict_rejects_string_eps(self):
+        """Strict mode inherited — ``eps="1e-8"`` rejected."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            NormalizationConfig(eps="1e-8")  # type: ignore[arg-type]
+
+    def test_strict_rejects_string_in_exclude_features_items(self):
+        """Strict Tuple[int, ...] rejects string items.
+
+        Pre-A.5.3c this would silently coerce to int (ship-blocker #2 from
+        A.5.3a.1). The @field_validator(mode="before") coerces list→tuple
+        BUT the strict type check still fires on the inner int items.
+        """
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            NormalizationConfig(exclude_features=["93"])
+
+    def test_nan_eps_rejected(self):
+        """NaN eps passes strict float type check but fails explicit
+        math.isfinite check in @model_validator (IEEE 754 considers NaN
+        a valid float — per A.5.3a.1 pattern, explicit check is required)."""
+        import math
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="finite"):
+            NormalizationConfig(eps=float("nan"))
+        with pytest.raises(ValidationError, match="finite"):
+            NormalizationConfig(eps=float("inf"))
+
+    def test_nan_clip_value_rejected(self):
+        """Same NaN-finite check applies to clip_value (when not None)."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="finite"):
+            NormalizationConfig(clip_value=float("nan"))
+
+    def test_clip_value_none_allowed(self):
+        """Positive control: clip_value=None is valid (disables clipping)."""
+        cfg = NormalizationConfig(clip_value=None)
+        assert cfg.clip_value is None
+
+    def test_clip_value_negative_rejected(self):
+        """clip_value must be > 0 (legacy invariant, preserved)."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="clip_value must be > 0"):
+            NormalizationConfig(clip_value=-1.0)
+
+    def test_strategy_accepts_yaml_string_input(self):
+        """YAML loads strategies as strings. Pre-A.5.3c dacite had
+        ``cast=[Enum, ...]`` that converted strings to enums BEFORE
+        construction. Under strict=True Pydantic, strings would normally
+        reject. The @field_validator(mode="before") converts string→Enum
+        BEFORE the strict type check fires.
+
+        This is the PATTERN for all subsequent enum-field migrations.
+        """
+        from lobtrainer.config.schema import NormalizationStrategy
+
+        # String input (YAML-style) → coerced to Enum instance
+        cfg = NormalizationConfig(strategy="zscore_per_day")
+        assert cfg.strategy == NormalizationStrategy.ZSCORE_PER_DAY
+        assert isinstance(cfg.strategy, NormalizationStrategy)
+
+        # Enum instance input (programmatic) → passthrough
+        cfg2 = NormalizationConfig(strategy=NormalizationStrategy.NONE)
+        assert cfg2.strategy == NormalizationStrategy.NONE
+
+        # Invalid string → ValidationError (wrapped ValueError from Enum())
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            NormalizationConfig(strategy="not_a_real_strategy")
+
+    def test_exclude_features_tuple_immutable(self):
+        """exclude_features is Tuple[int, ...] post-migration — .append raises.
+
+        Pre-A.5.3c this was List[int] which would silently allow
+        ``cfg.exclude_features.append(99)`` to mutate the frozen config.
+        Tuple is truly immutable — closes the frozen-bypass for this field
+        identically to how LabelsConfig.horizons was closed in A.5.3a.1.
+        """
+        cfg = NormalizationConfig(exclude_features=[93])
+        assert isinstance(cfg.exclude_features, tuple)
+        assert cfg.exclude_features == (93,)
+        with pytest.raises(AttributeError):
+            cfg.exclude_features.append(99)  # type: ignore[attr-defined]
+
+    def test_exclude_features_accepts_yaml_list(self):
+        """Positive control — YAML list input gets coerced to tuple via
+        @field_validator(mode="before")."""
+        cfg = NormalizationConfig(exclude_features=[10, 93, 111])
+        assert cfg.exclude_features == (10, 93, 111)
+        assert isinstance(cfg.exclude_features, tuple)
+
+    def test_model_copy_revalidates_enum_field(self):
+        """Inherited model_copy override re-runs validators including
+        string→Enum coercion + Enum-membership check on update."""
+        from pydantic import ValidationError
+        cfg = NormalizationConfig()
+        # Invalid strategy string → ValidationError
+        with pytest.raises(ValidationError):
+            cfg.model_copy(update={"strategy": "not_a_real_strategy"})
+        # Valid string update — coerced via pre-validator on the update path
+        cfg2 = cfg.model_copy(update={"strategy": "none"})
+        from lobtrainer.config.schema import NormalizationStrategy
+        assert cfg2.strategy == NormalizationStrategy.NONE

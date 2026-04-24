@@ -599,42 +599,126 @@ class SequenceConfig(SafeBaseModel):
         return self
 
 
-@dataclass
-class NormalizationConfig:
+class NormalizationConfig(SafeBaseModel):
     """
     Configuration for feature normalization.
-    
+
     Normalization is applied per-feature (column-wise) using statistics
     computed from training data only to avoid data leakage.
+
+    **Phase A.5.3c (2026-04-24)**: migrated from ``@dataclass`` to Pydantic
+    v2 ``BaseModel`` via shared ``SafeBaseModel`` base (inherits
+    ``frozen=True, extra="forbid", strict=True`` + ``model_copy``
+    re-validation).
+
+    **First class in the Phase A.5 cycle with an Enum field** (``strategy:
+    NormalizationStrategy``). Under ``strict=True``, Pydantic rejects
+    string→Enum coercion (YAML loads ``strategy: zscore_per_day`` as a
+    plain string). The ``@field_validator(mode="before")`` below fires
+    BEFORE the strict type check and converts string → Enum, preserving
+    YAML ergonomics. This pattern establishes the precedent for every
+    subsequent migration with Enum fields (A.5.3e TrainConfig.task_type/
+    loss_type, A.5.3g DataConfig.labeling_strategy, A.5.3h
+    ModelConfig.model_type/deeplob_mode).
+
+    **Container immutability**: ``exclude_features`` changed from ``List[int]``
+    to ``Tuple[int, ...]`` for true immutability (closes the ``.append``
+    bypass of ``frozen=True``). Consumer at ``ExperimentConfig.__post_init__``
+    line 1631 iterates the field — tuple iteration works identically, no
+    consumer changes needed.
     """
-    
+
     strategy: NormalizationStrategy = NormalizationStrategy.ZSCORE_PER_DAY
     """Normalization strategy. Default: per-day Z-score."""
-    
+
     eps: float = 1e-8
     """Small constant to prevent division by zero."""
-    
+
     clip_value: Optional[float] = 10.0
     """
     Clip normalized values to [-clip_value, clip_value] to handle outliers.
     Set to None to disable clipping.
     """
-    
-    exclude_features: List[int] = field(default_factory=list)
+
+    exclude_features: Tuple[int, ...] = Field(default_factory=tuple)
     """
     Feature indices to exclude from normalization (e.g., categorical features).
-    Default: [93] (time_regime is categorical).
+    Default: empty tuple (explicit opt-in per dataset; 40-feature LOB-only
+    datasets have no categorical features; 98/148-feature datasets should
+    set ``[93]`` for TIME_REGIME exclusion).
+
+    Phase A.5.3c: Tuple type enforces immutability — ``.append`` bypasses
+    frozen=True on List but tuple is truly immutable.
     """
-    
-    def __post_init__(self) -> None:
+
+    @field_validator("strategy", mode="before")
+    @classmethod
+    def _coerce_strategy_string(cls, v: Any) -> Any:
+        """Accept YAML string input under strict=True.
+
+        YAML parses ``strategy: zscore_per_day`` as a plain Python string.
+        Strict Pydantic v2 rejects string→Enum coercion at the type check.
+        This pre-validator (mode="before") fires BEFORE strict type-check
+        and converts via ``NormalizationStrategy(v)`` — raises a clean
+        ValueError on invalid value (e.g. ``'invalid_strat' is not a valid
+        NormalizationStrategy``) which Pydantic wraps as ValidationError.
+
+        If v is already a NormalizationStrategy instance (programmatic
+        construction from test code), passthrough — strict check accepts.
+        Other types (int, None, etc.) passthrough — strict check rejects
+        with its standard error message.
+        """
+        if isinstance(v, str):
+            return NormalizationStrategy(v)
+        return v
+
+    @field_validator("exclude_features", mode="before")
+    @classmethod
+    def _coerce_exclude_features_to_tuple(cls, v: Any) -> Any:
+        """Accept YAML list input under strict ``Tuple[int, ...]``.
+
+        Same list→tuple coercion pattern as LabelsConfig.horizons (A.5.3a.1).
+        YAML emits ``exclude_features: [93]`` as Python list; strict mode
+        rejects list→tuple coercion. Pre-validator converts list→tuple
+        BEFORE type check; downstream strict Tuple[int, ...] enforces int
+        items (rejects string-in-list silent coercion, the ship-blocker
+        #2 from A.5.3a.1 post-audit).
+        """
+        if isinstance(v, list):
+            return tuple(v)
+        return v
+
+    @model_validator(mode="after")
+    def _validate_all(self) -> "NormalizationConfig":
+        """Pydantic equivalent of the legacy ``__post_init__``.
+
+        Phase A.5.3c adds ``math.isfinite`` checks on the two float fields
+        (``eps``, ``clip_value``) per the A.5.3a.1 hardening pattern —
+        strict mode does NOT reject NaN/Inf floats (IEEE 754 considers
+        them valid), so explicit finite checks close the silent-NaN gap.
+        A NaN eps would silently reproduce div-by-zero; a NaN clip_value
+        would break clip arithmetic downstream.
+        """
+        if not math.isfinite(self.eps):
+            raise ValueError(
+                f"NormalizationConfig.eps must be finite (not NaN/Inf), "
+                f"got {self.eps!r}"
+            )
         if self.eps <= 0:
             raise ValueError(f"eps must be > 0, got {self.eps}")
-        if self.clip_value is not None and self.clip_value <= 0:
-            raise ValueError(f"clip_value must be > 0, got {self.clip_value}")
+        if self.clip_value is not None:
+            if not math.isfinite(self.clip_value):
+                raise ValueError(
+                    f"NormalizationConfig.clip_value must be finite "
+                    f"(not NaN/Inf), got {self.clip_value!r}"
+                )
+            if self.clip_value <= 0:
+                raise ValueError(f"clip_value must be > 0, got {self.clip_value}")
         # Note: exclude_features should be explicitly set in the config
         # for datasets with >93 features (to exclude TIME_REGIME).
         # For 40-feature datasets (LOB only), no categorical features exist.
-        # The default empty list is intentional to avoid out-of-bounds errors.
+        # The default empty tuple is intentional to avoid out-of-bounds errors.
+        return self
 
 
 @dataclass
@@ -1473,11 +1557,12 @@ class CVConfig:
 # ``TestLabelsConfigPydantic`` suite.
 # =============================================================================
 _PYDANTIC_CONFIG_CLASSES: List[type] = [
-    LabelsConfig,      # A.5.3a (commit 1507b87)
-    SequenceConfig,    # A.5.3b (this commit)
-    # A.5.3c-h append one line each:
-    # NormalizationConfig, SourceConfig, TrainConfig, CVConfig,
-    # DataConfig, ModelConfig — in dependency order.
+    LabelsConfig,         # A.5.3a (commit 1507b87)
+    SequenceConfig,       # A.5.3b (commit f32288f)
+    NormalizationConfig,  # A.5.3c (this commit — first Enum-field class)
+    # A.5.3d-h append one line each:
+    # SourceConfig, TrainConfig, CVConfig, DataConfig, ModelConfig — in
+    # dependency order.
 ]
 
 _PYDANTIC_TYPE_HOOKS: Dict[type, Any] = {
