@@ -21,13 +21,16 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional, List, Tuple, Any, ClassVar, Dict, TYPE_CHECKING
 import json
+import math  # Phase A.5.3a.1 (2026-04-24): isfinite() guard against NaN/Inf float inputs.
 import yaml
 
 # Phase A.5.3a (2026-04-24): Pydantic v2 migration starts with LabelsConfig.
 # Subsequent A.5.3b-i migrate the remaining 8 config classes; A.5.3i retires
 # dacite entirely. Imported at module level because BaseModel base-class
 # declaration must be available at class-definition time (not lazy).
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+# Phase A.5.3a.1 (2026-04-24 post-audit): + field_validator for list→tuple
+# coercion on `horizons` (preserves YAML ergonomics under strict=True).
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Phase 8C-α Stage C.1 trainer wire-in (2026-04-20 post-audit round-2):
 # ImportanceConfig cannot be imported at schema.py module-load time —
@@ -284,15 +287,49 @@ class LabelsConfig(BaseModel):
             int >= 0 = single-horizon mode. None = all-horizons / HMHP mode.
     """
 
-    # Pydantic v2 configuration — frozen+extra-forbid retires the 4 bug
-    # classes documented in the class docstring.
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    # Pydantic v2 configuration — retires 4 bug classes at the TYPE layer.
+    # See class docstring for the full rationale.
+    #
+    # ``frozen=True``: field assignment raises ValidationError. Closes bug
+    #   class #2 (silent mutation) for the most common idiom (``cfg.source = X``).
+    # ``extra="forbid"``: unknown kwargs raise ValidationError at construction.
+    #   Closes bug class #3 (extra-field acceptance / typo propagation).
+    # ``strict=True`` (Phase A.5.3a.1): NO implicit type coercion. Rejects
+    #   string-to-int for ``horizons: Tuple[int, ...]`` (e.g. ``horizons=["10"]``
+    #   — empirically confirmed would coerce under lax mode), bool-to-int
+    #   for ``primary_horizon_idx: Optional[int]`` (e.g. ``primary_horizon_idx=True``
+    #   would coerce to 1). Without this flag, Pydantic v2 lax mode silently
+    #   coerces — violating hft-rules §5 fail-fast + introducing NEW bug
+    #   classes not intended to exist.
+    #   NOTE: strict does NOT reject NaN/Inf floats (IEEE 754 considers them
+    #   valid floats); the explicit ``math.isfinite`` check in
+    #   ``_validate_all`` closes that separate gap.
+    #
+    # Note: ``validate_assignment=True`` is NOT set — empirically confirmed
+    # it does NOT fix ``model_copy(update={...})`` bypass (Pydantic v2's
+    # ``model_copy`` uses ``model_construct`` which ALWAYS skips validation).
+    # The fix for that bug class is the custom ``model_copy`` override
+    # below — closes the validator-bypass vector structurally.
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        strict=True,
+    )
 
     source: str = "auto"
     return_type: str = "smoothed_return"
     task: str = "auto"
     threshold_bps: float = 8.0
-    horizons: List[int] = Field(default_factory=list)
+    # Phase A.5.3a.1 (2026-04-24): type changed from ``List[int]`` to
+    # ``Tuple[int, ...]`` for true immutability. With ``frozen=True``,
+    # Pydantic blocks ``cfg.horizons = [...]`` assignment but does NOT
+    # block ``cfg.horizons.append(99)`` (mutable-container bypass,
+    # empirically confirmed). Tuple is immutable — ``.append`` raises
+    # AttributeError. YAML input is a list; the ``@field_validator(mode="before")``
+    # below coerces list→tuple BEFORE strict type-check runs. Byte-identity
+    # preserved: ``sanitize_for_hash`` canonicalizes tuples → lists before
+    # hashing, so hash output is unchanged.
+    horizons: Tuple[int, ...] = Field(default_factory=tuple)
     primary_horizon_idx: Optional[int] = 0
     sample_weights: str = "none"
     """Sample weighting method to correct for non-IID overlapping labels.
@@ -319,6 +356,52 @@ class LabelsConfig(BaseModel):
     _VALID_SAMPLE_WEIGHTS: ClassVar[frozenset[str]] = frozenset(
         {"none", "concurrent_overlap"}
     )
+
+    @field_validator("horizons", mode="before")
+    @classmethod
+    def _coerce_horizons_input_to_tuple(cls, v: Any) -> Any:
+        """Phase A.5.3a.1 (2026-04-24): accept list input from YAML/dacite
+        while enforcing strict ``Tuple[int, ...]`` at validation time.
+
+        YAML loaders emit ``horizons: [10, 60]`` as a Python list. Under
+        ``strict=True``, Pydantic rejects list→tuple coercion at the type
+        check. This pre-validator (``mode="before"``) fires BEFORE strict
+        type-check, converting list→tuple cleanly. Strings inside the list
+        still get rejected by the downstream ``Tuple[int, ...]`` check
+        (the strict-mode gate is applied AFTER this coercion per Pydantic
+        v2 validator ordering).
+        """
+        if isinstance(v, list):
+            return tuple(v)
+        return v
+
+    def model_copy(self, *, update: Optional[Dict[str, Any]] = None, deep: bool = False) -> "LabelsConfig":
+        """Override Pydantic v2 ``model_copy`` to re-run validators on update.
+
+        Phase A.5.3a.1 (2026-04-24): default Pydantic v2 ``model_copy(update=...)``
+        uses ``model_construct`` internally which SKIPS ALL validation.
+        Empirically confirmed: ``cfg.model_copy(update={"source": "bogus"})``
+        produces an invalid LabelsConfig with no ValidationError. This
+        re-opens bug class #3 (extra-field acceptance / invalid-value
+        acceptance) through the common Pydantic idiom.
+
+        This override forces re-validation via ``model_validate`` when
+        update is provided — closes the validator-bypass vector at the
+        structural level (callers don't need to remember to use
+        ``model_validate({**dump(), **overrides})``).
+
+        Trade-off: slight perf cost on ``model_copy(update=...)`` (full
+        validation vs fast construct). Acceptable for a config class
+        that is rarely copy-mutated in hot paths.
+
+        Args:
+            update: Dict of field overrides. If non-empty, triggers full
+                re-validation. If None or empty, falls through to fast path.
+            deep: Deep copy flag, passed through to super().
+        """
+        if update:
+            return self.__class__.model_validate({**self.model_dump(), **update})
+        return super().model_copy(deep=deep)
 
     @model_validator(mode="after")
     def _validate_all(self) -> "LabelsConfig":
@@ -348,6 +431,15 @@ class LabelsConfig(BaseModel):
                 f"LabelsConfig.task must be one of "
                 f"{sorted(self._VALID_TASKS)}, got {self.task!r}"
             )
+        if not math.isfinite(self.threshold_bps):
+            # Phase A.5.3a.1 (2026-04-24): strict=True rejects str→float
+            # coercion but accepts NaN/Inf as valid floats per IEEE 754.
+            # Explicit isfinite check closes the silent-NaN gap — a NaN
+            # threshold would poison every classification filter downstream.
+            raise ValueError(
+                f"LabelsConfig.threshold_bps must be a finite float "
+                f"(not NaN/Inf), got {self.threshold_bps!r}"
+            )
         if self.threshold_bps < 0:
             raise ValueError(
                 f"LabelsConfig.threshold_bps must be >= 0, "
@@ -373,6 +465,10 @@ class LabelsConfig(BaseModel):
                 f"{sorted(self._VALID_SAMPLE_WEIGHTS)}, "
                 f"got {self.sample_weights!r}"
             )
+        # Note: horizons tuple immutability is now enforced at the TYPE
+        # layer via ``horizons: Tuple[int, ...]`` field declaration +
+        # ``_coerce_horizons_input_to_tuple`` @field_validator(mode="before").
+        # The previous post-validation object.__setattr__ is obsolete.
         return self
 
 
@@ -1583,7 +1679,12 @@ class ExperimentConfig:
                     for k, v in asdict(obj).items()
                     if not k.startswith("_")
                 }
-            elif isinstance(obj, list):
+            elif isinstance(obj, (list, tuple)):
+                # Phase A.5.3a.1 (2026-04-24): tuple handling matches
+                # ``sanitize_for_hash`` canonical-form convention (tuples
+                # serialize as JSON arrays / YAML sequences — no
+                # ``!!python/tuple`` tag leaks into on-disk configs).
+                # Post-A.5.3a LabelsConfig.horizons is ``Tuple[int, ...]``.
                 return [_convert(item) for item in obj]
             elif isinstance(obj, dict):
                 return {

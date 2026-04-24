@@ -16,7 +16,13 @@ keywords = ["hft", "lob", "limit-order-book", "machine-learning", "trading"]
 
 dependencies = [
     # Pipeline contracts (single source of truth for feature indices)
-    "hft-contracts",
+    # Phase A.5.3a.1 (2026-04-24): pin bump from bare to `>=2.3.0` required
+    # by A.5.3a LabelsConfig migration — compute_label_strategy_hash's
+    # Pydantic BaseModel dispatch branch first shipped in hft-contracts
+    # 2.3.0 (Phase A.5.1). Without this pin, trainer CI against a stale
+    # hft-contracts editable install could silently use the pre-migration
+    # dataclass-only path and silently rotate fingerprints.
+    "hft-contracts>=2.3.0",
 
     # Shared metrics library (IC, R², regression metrics with NaN safety)
     "hft-metrics",

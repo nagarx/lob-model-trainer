@@ -416,6 +416,9 @@ class TestLabelsConfigPydantic:
         labels_dict = d["data"]["labels"]
         assert labels_dict["source"] == "forward_prices"
         assert labels_dict["task"] == "regression"
+        # Phase A.5.3a.1: horizons is Tuple[int, ...] internally; _convert's
+        # `isinstance(obj, (list, tuple))` branch normalizes to list for JSON/YAML
+        # friendly output. Matches sanitize_for_hash canonical-form convention.
         assert labels_dict["horizons"] == [10, 60]
         assert labels_dict["primary_horizon_idx"] == 0
         # Pydantic internals MUST NOT appear anywhere in the nested dict.
@@ -435,3 +438,214 @@ class TestLabelsConfigPydantic:
         )
         # ClassVar constants MUST NOT appear either.
         assert "_VALID_SOURCES" not in labels_dict
+
+
+# =============================================================================
+# Phase A.5.3a.1 (2026-04-24) post-audit hardening regression locks.
+#
+# Three specialized agents (code-reviewer + hft-architect + general-purpose)
+# identified 4 ship-blocker-class bugs in the A.5.3a migration that this
+# hardening commit closes:
+#
+#   1. `model_copy(update={invalid})` bypasses validators (bug class #3
+#      re-opened through a common Pydantic idiom — Pydantic v2's
+#      model_copy uses model_construct which SKIPS validation). Fixed by
+#      custom model_copy override that dispatches to model_validate when
+#      update is provided.
+#
+#   2. Pydantic v2 lax-mode silent type coercion (NEW bug class the
+#      migration introduced, not one it retired):
+#        - `LabelsConfig(horizons=["10","60"])` silently coerced strings → ints
+#        - `LabelsConfig(primary_horizon_idx=True)` coerced bool → 1
+#      Fixed by `strict=True` in model_config.
+#
+#   3. NaN/Inf `threshold_bps` silently accepted (IEEE 754 considers them
+#      valid floats; strict mode does NOT reject). Fixed by explicit
+#      math.isfinite check in _validate_all.
+#
+#   4. `cfg.horizons.append(99)` bypassed frozen=True (mutable container).
+#      Fixed by changing horizons type List[int] → Tuple[int, ...] +
+#      @field_validator(mode="before") for list→tuple coercion from YAML.
+# =============================================================================
+
+
+class TestLabelsConfigPydanticHardening:
+    """A.5.3a.1 post-audit hardening: lock the 4 bug-class closures.
+
+    These tests MUST pass or the Phase A.5 migration's promised bug-class
+    retirements are incomplete.
+    """
+
+    def test_model_copy_with_invalid_update_raises(self):
+        """Bug #1: model_copy(update={...}) MUST re-run validators.
+
+        Empirically confirmed pre-A.5.3a.1: default Pydantic v2 model_copy
+        uses model_construct internally, which SKIPS validation. Invalid
+        updates pass silently. Custom override at LabelsConfig.model_copy
+        forces re-validation via model_validate.
+        """
+        from lobtrainer.config.schema import LabelsConfig
+        from pydantic import ValidationError
+
+        cfg = LabelsConfig()
+        with pytest.raises(ValidationError, match="source"):
+            cfg.model_copy(update={"source": "invalid_source_name"})
+        with pytest.raises(ValidationError, match="task"):
+            cfg.model_copy(update={"task": "not_a_real_task"})
+        with pytest.raises(ValidationError, match="threshold_bps"):
+            cfg.model_copy(update={"threshold_bps": -1.0})
+
+    def test_model_copy_without_update_preserves_fast_path(self):
+        """Positive control: model_copy() with no update doesn't incur
+        re-validation cost — delegates to super().model_copy for the pure
+        copy case.
+        """
+        from lobtrainer.config.schema import LabelsConfig
+
+        cfg = LabelsConfig(source="forward_prices", task="regression")
+        cfg2 = cfg.model_copy()
+        assert cfg2.source == "forward_prices"
+        assert cfg2.task == "regression"
+        # Deep copy flag still works
+        cfg3 = cfg.model_copy(deep=True)
+        assert cfg3.source == "forward_prices"
+
+    def test_model_copy_with_valid_update_succeeds(self):
+        """Positive control: model_copy(update={valid}) passes validators."""
+        from lobtrainer.config.schema import LabelsConfig
+
+        cfg = LabelsConfig()
+        cfg2 = cfg.model_copy(update={
+            "source": "forward_prices",
+            "task": "regression",
+            "horizons": [10, 60, 300],
+        })
+        assert cfg2.source == "forward_prices"
+        assert cfg2.task == "regression"
+        assert cfg2.horizons == (10, 60, 300)  # Tuple[int, ...] post-migration
+
+    def test_strict_mode_rejects_string_to_int_coercion(self):
+        """Bug #2a: Pydantic lax mode would coerce string → int silently.
+        strict=True rejects to preserve hft-rules §5 fail-fast.
+
+        Empirically confirmed pre-A.5.3a.1: `LabelsConfig(horizons=["10","60"])`
+        produced horizons=[10, 60] without any error.
+        """
+        from lobtrainer.config.schema import LabelsConfig
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="horizons"):
+            LabelsConfig(horizons=["10", "60"])
+        with pytest.raises(ValidationError, match="horizons"):
+            LabelsConfig(horizons=["10"])
+
+    def test_strict_mode_rejects_bool_as_int(self):
+        """Bug #2b: bool is an int-subclass in Python, so lax mode would
+        coerce `primary_horizon_idx=True` → 1 silently. strict=True
+        rejects.
+        """
+        from lobtrainer.config.schema import LabelsConfig
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="primary_horizon_idx"):
+            LabelsConfig(primary_horizon_idx=True)
+        with pytest.raises(ValidationError, match="primary_horizon_idx"):
+            LabelsConfig(primary_horizon_idx=False)
+
+    def test_nan_threshold_bps_rejected(self):
+        """Bug #3: NaN/Inf threshold_bps passed lax mode AND the
+        `threshold_bps < 0` check (NaN comparisons return False).
+
+        Explicit math.isfinite() check closes this — a NaN classification
+        threshold would silently skip EVERY sample (abs(x) < NaN is False
+        for all x in Python).
+        """
+        import math
+        from lobtrainer.config.schema import LabelsConfig
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="finite"):
+            LabelsConfig(threshold_bps=float("nan"))
+        with pytest.raises(ValidationError, match="finite"):
+            LabelsConfig(threshold_bps=float("inf"))
+        with pytest.raises(ValidationError, match="finite"):
+            LabelsConfig(threshold_bps=-math.inf)
+
+    def test_horizons_tuple_immutable_list_append_blocked(self):
+        """Bug #4: Pydantic frozen=True blocks field ASSIGNMENT but NOT
+        mutation of mutable containers. With horizons: List[int], the
+        call `cfg.horizons.append(99)` silently mutated the instance.
+
+        Fixed by changing type to Tuple[int, ...] (immutable container).
+        Tuple has no .append method — raises AttributeError on the bypass
+        attempt.
+        """
+        from lobtrainer.config.schema import LabelsConfig
+
+        cfg = LabelsConfig(horizons=[10, 60])
+        # Post-migration: horizons is always a tuple (coerced from list input
+        # via @field_validator(mode="before")).
+        assert isinstance(cfg.horizons, tuple), (
+            f"horizons should be tuple post-A.5.3a.1; got {type(cfg.horizons).__name__}"
+        )
+        # .append on tuple raises AttributeError — container-mutation
+        # bypass of frozen is now structurally blocked.
+        with pytest.raises(AttributeError):
+            cfg.horizons.append(99)  # type: ignore[attr-defined]
+        # Bonus: __setitem__ also raises (tuples are fully immutable).
+        with pytest.raises(TypeError):
+            cfg.horizons[0] = 999  # type: ignore[index]
+
+    def test_horizons_accepts_yaml_list_input_coerced_to_tuple(self):
+        """Positive control for the @field_validator(mode="before"):
+        YAML loaders always emit lists; we must accept list input while
+        producing an immutable tuple internally.
+        """
+        from lobtrainer.config.schema import LabelsConfig
+
+        cfg = LabelsConfig(horizons=[10, 60, 300])
+        assert cfg.horizons == (10, 60, 300)
+        assert isinstance(cfg.horizons, tuple)
+        # Empty list default also works
+        cfg_default = LabelsConfig()
+        assert cfg_default.horizons == ()
+        assert isinstance(cfg_default.horizons, tuple)
+        # Tuple input is accepted directly (no conversion needed)
+        cfg_tuple = LabelsConfig(horizons=(5, 10))
+        assert cfg_tuple.horizons == (5, 10)
+
+    def test_hardening_preserves_byte_identity_fixture_parity(self):
+        """The A.5.3a.1 hardening (strict + isfinite + tuple coercion +
+        model_copy override) MUST NOT rotate the fixture hash.
+
+        Byte-identity depends on canonical-form equality, NOT Python type
+        equality. sanitize_for_hash normalizes tuples → lists before
+        hashing, so the canonical form is the same whether horizons is
+        List[int] or Tuple[int, ...]. Ship-blocker lock.
+        """
+        from hft_contracts._testing import require_monorepo_root
+        from hft_contracts.compatibility import compute_label_strategy_hash
+        from lobtrainer.config.schema import LabelsConfig
+        import json as _json
+
+        monorepo_root = require_monorepo_root(
+            "hft-contracts/tests/fixtures/pre_pydantic_label_strategy_hash.json"
+        )
+        fixture_path = (
+            monorepo_root
+            / "hft-contracts"
+            / "tests"
+            / "fixtures"
+            / "pre_pydantic_label_strategy_hash.json"
+        )
+        with open(fixture_path) as f:
+            frozen = _json.load(f)
+        expected_hash = frozen["label_strategy_hash"]
+
+        real_hash = compute_label_strategy_hash(LabelsConfig())
+        assert real_hash == expected_hash, (
+            f"A.5.3a.1 hardening rotated the fixture hash — byte-identity "
+            f"broken. Real: {real_hash}, fixture: {expected_hash}. Possible "
+            f"cause: new field, removed field, changed canonical form, or "
+            f"Pydantic field type change that leaks into model_dump."
+        )

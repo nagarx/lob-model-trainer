@@ -40,7 +40,10 @@ class TestLabelsConfig:
         assert lc.return_type == "smoothed_return"
         assert lc.task == "auto"
         assert lc.threshold_bps == 8.0
-        assert lc.horizons == []
+        # Phase A.5.3a.1 (2026-04-24): horizons is Tuple[int, ...] post-migration
+        # (was List[int]). Tuple provides true immutability — closes the
+        # ``cfg.horizons.append(99)`` bypass of frozen=True.
+        assert lc.horizons == ()
         assert lc.primary_horizon_idx == 0
 
     def test_validate_source_rejects_invalid(self):
@@ -107,7 +110,10 @@ class TestDataConfigAutoDerive:
         dc = DataConfig(labels=explicit)
         assert dc.labels.source == "forward_prices"
         assert dc.labels.task == "regression"
-        assert dc.labels.horizons == [10, 60]
+        # Phase A.5.3a.1: list input from kwargs coerced to tuple by
+        # @field_validator(mode="before") — preserves YAML ergonomics while
+        # enforcing immutability.
+        assert dc.labels.horizons == (10, 60)
 
 
 # =============================================================================
@@ -546,7 +552,9 @@ class TestDaciteCompatibility:
         assert config.data.labels is not None
         assert config.data.labels.source == "forward_prices"
         assert config.data.labels.task == "regression"
-        assert config.data.labels.horizons == [10, 60]
+        # Phase A.5.3a.1: dacite → type_hooks → LabelsConfig.model_validate
+        # coerces list → tuple via @field_validator(mode="before").
+        assert config.data.labels.horizons == (10, 60)
 
     def test_from_dict_labels_null_gives_none_then_derived(self):
         """Dict with labels: None → DataConfig.labels derived from legacy."""
