@@ -485,13 +485,21 @@ class SignalExporter:
         # silently mis-calibrated every HMHP-R experiment with
         # primary_horizon_idx != 0. `calibrate_variance` is strict 1-D now —
         # 2-D input raises ValueError (hft-rules §8 fail-loud).
-        primary_idx = (
-            resolve_labels_config(self._trainer.config).primary_horizon_idx or 0
-        )
+        #
+        # Phase A.5.4 (2026-04-24): use LabelsConfig.validate_primary_horizon_idx_for
+        # instead of ``or 0`` pattern. Closes plan v4 bugs #2 (negative idx
+        # silently picks last-N) + #5 (out-of-bounds silently returns wrong
+        # column). The validator raises ValueError with diagnostic on any
+        # invalid idx — the caller gets fail-loud BEFORE slicing.
+        labels_cfg = resolve_labels_config(self._trainer.config)
         if preds.ndim == 2:
+            primary_idx = labels_cfg.validate_primary_horizon_idx_for(
+                n_horizons=preds.shape[-1]
+            )
             preds_1d = preds[:, primary_idx]
             labels_1d = labels[:, primary_idx] if labels is not None else None
         else:
+            primary_idx = labels_cfg.primary_horizon_idx or 0
             preds_1d = preds
             labels_1d = labels
 
@@ -644,7 +652,13 @@ class SignalExporter:
             # The stats land in signal_metadata.json and are read by
             # hft-ops statistical_compare; wrong-column slicing silently
             # misrepresented the primary horizon for every HMHP-R experiment.
-            stats_idx = resolve_labels_config(config).primary_horizon_idx or 0
+            #
+            # Phase A.5.4 (2026-04-24): replaced ``or 0`` pattern with
+            # ``validate_primary_horizon_idx_for`` — raises on negative /
+            # out-of-bounds idx (plan v4 bug #2). Single canonical source;
+            # stats_idx, metrics slice, AND calibration slice all share
+            # validation via the method.
+            labels_cfg_stats = resolve_labels_config(config)
             if pr.ndim == 1:
                 prediction_stats = {
                     "mean": float(np.mean(pr)),
@@ -653,6 +667,9 @@ class SignalExporter:
                     "max": float(np.max(pr)),
                 }
             else:
+                stats_idx = labels_cfg_stats.validate_primary_horizon_idx_for(
+                    n_horizons=pr.shape[-1]
+                )
                 prediction_stats = {
                     "mean": float(np.mean(pr[:, stats_idx])),
                     "std": float(np.std(pr[:, stats_idx])),
@@ -667,6 +684,7 @@ class SignalExporter:
                     if pr.ndim == 1:
                         metrics_dict = compute_all_regression_metrics(rl, pr)
                     else:
+                        # stats_idx already validated above for pr.ndim==2 branch.
                         metrics_dict = compute_all_regression_metrics(
                             rl[:, stats_idx], pr[:, stats_idx]
                         )
@@ -680,10 +698,29 @@ class SignalExporter:
         # schema.py:1472 for the deprecation. The helper also raises ``AttributeError``
         # loudly when the canonical path is unavailable, so ``horizon_idx is None``
         # here strictly means ``primary_horizon_idx`` was explicitly set to ``None``.
+        #
+        # Phase A.5.4 (2026-04-24) — plan v4 bug #5: pre-A.5.4 had a silent
+        # fallback ``primary_horizon = None`` when ``horizon_idx >= len(horizons)``
+        # (no diagnostic logged). hft-rules §8 — "never silently drop": now
+        # use validate_primary_horizon_idx_for which raises with an actionable
+        # diagnostic. Wrap in try/except so the metadata still emits
+        # (primary_horizon=None) but the WARN log surfaces the misconfiguration.
         horizon_idx = resolve_labels_config(config).primary_horizon_idx
         primary_horizon = None
-        if horizons and horizon_idx is not None and horizon_idx < len(horizons):
-            primary_horizon = f"H{horizons[horizon_idx]}"
+        if horizons and horizon_idx is not None:
+            try:
+                valid_idx = resolve_labels_config(config).validate_primary_horizon_idx_for(
+                    n_horizons=len(horizons)
+                )
+                primary_horizon = f"H{horizons[valid_idx]}"
+            except ValueError as e:
+                logger.warning(
+                    "Primary horizon label emission skipped — "
+                    "primary_horizon_idx=%r vs len(horizons)=%d: %s. "
+                    "Metadata will record primary_horizon=None; fix "
+                    "config.data.labels.primary_horizon_idx to eliminate.",
+                    horizon_idx, len(horizons), e,
+                )
 
         # Phase II (2026-04-20): construct CompatibilityContract BEFORE passing to
         # build_signal_metadata so the producer fingerprint is pinned at export time.

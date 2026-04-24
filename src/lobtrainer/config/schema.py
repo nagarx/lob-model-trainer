@@ -424,6 +424,125 @@ class LabelsConfig(SafeBaseModel):
         # The previous post-validation object.__setattr__ is obsolete.
         return self
 
+    # -----------------------------------------------------------------
+    # Phase A.5.4 (2026-04-24) — horizon-slicing SSoT primitive.
+    #
+    # The method + its parametric helper close 3 bugs in the
+    # exporter/callback slicing paths (plan v4 bug ledger #2 + #5):
+    #
+    # Bug #2 — No bounds check before ``preds[:, primary_idx]`` slicing.
+    #   Python's negative-indexing silently picks last-N (instead of
+    #   raising). A config with ``primary_horizon_idx=-1`` would slice
+    #   the LAST horizon without any diagnostic, producing silently-wrong
+    #   calibration/metric values.
+    #
+    # Bug #5 — Silent fallback ``primary_horizon = None`` when the idx
+    #   is >= len(horizons). No diagnostic fired; the metadata's
+    #   ``primary_horizon`` field was just null, making post-hoc
+    #   investigation opaque.
+    #
+    # The method returns a VALIDATED integer in [0, n_horizons);
+    # raises ``ValueError`` with an actionable diagnostic on any
+    # negative OR out-of-bounds index. Caller gets ONE canonical
+    # validate-slice-report surface instead of 4+ open-coded sites.
+    # -----------------------------------------------------------------
+
+    def validate_primary_horizon_idx_for(self, n_horizons: int) -> int:
+        """Validate + return the canonical primary_horizon_idx for slicing.
+
+        Applies Phase A.5 bounds-check discipline: negative indices are
+        rejected (Python negative-indexing semantics would silently
+        select last-N column — silent-wrong-result hazard per
+        hft-rules §8). Out-of-bounds indices raise with a diagnostic
+        citing ``n_horizons`` and the offending value.
+
+        Args:
+            n_horizons: Number of horizons available to slice (typically
+                ``preds.shape[-1]`` or ``len(labels_cfg.horizons)``).
+
+        Returns:
+            Non-negative integer in ``[0, n_horizons)``. Falls back to
+            ``0`` when ``self.primary_horizon_idx is None`` (the "first
+            horizon is primary" convention — pre-Phase-A.5 behavior).
+
+        Raises:
+            ValueError: if ``n_horizons < 1`` (can't slice zero horizons).
+            ValueError: if ``primary_horizon_idx`` is negative.
+            ValueError: if ``primary_horizon_idx >= n_horizons`` (out
+                of bounds).
+
+        Usage::
+
+            labels_cfg = resolve_labels_config(config)
+            primary_idx = labels_cfg.validate_primary_horizon_idx_for(
+                preds.shape[-1]
+            )
+            preds_1d = preds[:, primary_idx]  # safe, validated
+
+        Phase B extensibility: future horizon fields (e.g.,
+        ``secondary_horizon_idx``) get a one-line wrapper around
+        ``_validate_horizon_idx_for`` — no N-method explosion.
+        """
+        return self._validate_horizon_idx_for(
+            field_name="primary_horizon_idx",
+            idx_value=self.primary_horizon_idx,
+            n_horizons=n_horizons,
+        )
+
+    @staticmethod
+    def _validate_horizon_idx_for(
+        field_name: str,
+        idx_value: Optional[int],
+        n_horizons: int,
+    ) -> int:
+        """Parametric bounds-check helper for horizon-index fields.
+
+        Phase B extension point: accepts ``field_name`` so future
+        horizon fields (secondary / tertiary / cascade) can reuse the
+        same validation via one-line wrappers:
+
+            def validate_secondary_horizon_idx_for(self, n_horizons):
+                return self._validate_horizon_idx_for(
+                    "secondary_horizon_idx",
+                    self.secondary_horizon_idx,
+                    n_horizons,
+                )
+
+        Args:
+            field_name: Name of the field being validated (embedded in
+                error messages for operator diagnostics).
+            idx_value: The integer index to validate (or None for
+                auto-default-to-0).
+            n_horizons: Array size (must be >= 1).
+
+        Returns:
+            Validated non-negative int in [0, n_horizons).
+
+        Raises:
+            ValueError: on negative idx / out-of-bounds idx / n_horizons < 1.
+        """
+        if n_horizons < 1:
+            raise ValueError(
+                f"LabelsConfig.{field_name} validation requires n_horizons >= 1, "
+                f"got n_horizons={n_horizons!r}. Cannot slice zero horizons."
+            )
+        effective = idx_value if idx_value is not None else 0
+        if effective < 0:
+            raise ValueError(
+                f"LabelsConfig.{field_name}={effective!r} is negative. "
+                f"Python negative indexing would silently select column "
+                f"{n_horizons + effective} (last-N from end) — silent-wrong-result "
+                f"hazard per hft-rules §8. Use a non-negative index in "
+                f"[0, {n_horizons})."
+            )
+        if effective >= n_horizons:
+            raise ValueError(
+                f"LabelsConfig.{field_name}={effective!r} >= "
+                f"n_horizons={n_horizons!r}. Cannot slice — index out of bounds. "
+                f"Available indices: [0, {n_horizons})."
+            )
+        return effective
+
 
 class TaskType(str, Enum):
     """Task type for training."""

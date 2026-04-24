@@ -354,12 +354,26 @@ class PermutationImportanceCallback(Callback):
         # canonical ``config.data.labels`` (via ``resolve_labels_config`` helper).
         # Pre-Phase-A, this was hardcoded to 0 — every HMHP-R feature-importance
         # artifact was silently computed against H10 regardless of manifest.
+        # Phase A.5.4 (2026-04-24) — plan v4 bug #7: widen except
+        # ``AttributeError`` → ``(AttributeError, TypeError)`` so mocked
+        # trainer configs (e.g. MagicMock) or partially-constructed
+        # trainer.config (no .data attribute yet) don't escape as
+        # unhandled TypeError and kill the post-training callback.
+        # Log the fallback reason via logger.info so fallback activations
+        # are traceable (hft-rules §8 "never silently drop").
         try:
             primary_idx = (
                 resolve_labels_config(trainer.config).primary_horizon_idx or 0
             )
-        except AttributeError:
-            # Pre-T9 config without LabelsConfig — fall back to safe default.
+        except (AttributeError, TypeError) as exc:
+            # Pre-T9 config without LabelsConfig, or trainer.config is
+            # not a real ExperimentConfig (MagicMock / None / dict) —
+            # fall back to safe default.
+            logger.info(
+                "PermutationImportanceCallback primary_horizon_idx "
+                "resolver fallback → 0 (reason: %s: %s)",
+                type(exc).__name__, exc,
+            )
             primary_idx = 0
         metric_fn = make_metric_fn_for_task(task_type, primary_horizon_idx=primary_idx)
 
@@ -436,10 +450,20 @@ class PermutationImportanceCallback(Callback):
           raises ``AttributeError``). In that case, the legacy model-type
           heuristic is preserved for backward compatibility.
         """
+        # Phase A.5.4 (2026-04-24) — plan v4 bug #7: widen except
+        # ``AttributeError`` → ``(AttributeError, TypeError)`` + log
+        # fallback reason for traceable diagnostics.
         try:
             labels_cfg = resolve_labels_config(config)
-        except AttributeError:
-            labels_cfg = None  # Pre-T9 config — use heuristic fallback.
+        except (AttributeError, TypeError) as exc:
+            # Pre-T9 config (no LabelsConfig) or non-Experiment config
+            # (MagicMock / dict / None) — fall back to model-type heuristic.
+            logger.info(
+                "PermutationImportanceCallback task-type resolver fallback → "
+                "model-type heuristic (reason: %s: %s)",
+                type(exc).__name__, exc,
+            )
+            labels_cfg = None
         if labels_cfg is not None:
             task = getattr(labels_cfg, "task", None)
             # LabelsConfig.task = "auto" means "detect from metadata"; don't

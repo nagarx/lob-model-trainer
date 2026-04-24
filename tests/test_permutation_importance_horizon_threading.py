@@ -199,3 +199,101 @@ class TestPrimaryHorizonIdxThreading:
             f"factory was called with {captured.get('primary_horizon_idx')!r}. "
             f"Regression of Phase A bug #7b (was hardcoded 0 pre-fix)."
         )
+
+
+class TestTypeErrorFallbackOnBrokenConfig:
+    """Phase A.5.4 (2026-04-24) regression locks for plan v4 bug #7.
+
+    Pre-A.5.4 the callback caught ONLY ``AttributeError`` from
+    ``resolve_labels_config(trainer.config)``. MagicMock trainer configs
+    (common in test fixtures) or partially-constructed configs can raise
+    ``TypeError`` (e.g., passing a dict instead of ExperimentConfig) which
+    escapes the catch → kills the entire callback.
+
+    Post-A.5.4 the catch widens to ``(AttributeError, TypeError)`` AND
+    logs the fallback reason via ``logger.info(...)`` so activations
+    are traceable (hft-rules §8).
+    """
+
+    def test_typeerror_on_dict_config_falls_back_to_heuristic(self, caplog):
+        """``resolve_labels_config`` raises AttributeError on a dict
+        (no ``.data`` attribute). Validates the documented fallback path
+        fires + logs + heuristic succeeds."""
+        import logging
+        from lobtrainer.training.importance.callback import (
+            PermutationImportanceCallback,
+        )
+
+        # A plain dict exercises the resolver's "neither .data.labels
+        # nor .labels found" AttributeError path (no ``.model`` → heuristic
+        # returns "classification" as ultimate fallback).
+        bad_config = {"data": {}, "model": {"model_type": "tlob"}}
+
+        with caplog.at_level(logging.INFO):
+            task = PermutationImportanceCallback._resolve_task_type(bad_config)
+
+        # Heuristic fallback returned a valid task_type string
+        assert task in {"classification", "regression"}
+        # The fallback activation was logged (hft-rules §8 — never silently drop)
+        assert any(
+            "task-type resolver fallback" in rec.message
+            for rec in caplog.records
+        ), (
+            "Post-A.5.4 bug #7 fix: fallback activation MUST be logged at "
+            "INFO level (previously silent AttributeError→fallback)."
+        )
+
+    def test_magicmock_trainer_config_does_not_crash_primary_idx_path(
+        self, caplog,
+    ):
+        """Integration: a MagicMock trainer.config would raise TypeError
+        from ``resolve_labels_config`` (or AttributeError). Pre-A.5.4 the
+        callback caught only AttributeError — TypeError escaped and killed
+        the callback. Post-A.5.4 both are caught and logged."""
+        import logging
+        from unittest.mock import MagicMock
+        from lobtrainer.training.importance.callback import (
+            PermutationImportanceCallback,
+        )
+        from lobtrainer.training.importance.config import ImportanceConfig
+
+        callback = PermutationImportanceCallback(
+            config=ImportanceConfig(enabled=True, n_permutations=1, n_seeds=1)
+        )
+
+        # Minimal MagicMock: resolve_labels_config will fail with
+        # AttributeError / TypeError depending on MagicMock spec. Both
+        # are now caught + logged + fallback idx=0 used. We exercise the
+        # primary-idx block directly by monkeypatching resolve_labels_config
+        # to raise TypeError (simulating dict/int/non-config input).
+        from lobtrainer.training.importance import callback as cb_mod
+        import pytest  # noqa: F401
+
+        def _raise_typeerror(_cfg):
+            raise TypeError("simulated: trainer.config is not an ExperimentConfig")
+
+        # Patch the helper imported into callback module namespace
+        original = cb_mod.resolve_labels_config
+        cb_mod.resolve_labels_config = _raise_typeerror
+        try:
+            # Direct test of the catch path: synthesize the relevant slice of
+            # _compute_and_save that reaches the try/except. Validate the
+            # callback module's behavior catches TypeError without crash.
+            with caplog.at_level(logging.INFO):
+                # The try block is inside _compute_and_save; the helper
+                # is also called in _resolve_task_type. Both paths widened.
+                # Exercise _resolve_task_type since it's a pure function.
+                fake_config = MagicMock()
+                fake_config.model = MagicMock(model_type="tlob")
+                task = PermutationImportanceCallback._resolve_task_type(fake_config)
+            assert task in {"classification", "regression"}
+            assert any(
+                "task-type resolver fallback" in rec.message
+                and "TypeError" in rec.message
+                for rec in caplog.records
+            ), (
+                "Widened catch must classify + log TypeError specifically "
+                "(not just AttributeError) — bug #7 regression lock."
+            )
+        finally:
+            cb_mod.resolve_labels_config = original

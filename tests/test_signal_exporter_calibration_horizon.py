@@ -259,3 +259,152 @@ class TestExporterMetadataStatsSliceByPrimaryHorizonIdx:
         assert meta["prediction_stats"]["mean"] == pytest.approx(
             float(np.mean(preds_2d[:, 0]))
         )
+
+
+class TestExporterCalibrationRejectsInvalidHorizonIdx:
+    """Phase A.5.4 (2026-04-24) regression locks for plan v4 bugs #2 + #5.
+
+    Pre-A.5.4 the exporter used ``or 0`` coalescing on
+    ``primary_horizon_idx`` which:
+
+    - Silently accepted NEGATIVE idx values (Python negative indexing
+      would pick last-N column — silent-wrong-result per hft-rules §8).
+    - Silently accepted OUT-OF-BOUNDS idx values when they happened to
+      be truthy (``primary_horizon_idx=5`` on a 3-horizon array would
+      IndexError only at slice-time, deep in the stack).
+
+    Post-A.5.4: every slicing site uses
+    ``LabelsConfig.validate_primary_horizon_idx_for(n_horizons=...)``
+    which fail-fast rejects both cases with actionable diagnostics
+    BEFORE the slice fires.
+    """
+
+    def test_out_of_bounds_primary_horizon_idx_raises(self, tmp_path):
+        """Bug #2: idx=5 on a 3-horizon predictions array raises
+        ValueError with diagnostic — NOT IndexError deep inside numpy,
+        NOT silent wrong-column slicing."""
+        from lobtrainer.export.exporter import SignalExporter
+
+        cfg = _build_config_with_primary_horizon_idx(idx=5)  # 5 >= 3
+        trainer = _DummyTrainer(cfg)
+        exporter = SignalExporter(trainer, calibration="variance_match")
+
+        preds_2d = np.random.randn(10, 3).astype(np.float64)
+        labels_2d = np.random.randn(10, 3).astype(np.float64)
+        inference = _build_inference(preds_2d, labels_2d)
+
+        with pytest.raises(ValueError, match="out of bounds"):
+            exporter._apply_calibration(inference)
+
+    def test_stats_out_of_bounds_primary_horizon_idx_raises(self, tmp_path):
+        """Bug #2 + #6b: stats-slicing site in ``_build_metadata`` must
+        also fail-fast on out-of-bounds idx, not silently use stats_idx=0."""
+        from lobtrainer.export.exporter import SignalExporter
+
+        cfg = _build_config_with_primary_horizon_idx(idx=7)  # 7 >= 3
+        trainer = _DummyTrainer(cfg)
+        exporter = SignalExporter(trainer, calibration="none")
+
+        preds_2d = np.random.randn(5, 3).astype(np.float64)
+        labels_2d = np.random.randn(5, 3).astype(np.float64)
+        inference = _build_inference(preds_2d, labels_2d)
+
+        class _RawStub:
+            spreads = np.zeros(5, dtype=np.float64)
+            prices = np.ones(5, dtype=np.float64) * 100.0
+            n_samples = 5
+
+        with pytest.raises(ValueError, match="out of bounds"):
+            exporter._build_metadata(
+                inference=inference,
+                raw=_RawStub(),
+                split="val",
+                output_dir=tmp_path,
+                calibration_result=None,
+            )
+
+    def test_metadata_primary_horizon_label_warns_on_out_of_bounds(
+        self, tmp_path, caplog,
+    ):
+        """Bug #5: the ``primary_horizon = f"H{horizons[horizon_idx]}"``
+        derivation path previously silently set primary_horizon=None
+        when idx >= len(horizons). Post-A.5.4 still emits None in the
+        metadata (preserving legacy wire-format) but MUST log a WARNING
+        with the out-of-bounds diagnostic — hft-rules §8 "never silently
+        drop without recording diagnostics".
+
+        This test uses a separate cfg where primary_horizon_idx=7 but
+        _run_inference provides horizons=[10,60,300] (len=3) — a
+        documentation-level mismatch that pre-A.5.4 would have emitted
+        metadata silently with primary_horizon=None. Post-A.5.4 the WARN
+        log surfaces the config bug.
+        """
+        import logging
+        from lobtrainer.export.exporter import SignalExporter
+
+        # Construct the cfg via the label-validator-bypass route.
+        # _build_config_with_primary_horizon_idx would itself raise if we
+        # declared primary_horizon_idx=7 + horizons=[10,60,300] because
+        # the cfg validator checks len(horizons)... actually wait,
+        # LabelsConfig doesn't validate primary_horizon_idx < len(horizons)
+        # at construction (it only enforces >= 0). So idx=7 + horizons of
+        # len 3 DOES construct — this is the actual bug surface.
+        cfg = _build_config_with_primary_horizon_idx(idx=7)
+        trainer = _DummyTrainer(cfg)
+        exporter = SignalExporter(trainer, calibration="none")
+
+        # Predictions only 1-D (skips the stats slice, hits only the
+        # primary_horizon label derivation path which has the soft-fail
+        # WARN). Otherwise the prior bounds-check test fires first.
+        preds_1d = np.random.randn(5).astype(np.float64)
+        labels_1d = np.random.randn(5).astype(np.float64)
+        inference = {
+            "signal_type": "regression",
+            "n_samples": 5,
+            "predicted_returns": preds_1d,
+            "regression_labels": labels_1d,
+            "horizons": [10, 60, 300],
+        }
+
+        class _RawStub:
+            spreads = np.zeros(5, dtype=np.float64)
+            prices = np.ones(5, dtype=np.float64) * 100.0
+            n_samples = 5
+
+        # Post-A.5.4 there are TWO validation layers for primary_horizon_idx
+        # vs horizons length:
+        #
+        # (a) Exporter _build_metadata primary_horizon label derivation
+        #     — logs WARNING + sets primary_horizon=None (this plan v4
+        #     bug #5 fix).
+        # (b) CompatibilityContract.__post_init__ — raises ValueError on
+        #     out-of-range (Phase II defense-in-depth, protects the
+        #     11-key fingerprint from corruption).
+        #
+        # Both fire on this input. (a) fires first (WARN emitted before
+        # (b) raises). Net contract: the WARN is observable even when
+        # the downstream contract rejects — operators get the diagnostic
+        # even if the producer halts. Test asserts (1) WARN emitted, (2)
+        # construction ultimately raises at contract layer.
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(ValueError, match="out of range"):
+                exporter._build_metadata(
+                    inference=inference,
+                    raw=_RawStub(),
+                    split="val",
+                    output_dir=tmp_path,
+                    calibration_result=None,
+                )
+
+        # The exporter-level WARN surfaced the misconfiguration BEFORE
+        # the contract-level ValueError fired — operators see the
+        # diagnostic context in logs even when the producer halts.
+        assert any(
+            "Primary horizon label emission skipped" in rec.message
+            for rec in caplog.records
+        ), (
+            "Post-A.5.4 bug #5 fix: out-of-bounds primary_horizon_idx MUST "
+            "emit a WARN log before the downstream contract validation "
+            "raises (previously silently set primary_horizon=None with no "
+            "log — now fail-loud at both layers)."
+        )
