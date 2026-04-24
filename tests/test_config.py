@@ -1225,3 +1225,61 @@ class TestTrainConfigPydantic:
         assert LossType.FOCAL in TrainConfig._CLASSIFICATION_LOSSES
         assert LossType.HUBER in TrainConfig._REGRESSION_LOSSES
         assert LossType.MSE in TrainConfig._REGRESSION_LOSSES
+
+
+class TestCVConfigPydantic:
+    """Phase A.5.3f (2026-04-24) regression locks for CVConfig migration.
+
+    CVConfig is a simple leaf (2 scalar int fields) with no Enum, no
+    mutable containers, no class-level constants. Inherited SafeBaseModel
+    semantics (frozen/extra_forbid/strict/model_copy) all apply identically.
+    """
+
+    def test_frozen_rejects_mutation(self):
+        """Field assignment raises ValidationError (inherited from SafeBaseModel)."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import CVConfig
+        cv = CVConfig()
+        with pytest.raises(ValidationError):
+            cv.n_splits = 10  # type: ignore[misc]
+
+    def test_extra_forbid_rejects_typo(self):
+        """Typo ``n_split`` (for ``n_splits``) rejected by extra='forbid'."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import CVConfig
+        with pytest.raises(ValidationError):
+            CVConfig(n_split=5)  # type: ignore[call-arg]
+
+    def test_strict_rejects_string_n_splits(self):
+        """Strict mode — string-to-int rejected."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import CVConfig
+        with pytest.raises(ValidationError):
+            CVConfig(n_splits="5")  # type: ignore[arg-type]
+
+    def test_strict_rejects_bool_embargo_days(self):
+        """bool-to-int rejected (inherited from SafeBaseModel strict mode)."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import CVConfig
+        with pytest.raises(ValidationError):
+            CVConfig(embargo_days=True)  # type: ignore[arg-type]
+
+    def test_model_copy_revalidates_invariants(self):
+        """Inherited model_copy override re-runs validators on update."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import CVConfig
+        cv = CVConfig(n_splits=5, embargo_days=1)
+        # Invalid update
+        with pytest.raises(ValidationError, match="n_splits must be >= 2"):
+            cv.model_copy(update={"n_splits": 1})
+        # Valid update
+        cv2 = cv.model_copy(update={"n_splits": 10, "embargo_days": 2})
+        assert cv2.n_splits == 10
+        assert cv2.embargo_days == 2
+
+    def test_defaults_preserved(self):
+        """Positive control — defaults match pre-migration dataclass."""
+        from lobtrainer.config.schema import CVConfig
+        cv = CVConfig()
+        assert cv.n_splits == 5
+        assert cv.embargo_days == 1

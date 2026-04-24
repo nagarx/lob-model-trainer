@@ -1581,14 +1581,18 @@ class TrainConfig(SafeBaseModel):
 # =============================================================================
 
 
-@dataclass
-class CVConfig:
+class CVConfig(SafeBaseModel):
     """Cross-validation configuration (T11).
 
     Optional — only used when running purged K-fold CV via CVTrainer.
     When cv is None on ExperimentConfig, no CV is performed.
 
     Reference: de Prado (2018) AFML Chapter 7.
+
+    **Phase A.5.3f (2026-04-24)**: migrated to SafeBaseModel. Simplest
+    migration alongside SequenceConfig — 2 scalar int fields, no Enum,
+    no mutable containers, no class-level constants. Validators port
+    1:1 to ``@model_validator(mode="after")``.
     """
 
     n_splits: int = 5
@@ -1598,7 +1602,8 @@ class CVConfig:
     """Days after each val block excluded from training. Prevents feature
     autocorrelation leakage across temporal boundaries."""
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def _validate_all(self) -> "CVConfig":
         if self.n_splits < 2:
             raise ValueError(
                 f"CVConfig.n_splits must be >= 2, got {self.n_splits}"
@@ -1607,6 +1612,7 @@ class CVConfig:
             raise ValueError(
                 f"CVConfig.embargo_days must be >= 0, got {self.embargo_days}"
             )
+        return self
 
 
 # =============================================================================
@@ -1636,9 +1642,10 @@ _PYDANTIC_CONFIG_CLASSES: List[type] = [
     SequenceConfig,       # A.5.3b (commit f32288f)
     NormalizationConfig,  # A.5.3c (commit 52516e5 — first Enum-field class)
     SourceConfig,         # A.5.3d (commit f54a838)
-    TrainConfig,          # A.5.3e (this commit — 2 Enum fields + cross-field)
-    # A.5.3f-h append one line each:
-    # CVConfig, DataConfig, ModelConfig — in dependency order.
+    TrainConfig,          # A.5.3e (commit 7c91170 — 2 Enum fields + cross-field)
+    CVConfig,             # A.5.3f (this commit)
+    # A.5.3g-h append one line each:
+    # DataConfig, ModelConfig — in dependency order.
 ]
 
 _PYDANTIC_TYPE_HOOKS: Dict[type, Any] = {
