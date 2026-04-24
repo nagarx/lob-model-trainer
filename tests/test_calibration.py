@@ -190,19 +190,64 @@ class TestVarianceCalibrationEdgeCases:
         with pytest.raises(ValueError, match="expects 1-D predictions"):
             calibrate_variance(preds_2d, labels)
 
-    def test_metadata_kwarg_propagates_to_result(self):
-        """Phase A forward-compat: optional ``metadata`` dict threads through to
-        ``CalibrationResult.metadata`` + ``to_dict()``.
+    def test_context_kwarg_propagates_to_result(self):
+        """Phase A.5.5 (2026-04-24): ``metadata=`` kwarg renamed to ``context=``
+        + typed via ``CalibrationContext`` TypedDict. Observability surface
+        preserved for multi-method calibrators (quantile, isotonic, conformal).
 
-        Purpose is observability for multi-method calibrators (quantile,
-        isotonic) that may need per-call provenance without schema changes.
+        Field on ``CalibrationResult`` also renamed: ``metadata`` → ``context``.
+        Wire-format JSON key in ``to_dict()`` output PRESERVED as ``"metadata"``
+        (plan v4 round-2 refinement — don't mix Python semantic rename with
+        wire-format rename).
         """
         predictions = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
         labels = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
         provenance = {"primary_horizon_idx": 1, "method_variant": "variance_match"}
-        result = calibrate_variance(predictions, labels, metadata=provenance)
-        assert result.metadata == provenance
+        result = calibrate_variance(predictions, labels, context=provenance)
+        # Python attribute is ``context``
+        assert result.context == provenance
+        # Wire-format JSON key is preserved as ``"metadata"``
         assert result.to_dict()["metadata"] == provenance
+
+    def test_context_none_omits_metadata_key_in_to_dict(self):
+        """Phase A.5.5: when ``context=None`` (default), ``to_dict()`` must
+        NOT emit a ``metadata`` key — preserves pre-A.5.5 wire-format
+        (downstream consumers that key-check via ``if "metadata" in d`` see
+        no change)."""
+        predictions = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        labels = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
+        result = calibrate_variance(predictions, labels)  # no context=
+        assert result.context is None
+        assert "metadata" not in result.to_dict()
+
+    def test_context_to_dict_is_deep_copy_safe(self):
+        """Phase A.5.5 bug #4 regression lock: to_dict() shallow copies
+        the context TypedDict. Since CalibrationContext contains only
+        FLAT primitive-typed fields (by TypedDict schema), shallow copy
+        is safe by construction — no nested-dict aliasing hazard.
+
+        Lock: mutating the returned dict's 'metadata' key MUST NOT affect
+        the original CalibrationResult.context (no shared reference)."""
+        predictions = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        labels = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
+        provenance = {"primary_horizon_idx": 2}
+        result = calibrate_variance(predictions, labels, context=provenance)
+        dumped = result.to_dict()
+        # Mutate the dumped dict's metadata
+        dumped["metadata"]["primary_horizon_idx"] = 999
+        # Original context is UNAFFECTED (shallow copy is safe because
+        # TypedDict values are flat primitives)
+        assert result.context["primary_horizon_idx"] == 2
+
+    def test_calibration_context_typeddict_import_available(self):
+        """Phase A.5.5: CalibrationContext is importable from the
+        package surface. Future consumers can explicitly annotate call
+        sites for IDE / mypy type-checking."""
+        from lobtrainer.calibration import CalibrationContext
+        # TypedDict IS a dict subclass at runtime; instantiate as a dict
+        ctx: CalibrationContext = {"primary_horizon_idx": 0}
+        assert isinstance(ctx, dict)
+        assert ctx["primary_horizon_idx"] == 0
 
     def test_determinism(self):
         """Same inputs produce identical outputs."""

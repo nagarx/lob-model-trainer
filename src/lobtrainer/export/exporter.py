@@ -504,11 +504,15 @@ class SignalExporter:
             labels_1d = labels
 
         config = VarianceCalibrationConfig(method="variance_match")
+        # Phase A.5.5 (2026-04-24): ``metadata=`` kwarg renamed to
+        # ``context=`` + typed via ``CalibrationContext`` TypedDict.
+        # Wire-format JSON key in signal_metadata.json stays ``"metadata"``
+        # (preserved for downstream consumer compat).
         cal_result = calibrate_variance(
             preds_1d,
             labels_1d,
             config,
-            metadata={"primary_horizon_idx": primary_idx},
+            context={"primary_horizon_idx": primary_idx},
         )
 
         logger.info(

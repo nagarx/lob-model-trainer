@@ -18,13 +18,15 @@ Reference:
 """
 
 from lobtrainer.calibration.variance import (
+    CalibrationContext,
+    CalibrationResult,
     VarianceCalibrationConfig,
     calibrate_variance,
-    CalibrationResult,
 )
 
 __all__ = [
+    "CalibrationContext",
+    "CalibrationResult",
     "VarianceCalibrationConfig",
     "calibrate_variance",
-    "CalibrationResult",
 ]

@@ -21,9 +21,75 @@ Reference:
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypedDict
 
 import numpy as np
+
+
+# =============================================================================
+# Phase A.5.5 (2026-04-24) — CalibrationContext TypedDict
+# =============================================================================
+#
+# Replaces the previous ``metadata: Optional[Dict[str, Any]]`` blob on
+# ``CalibrationResult`` with a typed TypedDict. Closes plan v4 bug #4:
+# pre-A.5.5 the blob was an open Dict so shallow ``dict(metadata)`` copies
+# could share nested-dict references — silent-aliasing hazard if the
+# calibration context ever grew nested dicts (Phase B: quantile_levels
+# dict, conformal alphas per-horizon, etc.).
+#
+# Design per plan v4 Agent 2 refinement: TypedDict with ``total=False``
+# (all fields optional). Zero runtime cost (no class creation at import
+# time), trivial JSON serialization (dict-to-dict passthrough), and
+# Phase B calibrators extend one-line-per-field (``quantile_levels:
+# Optional[Tuple[float, ...]]``, ``conformal_alpha: Optional[float]``,
+# etc.) — no schema migration per extension.
+#
+# Wire-format preservation: the JSON key in ``to_dict()`` output stays
+# ``"metadata"`` (plan v4 round-2 refinement: "don't mix semantic rename
+# with wire-format rename"). Downstream consumers that read
+# ``signal_metadata.json["calibration"]["metadata"]`` continue to work
+# unchanged; only the Python-side attribute name moves to ``context``.
+#
+# Ship-until-Phase-B: TypedDict inlined here (not extracted to its own
+# module) until a second calibrator (quantile/isotonic/conformal)
+# warrants a dedicated ``lobtrainer.calibration.context`` module. YAGNI
+# until then — fights the "premature extraction" trap.
+# =============================================================================
+
+class CalibrationContext(TypedDict, total=False):
+    """Calibration provenance / observability context.
+
+    All fields optional (``total=False``) so Phase B calibrators add
+    fields one-line-per-field as needed:
+
+        class CalibrationContext(TypedDict, total=False):
+            primary_horizon_idx: Optional[int]
+            method_variant: Optional[str]
+            # Phase B extension points:
+            # quantile_levels: Optional[Tuple[float, ...]]
+            # conformal_alpha: Optional[float]
+            # isotonic_breakpoints: Optional[Tuple[float, ...]]
+
+    Type-safety gain: operators constructing the context (in
+    ``SignalExporter._apply_calibration`` + future calibrator call
+    sites) get typos caught at static-analysis time via mypy /
+    pyright / pyre. Zero runtime cost — a TypedDict IS a dict subclass
+    at runtime.
+
+    JSON serialization: passthrough via ``dict(context)`` — no
+    model_dump / asdict needed. Wire-format key preserved as
+    ``"metadata"`` in ``CalibrationResult.to_dict()`` output.
+    """
+
+    primary_horizon_idx: Optional[int]
+    """Which horizon was sliced for 1-D calibrator input. Threaded from
+    the caller's ``LabelsConfig.validate_primary_horizon_idx_for(...)``
+    result (A.5.4 SSoT)."""
+
+    method_variant: Optional[str]
+    """Sub-variant label for the calibration method (e.g., "huber",
+    "mse", "variance_match_v2"). Future-proofs the observability
+    surface against same-method-different-settings runs."""
 
 
 @dataclass
@@ -57,11 +123,14 @@ class CalibrationResult:
         target_mean: Target mean used for calibration.
         target_std: Target std used for calibration.
         n_samples: Number of samples calibrated.
-        metadata: Optional observability / provenance context (Phase A, 2026-04-23).
-            Forward-compat hook for non-variance-match calibrators (quantile,
-            isotonic) that may need per-call metadata (e.g., primary_horizon_idx).
-            ``to_dict()`` propagates this block verbatim so downstream consumers
-            can inspect calibration provenance without schema changes.
+        context: Optional observability / provenance context (Phase A.5.5,
+            2026-04-24). TypedDict ``CalibrationContext`` — typed extension
+            point for Phase B calibrators (quantile, isotonic, conformal)
+            that need per-call observability fields. Field was named
+            ``metadata`` pre-A.5.5 (Phase A 2026-04-23); renamed to
+            ``context`` for semantic clarity. Wire-format JSON key
+            (``to_dict()["metadata"]``) preserved for downstream consumer
+            compatibility.
     """
     calibrated: np.ndarray
     scale_factor: float
@@ -70,10 +139,23 @@ class CalibrationResult:
     target_mean: float
     target_std: float
     n_samples: int
-    metadata: Optional[Dict[str, Any]] = None
+    # Phase A.5.5 (2026-04-24): typed ``CalibrationContext`` replaces
+    # the previous open ``Dict[str, Any]``. Closes plan v4 bug #4
+    # (shallow-copy nested-dict aliasing hazard) — TypedDict fields
+    # are all flat primitives, so the shallow ``dict(self.context)``
+    # copy in ``to_dict()`` is safe by construction. Phase B adds
+    # fields one-line-per-field on the TypedDict definition.
+    context: Optional[CalibrationContext] = None
 
     def to_dict(self) -> dict:
-        """Serialize calibration stats (no numpy arrays)."""
+        """Serialize calibration stats (no numpy arrays).
+
+        Phase A.5.5 (2026-04-24): JSON wire-format key remains ``"metadata"``
+        (plan v4 round-2 refinement — semantic Python rename only, not
+        wire-format rename). Downstream consumers reading
+        ``signal_metadata.json["calibration"]["metadata"]`` continue to
+        work unchanged post-migration.
+        """
         result: Dict[str, Any] = {
             "scale_factor": self.scale_factor,
             "pred_mean": self.pred_mean,
@@ -86,8 +168,13 @@ class CalibrationResult:
             "calibrated_min": float(np.min(self.calibrated)),
             "calibrated_max": float(np.max(self.calibrated)),
         }
-        if self.metadata is not None:
-            result["metadata"] = dict(self.metadata)
+        if self.context is not None:
+            # Wire-format key stays "metadata" (preserved for
+            # downstream consumer compat per Phase A.5.5 plan).
+            # Shallow ``dict(...)`` copy is safe: CalibrationContext
+            # is a TypedDict with flat primitive-typed fields — no
+            # nested-dict aliasing hazard.
+            result["metadata"] = dict(self.context)
         return result
 
 
@@ -96,7 +183,7 @@ def calibrate_variance(
     labels: Optional[np.ndarray] = None,
     config: Optional[VarianceCalibrationConfig] = None,
     *,
-    metadata: Optional[Dict[str, Any]] = None,
+    context: Optional[CalibrationContext] = None,
 ) -> CalibrationResult:
     """Calibrate prediction magnitudes via variance matching.
 
@@ -121,10 +208,12 @@ def calibrate_variance(
             ``primary_horizon_idx`` was non-zero.
         config: Calibration configuration. Defaults to
             :class:`VarianceCalibrationConfig`.
-        metadata: Optional observability / provenance dict propagated to
-            :class:`CalibrationResult.metadata` (Phase A forward-compat for
-            non-variance-match calibrators). Pure passthrough — never consumed
-            by the calibration math itself.
+        context: Optional observability / provenance TypedDict propagated to
+            :class:`CalibrationResult.context` (Phase A.5.5 — renamed from
+            ``metadata=`` kwarg, typed via ``CalibrationContext`` TypedDict).
+            Forward-compat hook for non-variance-match calibrators (quantile,
+            isotonic, conformal) that need per-call provenance. Pure
+            passthrough — never consumed by the calibration math itself.
 
     Returns:
         :class:`CalibrationResult` with calibrated predictions and stats.
@@ -163,7 +252,7 @@ def calibrate_variance(
             target_mean=float(np.mean(predictions)),
             target_std=float(np.std(predictions)),
             n_samples=len(predictions),
-            metadata=metadata,
+            context=context,
         )
 
     predictions = np.asarray(predictions, dtype=np.float64)
@@ -213,5 +302,5 @@ def calibrate_variance(
         target_mean=target_mean,
         target_std=target_std,
         n_samples=len(predictions),
-        metadata=metadata,
+        context=context,
     )
