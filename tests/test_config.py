@@ -29,18 +29,27 @@ class TestSequenceConfig:
         assert config.stride == 10
     
     def test_invalid_window_size(self):
-        """Window size must be >= 1."""
-        with pytest.raises(ValueError, match="window_size must be >= 1"):
+        """Window size must be >= 1.
+
+        Phase A.5.3b (2026-04-24): post-migration SequenceConfig is a Pydantic
+        BaseModel; ``raise ValueError(...)`` inside ``@model_validator`` is
+        auto-wrapped as ``pydantic.ValidationError``. Original error text
+        preserved in the wrapped message — ``match=`` substring still fires.
+        """
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="window_size must be >= 1"):
             SequenceConfig(window_size=0)
-    
+
     def test_invalid_stride(self):
         """Stride must be >= 1."""
-        with pytest.raises(ValueError, match="stride must be >= 1"):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="stride must be >= 1"):
             SequenceConfig(stride=0)
-    
+
     def test_stride_exceeds_window(self):
         """Stride should not exceed window size."""
-        with pytest.raises(ValueError, match="stride.*should not exceed window_size"):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="stride.*should not exceed window_size"):
             SequenceConfig(window_size=50, stride=100)
 
 
@@ -649,3 +658,198 @@ class TestLabelsConfigPydanticHardening:
             f"cause: new field, removed field, changed canonical form, or "
             f"Pydantic field type change that leaks into model_dump."
         )
+
+
+# =============================================================================
+# Phase A.5.3b (2026-04-24) regression locks — SafeBaseModel + SequenceConfig.
+#
+# Two new lock-in test classes:
+#
+#   1. TestSafeBaseModel — directly exercises the shared base class on a
+#      minimal fixture subclass (no LabelsConfig-specific fields), proving
+#      the 4 hardening patterns fire correctly at the base-class level.
+#      Prevents silent stripping of patterns if future Pydantic-version
+#      bumps change ConfigDict inheritance semantics.
+#
+#   2. TestSequenceConfigPydantic — exercises SequenceConfig-specific
+#      invariants (cross-field stride ≤ window_size) + confirms the
+#      inherited hardening patterns work identically on the SECOND
+#      class to inherit from SafeBaseModel (validates abstraction fit
+#      with N≥2 subclasses).
+#
+# LabelsConfig tests (TestLabelsConfigPydantic + TestLabelsConfigPydanticHardening)
+# are UNCHANGED — they continue to exercise identical behavior now that
+# LabelsConfig inherits from SafeBaseModel. If byte-identity parity test
+# still passes (verified), the refactor is semantically sound.
+# =============================================================================
+
+
+class TestSafeBaseModel:
+    """Direct tests on the shared base class via minimal fixture subclass.
+
+    Prevents silent pattern-stripping if Pydantic's ConfigDict inheritance
+    semantics ever change. Any test here failing means SafeBaseModel isn't
+    packaging the 4 hardening patterns correctly, and EVERY consumer
+    subclass (LabelsConfig + SequenceConfig + future A.5.3c-i classes)
+    would silently lose the guarantee.
+    """
+
+    @staticmethod
+    def _make_fixture_subclass():
+        """Minimal SafeBaseModel subclass for direct base-class testing.
+
+        Defined as a factory (not module-level class) to keep this test file
+        from polluting its own namespace with test-only config classes.
+        """
+        from lobtrainer.config.base import SafeBaseModel
+
+        class _FixtureConfig(SafeBaseModel):
+            x: int = 0
+            y: str = "default"
+
+        return _FixtureConfig
+
+    def test_frozen_inherited_rejects_mutation(self):
+        """``frozen=True`` inherited from SafeBaseModel — field assignment
+        raises ValidationError on ANY subclass."""
+        from pydantic import ValidationError
+
+        Config = self._make_fixture_subclass()
+        cfg = Config()
+        with pytest.raises(ValidationError):
+            cfg.x = 42  # type: ignore[misc]
+        with pytest.raises(ValidationError):
+            cfg.y = "changed"  # type: ignore[misc]
+
+    def test_extra_forbid_inherited_rejects_typo(self):
+        """``extra="forbid"`` inherited — unknown kwargs raise
+        ValidationError at construction."""
+        from pydantic import ValidationError
+
+        Config = self._make_fixture_subclass()
+        with pytest.raises(ValidationError):
+            Config(z=99)  # type: ignore[call-arg]
+
+    def test_strict_inherited_rejects_string_to_int(self):
+        """``strict=True`` inherited — string-to-int coercion rejected."""
+        from pydantic import ValidationError
+
+        Config = self._make_fixture_subclass()
+        with pytest.raises(ValidationError):
+            Config(x="42")  # string → int would be silent under lax
+
+    def test_strict_inherited_rejects_bool_as_int(self):
+        """Bool is int-subclass but strict mode inherited from SafeBaseModel
+        rejects the coercion (ship-blocker #3 from A.5.3a.1)."""
+        from pydantic import ValidationError
+
+        Config = self._make_fixture_subclass()
+        with pytest.raises(ValidationError):
+            Config(x=True)
+
+    def test_model_copy_inherited_revalidates_on_update(self):
+        """Inherited ``model_copy`` override re-runs validators on update.
+
+        Without the override, default Pydantic v2 model_copy would accept
+        ``update={"x": "not_an_int"}`` silently (bypasses validators).
+        Ship-blocker #1 from A.5.3a.1 closed at SafeBaseModel level.
+        """
+        from pydantic import ValidationError
+
+        Config = self._make_fixture_subclass()
+        cfg = Config(x=10)
+        with pytest.raises(ValidationError):
+            cfg.model_copy(update={"x": "not_an_int"})
+        with pytest.raises(ValidationError):
+            cfg.model_copy(update={"y": 42})  # int where str expected under strict
+
+    def test_model_copy_inherited_no_update_fast_path(self):
+        """Positive control: ``model_copy()`` with no update does NOT trigger
+        validation (delegates to super() — matches Pydantic default semantics
+        for pure copy)."""
+        Config = self._make_fixture_subclass()
+        cfg = Config(x=42, y="preserved")
+        cfg2 = cfg.model_copy()
+        assert cfg2.x == 42
+        assert cfg2.y == "preserved"
+        # Deep copy flag still works
+        cfg3 = cfg.model_copy(deep=True)
+        assert cfg3.x == 42
+
+    def test_model_copy_inherited_valid_update_succeeds(self):
+        """Valid update via model_copy works normally — no unexpected
+        rejection of legitimate updates."""
+        Config = self._make_fixture_subclass()
+        cfg = Config(x=10, y="a")
+        cfg2 = cfg.model_copy(update={"x": 20, "y": "b"})
+        assert cfg2.x == 20
+        assert cfg2.y == "b"
+
+    def test_subclass_model_config_inherits_not_required_to_redeclare(self):
+        """Defensive: subclass without inline ``model_config`` MUST inherit
+        frozen+extra_forbid+strict. Test verifies Pydantic's inheritance
+        of ConfigDict works as documented.
+
+        (If this ever fails, Pydantic semantics have changed and every
+        migrated class in A.5.3a-i risks silent pattern-stripping.)
+        """
+        Config = self._make_fixture_subclass()
+        # Check ConfigDict keys are inherited
+        assert Config.model_config.get("frozen") is True
+        assert Config.model_config.get("extra") == "forbid"
+        assert Config.model_config.get("strict") is True
+
+
+class TestSequenceConfigPydantic:
+    """SequenceConfig-specific Pydantic regression tests.
+
+    Confirms inherited SafeBaseModel hardening patterns fire correctly on
+    the SECOND class to inherit (N≥2 validates abstraction fit) + locks
+    SequenceConfig-specific invariants (cross-field stride ≤ window_size).
+    """
+
+    def test_frozen_rejects_mutation(self):
+        """Field assignment raises ValidationError (inherited from SafeBaseModel)."""
+        from pydantic import ValidationError
+        cfg = SequenceConfig()
+        with pytest.raises(ValidationError):
+            cfg.window_size = 200  # type: ignore[misc]
+
+    def test_extra_forbid_rejects_typo(self):
+        """Typo ``stide`` (for ``stride``) raises ValidationError (inherited)."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            SequenceConfig(stide=10)  # type: ignore[call-arg]
+
+    def test_strict_rejects_string_window_size(self):
+        """Strict mode inherited — ``window_size="100"`` rejected (bug #2 from A.5.3a.1)."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            SequenceConfig(window_size="100")  # type: ignore[arg-type]
+
+    def test_cross_field_validator_stride_ge_window(self):
+        """Cross-field invariant ``stride ≤ window_size`` enforced at
+        ``@model_validator(mode="after")`` level (can't use ``@field_validator``
+        — single-field validators can't access sibling fields)."""
+        from pydantic import ValidationError
+        # stride > window_size must raise
+        with pytest.raises(ValidationError, match="stride.*should not exceed"):
+            SequenceConfig(window_size=10, stride=20)
+        # stride == window_size is allowed (boundary)
+        cfg = SequenceConfig(window_size=50, stride=50)
+        assert cfg.stride == 50
+
+    def test_model_copy_inherited_revalidates_stride_invariant(self):
+        """Inherited ``model_copy`` override re-runs the cross-field
+        validator on update. Without this, ``cfg.model_copy(update={"stride": 999})``
+        would silently produce a config violating the stride ≤ window_size
+        invariant — critical for sweep-axis parameter mutation paths."""
+        from pydantic import ValidationError
+        cfg = SequenceConfig(window_size=100, stride=10)
+        # Invalid update — stride exceeds window_size
+        with pytest.raises(ValidationError, match="stride.*should not exceed"):
+            cfg.model_copy(update={"stride": 200})
+        # Valid update
+        cfg2 = cfg.model_copy(update={"stride": 50})
+        assert cfg2.stride == 50
+        assert cfg2.window_size == 100  # unchanged

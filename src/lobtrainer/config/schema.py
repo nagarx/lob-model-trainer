@@ -30,7 +30,14 @@ import yaml
 # declaration must be available at class-definition time (not lazy).
 # Phase A.5.3a.1 (2026-04-24 post-audit): + field_validator for list→tuple
 # coercion on `horizons` (preserves YAML ergonomics under strict=True).
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+# Phase A.5.3b (2026-04-24): + SafeBaseModel shared base — packages the 4
+# hardening patterns (frozen + extra_forbid + strict + model_copy override)
+# so each subsequent migration inherits "fail-fast by default" rather than
+# re-deriving. See lobtrainer.config.base module docstring for the full
+# rationale + 4-bug empirical trace.
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from lobtrainer.config.base import SafeBaseModel
 
 # Phase 8C-α Stage C.1 trainer wire-in (2026-04-20 post-audit round-2):
 # ImportanceConfig cannot be imported at schema.py module-load time —
@@ -225,7 +232,7 @@ class SourceConfig:
             )
 
 
-class LabelsConfig(BaseModel):
+class LabelsConfig(SafeBaseModel):
     """Unified label specification for training.
 
     Replaces the overlap between DataConfig.labeling_strategy and
@@ -287,34 +294,12 @@ class LabelsConfig(BaseModel):
             int >= 0 = single-horizon mode. None = all-horizons / HMHP mode.
     """
 
-    # Pydantic v2 configuration — retires 4 bug classes at the TYPE layer.
-    # See class docstring for the full rationale.
-    #
-    # ``frozen=True``: field assignment raises ValidationError. Closes bug
-    #   class #2 (silent mutation) for the most common idiom (``cfg.source = X``).
-    # ``extra="forbid"``: unknown kwargs raise ValidationError at construction.
-    #   Closes bug class #3 (extra-field acceptance / typo propagation).
-    # ``strict=True`` (Phase A.5.3a.1): NO implicit type coercion. Rejects
-    #   string-to-int for ``horizons: Tuple[int, ...]`` (e.g. ``horizons=["10"]``
-    #   — empirically confirmed would coerce under lax mode), bool-to-int
-    #   for ``primary_horizon_idx: Optional[int]`` (e.g. ``primary_horizon_idx=True``
-    #   would coerce to 1). Without this flag, Pydantic v2 lax mode silently
-    #   coerces — violating hft-rules §5 fail-fast + introducing NEW bug
-    #   classes not intended to exist.
-    #   NOTE: strict does NOT reject NaN/Inf floats (IEEE 754 considers them
-    #   valid floats); the explicit ``math.isfinite`` check in
-    #   ``_validate_all`` closes that separate gap.
-    #
-    # Note: ``validate_assignment=True`` is NOT set — empirically confirmed
-    # it does NOT fix ``model_copy(update={...})`` bypass (Pydantic v2's
-    # ``model_copy`` uses ``model_construct`` which ALWAYS skips validation).
-    # The fix for that bug class is the custom ``model_copy`` override
-    # below — closes the validator-bypass vector structurally.
-    model_config = ConfigDict(
-        frozen=True,
-        extra="forbid",
-        strict=True,
-    )
+    # Phase A.5.3b (2026-04-24): ``model_config`` + ``model_copy`` override
+    # now inherited from ``SafeBaseModel``. DO NOT re-declare either here —
+    # Pydantic v2 REPLACES (not merges) parent config when subclass declares
+    # its own, which would silently strip hardening. See
+    # ``lobtrainer.config.base.SafeBaseModel`` for the full 4-pattern rationale
+    # + the A.5.3a.1 empirical bug-class trace.
 
     source: str = "auto"
     return_type: str = "smoothed_return"
@@ -375,33 +360,11 @@ class LabelsConfig(BaseModel):
             return tuple(v)
         return v
 
-    def model_copy(self, *, update: Optional[Dict[str, Any]] = None, deep: bool = False) -> "LabelsConfig":
-        """Override Pydantic v2 ``model_copy`` to re-run validators on update.
-
-        Phase A.5.3a.1 (2026-04-24): default Pydantic v2 ``model_copy(update=...)``
-        uses ``model_construct`` internally which SKIPS ALL validation.
-        Empirically confirmed: ``cfg.model_copy(update={"source": "bogus"})``
-        produces an invalid LabelsConfig with no ValidationError. This
-        re-opens bug class #3 (extra-field acceptance / invalid-value
-        acceptance) through the common Pydantic idiom.
-
-        This override forces re-validation via ``model_validate`` when
-        update is provided — closes the validator-bypass vector at the
-        structural level (callers don't need to remember to use
-        ``model_validate({**dump(), **overrides})``).
-
-        Trade-off: slight perf cost on ``model_copy(update=...)`` (full
-        validation vs fast construct). Acceptable for a config class
-        that is rarely copy-mutated in hot paths.
-
-        Args:
-            update: Dict of field overrides. If non-empty, triggers full
-                re-validation. If None or empty, falls through to fast path.
-            deep: Deep copy flag, passed through to super().
-        """
-        if update:
-            return self.__class__.model_validate({**self.model_dump(), **update})
-        return super().model_copy(deep=deep)
+    # Phase A.5.3b (2026-04-24): inline ``model_copy`` override moved to
+    # SafeBaseModel. LabelsConfig inherits the re-validation semantics
+    # automatically. Regression tests (TestLabelsConfigPydanticHardening
+    # at tests/test_config.py) continue to exercise identical behavior via
+    # the inherited method — tests are NOT rewritten.
 
     @model_validator(mode="after")
     def _validate_all(self) -> "LabelsConfig":
@@ -575,36 +538,65 @@ class ModelType(str, Enum):
 # =============================================================================
 
 
-@dataclass
-class SequenceConfig:
+class SequenceConfig(SafeBaseModel):
     """
     Configuration for sequence construction from flat features.
-    
+
     Sequences are built by sliding a window over flat feature vectors.
     Labels are aligned to the END of each window.
-    
+
     Example:
         window_size=100, stride=10:
         - Window 0: features[0:100], label for sample 99
         - Window 1: features[10:110], label for sample 109
         - ...
+
+    **Phase A.5.3b (2026-04-24)**: migrated from ``@dataclass`` to Pydantic
+    v2 ``BaseModel`` via shared ``SafeBaseModel`` base. Inherits
+    ``frozen=True, extra="forbid", strict=True`` + ``model_copy`` re-validation
+    from ``SafeBaseModel``. See ``lobtrainer.config.base`` module docstring
+    for the full 4-bug-class retirement rationale (packaged at the base
+    class so subclasses stay minimal).
+
+    Bug classes retired at the TYPE layer via SafeBaseModel inheritance:
+
+        1. Silent post-construction mutation (``cfg.window_size = 1000`` raises)
+        2. Typo propagation (``SequenceConfig(stide=10)`` raises — note typo)
+        3. String-to-int coercion (``SequenceConfig(window_size="100")`` raises)
+        4. ``model_copy(update={...})`` validator bypass (inherited override
+           re-validates on update)
+
+    Cross-field invariant (``stride ≤ window_size``) validated via
+    ``@model_validator(mode="after")`` since it needs access to both
+    fields post-construction — ``@field_validator`` on a single field
+    cannot reference siblings.
     """
-    
+
     window_size: int = 100
     """Number of samples per sequence. Must match Rust export config."""
-    
+
     stride: int = 10
     """Step size between consecutive sequences. Smaller = more overlap."""
-    
-    def __post_init__(self) -> None:
+
+    @model_validator(mode="after")
+    def _validate_all(self) -> "SequenceConfig":
+        """Pydantic equivalent of the legacy ``__post_init__``.
+
+        Raises ``ValueError`` (automatically wrapped as
+        ``pydantic.ValidationError`` by the framework) on any invariant
+        violation. Returns ``self`` per Pydantic convention (allows
+        chainable post-validation copies where needed).
+        """
         if self.window_size < 1:
             raise ValueError(f"window_size must be >= 1, got {self.window_size}")
         if self.stride < 1:
             raise ValueError(f"stride must be >= 1, got {self.stride}")
         if self.stride > self.window_size:
             raise ValueError(
-                f"stride ({self.stride}) should not exceed window_size ({self.window_size})"
+                f"stride ({self.stride}) should not exceed "
+                f"window_size ({self.window_size})"
             )
+        return self
 
 
 @dataclass
@@ -1458,6 +1450,42 @@ class CVConfig:
             )
 
 
+# =============================================================================
+# Phase A.5.3b (2026-04-24): module-level registry of Pydantic-migrated config
+# classes. Consumed by ``ExperimentConfig.from_dict`` to build dacite's
+# ``type_hooks`` table so dacite routes dict → BaseModel construction through
+# ``model_validate`` (which runs validators) instead of treating BaseModel as
+# a dataclass (which it isn't — dacite would fail).
+#
+# **Subsequent A.5.3c-h commits add ONE line each** to ``_PYDANTIC_CONFIG_CLASSES``
+# — every migrated class auto-registers its hook via the factory below. This
+# minimizes merge-conflict surface (one-line append vs function-body patch).
+#
+# **A.5.3i retires this registry entirely** when ``ExperimentConfig`` itself
+# becomes ``SafeBaseModel`` and ``from_dict`` delegates to
+# ``cls.model_validate(data)`` directly — dacite drops out of the dependency
+# tree at that point.
+#
+# Default-argument ``_cls=cls`` in the lambda is the standard Python
+# closure-capture pattern — without it, every lambda in the comprehension
+# would close over the SAME ``cls`` variable (late binding), firing with the
+# last loop value for all entries. Tested implicitly by the A.5.3a
+# ``TestLabelsConfigPydantic`` suite.
+# =============================================================================
+_PYDANTIC_CONFIG_CLASSES: List[type] = [
+    LabelsConfig,      # A.5.3a (commit 1507b87)
+    SequenceConfig,    # A.5.3b (this commit)
+    # A.5.3c-h append one line each:
+    # NormalizationConfig, SourceConfig, TrainConfig, CVConfig,
+    # DataConfig, ModelConfig — in dependency order.
+]
+
+_PYDANTIC_TYPE_HOOKS: Dict[type, Any] = {
+    cls: (lambda d, _cls=cls: _cls.model_validate(d) if isinstance(d, dict) else d)
+    for cls in _PYDANTIC_CONFIG_CLASSES
+}
+
+
 @dataclass
 class ExperimentConfig:
     """
@@ -1730,33 +1758,23 @@ class ExperimentConfig:
         # Preprocess data to handle YAML parsing quirks
         data = _normalize_config_types(data)
 
-        # Phase A.5.3a (2026-04-24): Pydantic-migrated classes are NOT
-        # dataclasses, so dacite's dataclass-centric constructor path won't
-        # recognize them. Register ``type_hooks`` that route the raw dict
-        # through ``BaseModel.model_validate`` — which runs Pydantic's
-        # validators + enforces ``extra="forbid"`` + returns a BaseModel
-        # instance that dacite can place into the parent dataclass field
-        # slot. At A.5.3a, only ``LabelsConfig`` is migrated; subsequent
-        # commits A.5.3b-i will extend this table. A.5.3i retires dacite
-        # entirely and uses ``ExperimentConfig.model_validate(data)``
-        # directly.
+        # Phase A.5.3b (2026-04-24): dacite ``type_hooks`` table hoisted to
+        # module-level ``_PYDANTIC_TYPE_HOOKS`` built from
+        # ``_PYDANTIC_CONFIG_CLASSES`` registry. A.5.3c-h commits add ONE line
+        # each to the registry — merge-conflict surface minimized. A.5.3i
+        # retires dacite entirely by switching from_dict body to
+        # ``cls.model_validate(data)``.
         #
-        # Hook is defensive: runs ONLY when the value is a dict (not an
-        # already-constructed BaseModel). This supports callers that
-        # construct nested Pydantic models programmatically before passing
-        # to ExperimentConfig(...) — a pattern in test code.
-        _type_hooks: Dict[type, Any] = {
-            LabelsConfig: lambda d: (
-                LabelsConfig.model_validate(d) if isinstance(d, dict) else d
-            ),
-        }
-
+        # Each hook is defensive: runs ONLY when the value is a dict (not an
+        # already-constructed BaseModel). Supports callers that construct
+        # nested Pydantic models programmatically before passing to
+        # ExperimentConfig(...) — a pattern in test code.
         return from_dict(
             data_class=cls,
             data=data,
             config=DaciteConfig(
                 cast=[Enum, Path, float, int, bool],
-                type_hooks=_type_hooks,
+                type_hooks=_PYDANTIC_TYPE_HOOKS,
             ),
         )
 
