@@ -135,17 +135,23 @@ def apply_overrides(config: ExperimentConfig, args: argparse.Namespace) -> Exper
         config.data.data_dir = args.data_dir
     
     # Training overrides
-    if getattr(args, 'epochs', None) is not None:
-        config.train.epochs = args.epochs
+    # (epochs handled via _train_overrides block below — A.5.3f.1 hardening)
     
-    # Phase A.5.3e (2026-04-24): TrainConfig is a frozen Pydantic BaseModel
-    # post-migration; direct field mutation raises ValidationError. Accumulate
-    # CLI overrides into a dict and apply via TrainConfig.model_copy(update=...)
-    # in a single pass — preserves the SafeBaseModel re-validation contract
-    # (cross-field task_type ↔ loss_type invariant fires on CLI override path
-    # too). Replaces the pre-A.5.3e per-field assignment pattern that only
-    # worked under @dataclass mutability.
+    # Phase A.5.3e (2026-04-24) + A.5.3f.1 hardening (2026-04-24 post-audit):
+    # TrainConfig is a frozen Pydantic BaseModel post-migration; direct field
+    # mutation raises ValidationError. Accumulate CLI overrides into a dict
+    # and apply via TrainConfig.model_copy(update=...) in a single pass —
+    # preserves the SafeBaseModel re-validation contract (cross-field
+    # task_type ↔ loss_type invariant fires on CLI override path too).
+    #
+    # A.5.3f.1 hardening caught by 3-agent audit: the ORIGINAL A.5.3e fix
+    # missed the ``epochs`` field (it sat in a separate if-block before the
+    # batch_size/learning_rate/seed block that was actually migrated).
+    # ``lobtrainer train --epochs 10`` would have raised ValidationError on
+    # every invocation. Now all 4 fields consolidated into ONE override pass.
     _train_overrides: Dict[str, Any] = {}
+    if getattr(args, 'epochs', None) is not None:
+        _train_overrides["epochs"] = args.epochs
     if getattr(args, 'batch_size', None) is not None:
         _train_overrides["batch_size"] = args.batch_size
     if getattr(args, 'learning_rate', None) is not None:

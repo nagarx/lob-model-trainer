@@ -1283,3 +1283,216 @@ class TestCVConfigPydantic:
         cv = CVConfig()
         assert cv.n_splits == 5
         assert cv.embargo_days == 1
+
+
+# =============================================================================
+# Phase A.5.3f.1 post-audit hardening regression locks (2026-04-24).
+#
+# Three-agent audit of A.5.3b-f caught 3 ship-blocker mutation sites (cli.py
+# epochs field, scripts/train.py, scripts/export_signals.py) + 3 test coverage
+# gaps. Mutation sites fixed in the corresponding source files. This class
+# locks the 3 coverage gaps:
+#
+#   1. Pickle round-trip — DataLoader workers spawn subprocesses that pickle
+#      configs under num_workers > 0. Silent crash in worker would be hard
+#      to debug; explicit test here fails loudly at CI time.
+#
+#   2. deepcopy round-trip — CVTrainer._build_fold_config uses copy.deepcopy
+#      on an ExperimentConfig that embeds 6 SafeBaseModel subclasses. If any
+#      deepcopy path is broken by Pydantic internals, per-fold configs would
+#      silently share state.
+#
+#   3. Enum-serialization byte-identity — Pydantic model_dump() output for
+#      Enum fields MUST be the .value string (not the Enum instance), so YAML
+#      round-trips byte-identical + ledger fingerprints stay stable. A
+#      Pydantic v3 migration could silently flip this default; test locks it.
+# =============================================================================
+
+
+class TestPydanticHardeningCoverageGaps:
+    """A.5.3f.1 post-audit regression locks — 3 coverage gaps identified
+    by 3-agent audit (pickle, deepcopy, Enum serialization).
+    """
+
+    def test_pickle_round_trip_all_migrated_classes(self):
+        """All 6 SafeBaseModel subclasses MUST pickle cleanly.
+
+        PyTorch DataLoader workers pickle the config when num_workers > 0
+        (default=4 on TrainConfig). Pickle failure in a worker would be a
+        silent subprocess crash or fallback to main-thread loading —
+        hard to diagnose. This test locks pickle-ability at CI time.
+        """
+        import pickle
+        from lobtrainer.config.schema import (
+            LabelsConfig, SequenceConfig, NormalizationConfig,
+            SourceConfig, TrainConfig, CVConfig,
+        )
+
+        # Each class with representative non-default field values
+        instances = [
+            LabelsConfig(source="forward_prices", task="regression", horizons=[10, 60]),
+            SequenceConfig(window_size=100, stride=5),
+            NormalizationConfig(strategy="zscore_per_day", exclude_features=[93]),
+            SourceConfig(name="mbo", data_dir="/tmp", role="primary", feature_count=98),
+            TrainConfig(batch_size=64, learning_rate=1e-4, epochs=50),
+            CVConfig(n_splits=5, embargo_days=1),
+        ]
+        for cfg in instances:
+            blob = pickle.dumps(cfg)
+            restored = pickle.loads(blob)
+            # Field-equality: model_dump round-trips byte-identical
+            assert restored.model_dump() == cfg.model_dump(), (
+                f"{type(cfg).__name__} pickle round-trip altered fields: "
+                f"orig={cfg.model_dump()}, restored={restored.model_dump()}"
+            )
+            # Type preservation
+            assert type(restored) is type(cfg)
+            # Frozen still applies on restored instance
+            from pydantic import ValidationError
+            with pytest.raises(ValidationError):
+                # Any field assignment on any class MUST raise
+                fields = list(restored.model_dump().keys())
+                if fields:
+                    setattr(restored, fields[0], "mutated_value")
+
+    def test_deepcopy_round_trip_all_migrated_classes(self):
+        """All 6 SafeBaseModel subclasses MUST deepcopy cleanly.
+
+        CVTrainer._build_fold_config at cv_trainer.py:250 uses copy.deepcopy
+        on ExperimentConfig — if any nested Pydantic model fails deepcopy,
+        folds share state silently.
+        """
+        import copy
+        from lobtrainer.config.schema import (
+            LabelsConfig, SequenceConfig, NormalizationConfig,
+            SourceConfig, TrainConfig, CVConfig,
+        )
+        instances = [
+            LabelsConfig(horizons=[10, 60, 300]),
+            SequenceConfig(window_size=100, stride=10),
+            NormalizationConfig(exclude_features=[93]),
+            SourceConfig(name="mbo", data_dir="/tmp"),
+            TrainConfig(),
+            CVConfig(),
+        ]
+        for cfg in instances:
+            restored = copy.deepcopy(cfg)
+            # Same field state
+            assert restored.model_dump() == cfg.model_dump()
+            # Different instance identity
+            assert restored is not cfg, (
+                f"{type(cfg).__name__} deepcopy returned same object — "
+                f"PyDantic internals may be sharing mutable state across "
+                f"what appears to be independent copies."
+            )
+
+    def test_enum_serialization_emits_string_value(self):
+        """Enum fields MUST serialize as string .value in model_dump().
+
+        Critical for:
+        - YAML round-trip byte-identity (YAML writers expect strings,
+          not Enum instances that serialize as `!!python/object:...`)
+        - Ledger fingerprint stability — CompatibilityContract includes
+          normalization_strategy as a string; if model_dump() ever emits
+          the Enum instance instead, sha256 hash rotates and cross-
+          experiment comparability breaks.
+
+        Ship-blocker if broken. Locks Pydantic v2's default StrEnum
+        serialization behavior (these Enums inherit str, so .value
+        equality is tight).
+        """
+        from lobtrainer.config.schema import (
+            NormalizationConfig, NormalizationStrategy,
+            TrainConfig, TaskType, LossType,
+        )
+
+        # NormalizationConfig.strategy
+        nc = NormalizationConfig(strategy=NormalizationStrategy.ZSCORE_PER_DAY)
+        d = nc.model_dump()
+        assert d["strategy"] == "zscore_per_day", (
+            f"NormalizationStrategy did not serialize as string value; "
+            f"got type={type(d['strategy']).__name__}, value={d['strategy']!r}"
+        )
+        # Also verify mode="python" returns string (not .value attr access)
+        assert isinstance(d["strategy"], str)
+
+        # TrainConfig.task_type + loss_type (2 Enum fields)
+        tc = TrainConfig(task_type=TaskType.REGRESSION, loss_type=LossType.HUBER)
+        td = tc.model_dump()
+        assert td["task_type"] == "regression", (
+            f"TaskType did not serialize as string; got {td['task_type']!r}"
+        )
+        assert td["loss_type"] == "huber", (
+            f"LossType did not serialize as string; got {td['loss_type']!r}"
+        )
+        assert isinstance(td["task_type"], str)
+        assert isinstance(td["loss_type"], str)
+
+    def test_yaml_load_horizons_is_tuple_not_list(self):
+        """After YAML load + dacite → LabelsConfig.model_validate path,
+        horizons MUST be a tuple (Pydantic @field_validator(mode="before")
+        coerces list→tuple at parse time).
+
+        Without this lock, a regression that silently reverts
+        horizons to List[int] (dropping the A.5.3a.1 immutability guarantee)
+        would pass all other tests but re-introduce the .append bypass.
+        """
+        import tempfile
+        from pathlib import Path as _Path
+        from lobtrainer.config.schema import ExperimentConfig
+
+        yaml_text = """
+name: tuple_coercion_test
+data:
+  data_dir: "/tmp"
+  feature_count: 98
+  labels:
+    source: forward_prices
+    task: regression
+    horizons: [10, 60, 300]
+    primary_horizon_idx: 0
+model:
+  input_size: 98
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_text)
+            yaml_path = f.name
+        try:
+            cfg = ExperimentConfig.from_yaml(yaml_path)
+            horizons = cfg.data.labels.horizons
+            assert isinstance(horizons, tuple), (
+                f"YAML-loaded horizons is {type(horizons).__name__}, expected tuple. "
+                f"The @field_validator(mode='before') list→tuple coercer on "
+                f"LabelsConfig.horizons may have regressed — this breaks the "
+                f"A.5.3a.1 immutability guarantee."
+            )
+            assert horizons == (10, 60, 300)
+        finally:
+            _Path(yaml_path).unlink()
+
+    def test_apply_overrides_epochs_field_post_a53f1(self):
+        """A.5.3f.1 regression lock for the cli.py --epochs bug discovered by
+        the 3-agent audit. The original A.5.3e cli.py fix missed this field
+        (it was in a separate if-block before the _train_overrides dict).
+        Every ``lobtrainer train --epochs 10`` invocation would have raised.
+        """
+        import argparse
+        from lobtrainer.cli import apply_overrides
+        from lobtrainer.config import ExperimentConfig
+
+        cfg = ExperimentConfig(name="epochs_override_test")
+        args = argparse.Namespace(
+            epochs=42,
+            batch_size=None,
+            learning_rate=None,
+            seed=None,
+            data_dir=None,
+            output_dir=None,
+        )
+        cfg2 = apply_overrides(cfg, args)
+        assert cfg2.train.epochs == 42, (
+            f"cli.py apply_overrides failed to apply --epochs override. "
+            f"Got train.epochs={cfg2.train.epochs}, expected 42."
+        )
+        # Other fields unchanged
+        assert cfg2.train.batch_size == cfg.train.batch_size

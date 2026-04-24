@@ -265,25 +265,40 @@ def _safe_summary(metrics: Any) -> str:
 
 
 def apply_overrides(config: ExperimentConfig, args) -> ExperimentConfig:
-    """Apply command-line overrides to configuration."""
+    """Apply command-line overrides to configuration.
+
+    Phase A.5.3f.1 hardening (2026-04-24): TrainConfig is a frozen Pydantic
+    BaseModel (A.5.3e commit 7c91170). Direct field assignment raises
+    ValidationError. Every ``python scripts/train.py --epochs N`` would
+    have crashed before this fix landed. Accumulate all train overrides
+    into a dict and apply via SafeBaseModel.model_copy(update=...) which
+    re-runs validators (including cross-field task↔loss compatibility).
+
+    ExperimentConfig + DataConfig remain @dataclass through A.5.3g, so
+    ``config.data.data_dir = ...`` and ``config.output_dir = ...`` still
+    work. Those direct mutations will migrate in A.5.3g + A.5.3i
+    respectively.
+    """
+    from typing import Any, Dict
+
     if args.data_dir is not None:
         config.data.data_dir = args.data_dir
-    
+
     if args.output_dir is not None:
         config.output_dir = args.output_dir
-    
+
+    _train_overrides: Dict[str, Any] = {}
     if args.epochs is not None:
-        config.train.epochs = args.epochs
-    
+        _train_overrides["epochs"] = args.epochs
     if args.batch_size is not None:
-        config.train.batch_size = args.batch_size
-    
+        _train_overrides["batch_size"] = args.batch_size
     if args.learning_rate is not None:
-        config.train.learning_rate = args.learning_rate
-    
+        _train_overrides["learning_rate"] = args.learning_rate
     if args.seed is not None:
-        config.train.seed = args.seed
-    
+        _train_overrides["seed"] = args.seed
+    if _train_overrides:
+        config.train = config.train.model_copy(update=_train_overrides)
+
     return config
 
 

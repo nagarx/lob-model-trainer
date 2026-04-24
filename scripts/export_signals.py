@@ -81,9 +81,11 @@ def main():
     # Load config
     config = ExperimentConfig.from_yaml(args.config)
 
-    # Override batch size if specified
+    # Phase A.5.3f.1 hardening (2026-04-24): TrainConfig is a frozen Pydantic
+    # BaseModel (A.5.3e). Direct field mutation raises ValidationError. Use
+    # SafeBaseModel.model_copy(update=...) to re-validate the updated config.
     if args.batch_size is not None:
-        config.train.batch_size = args.batch_size
+        config.train = config.train.model_copy(update={"batch_size": args.batch_size})
 
     # Setup trainer (creates model, normalizer, dataloaders)
     trainer = Trainer(config, callbacks=[])
