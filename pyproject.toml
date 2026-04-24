@@ -44,7 +44,12 @@ dependencies = [
     
     # Configuration
     "pyyaml>=6.0",
-    "dacite>=1.8",  # Dataclass from dict
+    "dacite>=1.8",  # Dataclass from dict (retired in Phase A.5.3i; temp-pinned through migration)
+    # Phase A.5.3a (2026-04-24): Pydantic v2 migration of the config schema
+    # starts with `LabelsConfig` (this commit). Subsequent A.5.3b-i migrate
+    # the remaining 8 config classes; A.5.3i retires dacite entirely. Upper
+    # bound <3.0 protects against Pydantic v3 breaking changes.
+    "pydantic>=2.7,<3.0",
     
     # Visualization
     "matplotlib>=3.7",

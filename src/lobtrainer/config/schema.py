@@ -19,9 +19,15 @@ Usage:
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
-from typing import Optional, List, Tuple, Any, Dict, TYPE_CHECKING
+from typing import Optional, List, Tuple, Any, ClassVar, Dict, TYPE_CHECKING
 import json
 import yaml
+
+# Phase A.5.3a (2026-04-24): Pydantic v2 migration starts with LabelsConfig.
+# Subsequent A.5.3b-i migrate the remaining 8 config classes; A.5.3i retires
+# dacite entirely. Imported at module level because BaseModel base-class
+# declaration must be available at class-definition time (not lazy).
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Phase 8C-α Stage C.1 trainer wire-in (2026-04-20 post-audit round-2):
 # ImportanceConfig cannot be imported at schema.py module-load time —
@@ -216,14 +222,34 @@ class SourceConfig:
             )
 
 
-@dataclass
-class LabelsConfig:
+class LabelsConfig(BaseModel):
     """Unified label specification for training.
 
     Replaces the overlap between DataConfig.labeling_strategy and
     DataConfig.horizon_idx with a single source of truth. Backward
     compatible via auto-derivation in DataConfig.__post_init__; legacy
     fields remain supported with DeprecationWarning.
+
+    **Phase A.5.3a (2026-04-24)**: migrated from ``@dataclass`` to Pydantic
+    v2 ``BaseModel`` with ``frozen=True, extra="forbid"``. Retires four bug
+    classes at the TYPE layer:
+
+        1. Canonical-path-drift (``config.labels`` vs ``config.data.labels``)
+           — Pydantic rejects unknown attribute access natively.
+        2. Silent mutation — ``config.data.labels.task = "..."`` raises
+           ``ValidationError`` (frozen=True).
+        3. Extra-field acceptance — typos like ``horizen_idx`` rejected at
+           ``model_validate`` time (extra="forbid").
+        4. Silent-None field access — Pydantic's ``__init__`` validates
+           required fields at construction, not at first read.
+
+    See ``hft-contracts/tests/fixtures/pre_pydantic_label_strategy_hash.json``
+    for the byte-identity lock across the dataclass→BaseModel migration —
+    ``compute_label_strategy_hash(LabelsConfig())`` must produce the same
+    SHA-256 hash post-migration as the frozen dataclass fixture (verified
+    by ``test_label_strategy_hash_real_pydantic_parity`` in this repo's
+    ``tests/test_config.py`` + the mock-Pydantic parity test in
+    hft-contracts itself).
 
     DESIGN INVARIANT: smoothing_window is NEVER a field on this dataclass.
     It is read exclusively from ForwardPriceContract.smoothing_window_offset,
@@ -258,11 +284,15 @@ class LabelsConfig:
             int >= 0 = single-horizon mode. None = all-horizons / HMHP mode.
     """
 
+    # Pydantic v2 configuration — frozen+extra-forbid retires the 4 bug
+    # classes documented in the class docstring.
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     source: str = "auto"
     return_type: str = "smoothed_return"
     task: str = "auto"
     threshold_bps: float = 8.0
-    horizons: List[int] = field(default_factory=list)
+    horizons: List[int] = Field(default_factory=list)
     primary_horizon_idx: Optional[int] = 0
     sample_weights: str = "none"
     """Sample weighting method to correct for non-IID overlapping labels.
@@ -271,14 +301,38 @@ class LabelsConfig:
       proportional to label concurrency. Corrects for overlapping horizons.
     """
 
-    _VALID_SOURCES = frozenset({"auto", "precomputed", "forward_prices"})
-    _VALID_RETURN_TYPES = frozenset(
+    # v3-A (Phase A.5 Scope D v4) — ``ClassVar[frozenset[str]]`` annotation
+    # is LOAD-BEARING under Pydantic v2. Without it, Pydantic treats these
+    # four constants as model FIELDS and leaks them into ``model_dump()``,
+    # which would break the byte-identity of every stored ``compatibility_
+    # fingerprint`` across the dataclass→BaseModel migration. Regression
+    # locked by ``test_labels_config_class_constants_not_in_model_dump``.
+    _VALID_SOURCES: ClassVar[frozenset[str]] = frozenset(
+        {"auto", "precomputed", "forward_prices"}
+    )
+    _VALID_RETURN_TYPES: ClassVar[frozenset[str]] = frozenset(
         {"smoothed_return", "point_return", "mean_return", "peak_return"}
     )
-    _VALID_TASKS = frozenset({"auto", "regression", "classification"})
-    _VALID_SAMPLE_WEIGHTS = frozenset({"none", "concurrent_overlap"})
+    _VALID_TASKS: ClassVar[frozenset[str]] = frozenset(
+        {"auto", "regression", "classification"}
+    )
+    _VALID_SAMPLE_WEIGHTS: ClassVar[frozenset[str]] = frozenset(
+        {"none", "concurrent_overlap"}
+    )
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def _validate_all(self) -> "LabelsConfig":
+        """Pydantic equivalent of the legacy ``__post_init__``.
+
+        ``mode="after"`` runs on the fully-constructed model, mirroring
+        dataclass ``__post_init__`` semantics. Raises ``ValueError``
+        (automatically wrapped in ``pydantic.ValidationError`` by the
+        framework) on any invariant violation.
+
+        Returning ``self`` is the Pydantic convention — allows chainable
+        post-validation copies via ``model_copy(update=...)`` where
+        needed. We never mutate here (frozen=True would raise anyway).
+        """
         if self.source not in self._VALID_SOURCES:
             raise ValueError(
                 f"LabelsConfig.source must be one of "
@@ -319,6 +373,7 @@ class LabelsConfig:
                 f"{sorted(self._VALID_SAMPLE_WEIGHTS)}, "
                 f"got {self.sample_weights!r}"
             )
+        return self
 
 
 class TaskType(str, Enum):
@@ -1505,6 +1560,23 @@ class ExperimentConfig:
         def _convert(obj: Any) -> Any:
             if isinstance(obj, Enum):
                 return obj.value
+            elif isinstance(obj, BaseModel):
+                # Phase A.5.3a (2026-04-24): Pydantic v2 BaseModel branch
+                # dispatched BEFORE ``__dataclass_fields__``. Critical during
+                # the A.5.3a-f staged migration when a BaseModel child (e.g.
+                # LabelsConfig) is held inside a still-dataclass parent (e.g.
+                # DataConfig); ``dataclasses.asdict`` does NOT recurse into
+                # BaseModel fields (it returns the BaseModel instance as-is),
+                # which would silently leak the instance into to_yaml() /
+                # to_json() output. ``model_dump(exclude_none=False)``
+                # recursively serializes nested BaseModels + returns a plain
+                # dict with canonical field names, matching the output shape
+                # of asdict() on the equivalent dataclass.
+                return {
+                    k: _convert(v)
+                    for k, v in obj.model_dump(exclude_none=False).items()
+                    if not (isinstance(k, str) and k.startswith("_"))
+                }
             elif hasattr(obj, "__dataclass_fields__"):
                 return {
                     k: _convert(v)
@@ -1557,10 +1629,34 @@ class ExperimentConfig:
         # Preprocess data to handle YAML parsing quirks
         data = _normalize_config_types(data)
 
+        # Phase A.5.3a (2026-04-24): Pydantic-migrated classes are NOT
+        # dataclasses, so dacite's dataclass-centric constructor path won't
+        # recognize them. Register ``type_hooks`` that route the raw dict
+        # through ``BaseModel.model_validate`` — which runs Pydantic's
+        # validators + enforces ``extra="forbid"`` + returns a BaseModel
+        # instance that dacite can place into the parent dataclass field
+        # slot. At A.5.3a, only ``LabelsConfig`` is migrated; subsequent
+        # commits A.5.3b-i will extend this table. A.5.3i retires dacite
+        # entirely and uses ``ExperimentConfig.model_validate(data)``
+        # directly.
+        #
+        # Hook is defensive: runs ONLY when the value is a dict (not an
+        # already-constructed BaseModel). This supports callers that
+        # construct nested Pydantic models programmatically before passing
+        # to ExperimentConfig(...) — a pattern in test code.
+        _type_hooks: Dict[type, Any] = {
+            LabelsConfig: lambda d: (
+                LabelsConfig.model_validate(d) if isinstance(d, dict) else d
+            ),
+        }
+
         return from_dict(
             data_class=cls,
             data=data,
-            config=DaciteConfig(cast=[Enum, Path, float, int, bool]),
+            config=DaciteConfig(
+                cast=[Enum, Path, float, int, bool],
+                type_hooks=_type_hooks,
+            ),
         )
 
     @classmethod

@@ -199,3 +199,239 @@ class TestLoadSaveConfig:
         with pytest.raises(ValueError, match="Unsupported config format"):
             load_config("config.txt")
 
+
+# =============================================================================
+# Phase A.5.3a (2026-04-24): LabelsConfig → Pydantic v2 BaseModel migration.
+#
+# Locks 4 bug-class retirements at the TYPE layer:
+#   1. Canonical-path-drift (config.labels vs config.data.labels)
+#   2. Silent mutation (frozen=True)
+#   3. Extra-field acceptance (extra="forbid")
+#   4. Silent-None field access (Pydantic validators fire at construction)
+#
+# Plus the v3-A ClassVar discipline regression — the four class-level
+# frozenset constants MUST NOT leak into model_dump() output (would rotate
+# every post-migration compatibility_fingerprint).
+#
+# Plus byte-identity parity vs the hft-contracts A.5.1 frozen fixture —
+# same logical LabelsConfig content produces the same SHA-256 hash before
+# and after the dacite→Pydantic migration.
+# =============================================================================
+
+
+class TestLabelsConfigPydantic:
+    """A.5.3a Pydantic migration locks.
+
+    See ``LabelsConfig`` class docstring for the full rationale of the 4
+    bug-class retirements. These tests LOCK each layer of the retirement so
+    a future regression (e.g. someone adding a new attribute without
+    ClassVar annotation) surfaces at CI time, not in production.
+    """
+
+    def test_frozen_rejects_mutation(self):
+        """`frozen=True` MUST raise on any field assignment post-construction.
+
+        Retires bug class #2 (silent mutation). Pre-migration dataclass
+        accepted `config.labels.task = "..."` silently.
+        """
+        from lobtrainer.config.schema import LabelsConfig
+        from pydantic import ValidationError
+
+        cfg = LabelsConfig()
+        with pytest.raises(ValidationError):
+            cfg.source = "forward_prices"  # type: ignore[misc]
+        with pytest.raises(ValidationError):
+            cfg.task = "regression"  # type: ignore[misc]
+
+    def test_extra_forbid_rejects_typo(self):
+        """`extra="forbid"` MUST raise on unknown kwargs.
+
+        Retires bug class #3. Pre-migration dacite silently dropped unknown
+        fields, producing a config with ZERO user-intended behavior from
+        the typo'd YAML.
+        """
+        from lobtrainer.config.schema import LabelsConfig
+        from pydantic import ValidationError
+
+        # Common operator typos
+        with pytest.raises(ValidationError, match="horizen_idx|extra"):
+            LabelsConfig(horizen_idx=0)  # type: ignore[call-arg]
+        with pytest.raises(ValidationError):
+            LabelsConfig(soruce="auto")  # type: ignore[call-arg]
+
+    def test_validators_preserved_source_invalid(self):
+        """Legacy `__post_init__` validators must fire under `@model_validator`.
+
+        Pre-migration these were `raise ValueError(...)` in `__post_init__`;
+        post-migration Pydantic wraps them as `ValidationError` but the
+        same invariants hold.
+        """
+        from lobtrainer.config.schema import LabelsConfig
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="source"):
+            LabelsConfig(source="invalid_source_name")
+        with pytest.raises(ValidationError, match="threshold_bps"):
+            LabelsConfig(threshold_bps=-1.0)
+        with pytest.raises(ValidationError, match="horizons"):
+            LabelsConfig(horizons=[0, 1])  # 0 is degenerate
+        with pytest.raises(ValidationError, match="duplicates"):
+            LabelsConfig(horizons=[10, 10])
+        with pytest.raises(ValidationError, match="sample_weights"):
+            LabelsConfig(sample_weights="bogus")
+
+    def test_class_constants_not_in_model_dump(self):
+        """v3-A regression: `ClassVar[frozenset[str]]` constants MUST be
+        excluded from ``model_dump()`` — otherwise they'd appear as model
+        FIELDS, leaking into every stored ``compatibility_fingerprint`` and
+        rotating the hash across the dacite→Pydantic migration.
+
+        This is the ship-blocker for fingerprint byte-identity. See the
+        ``LabelsConfig`` docstring + ``compute_label_strategy_hash`` in
+        hft-contracts for the cross-module coupling.
+        """
+        from lobtrainer.config.schema import LabelsConfig
+
+        cfg = LabelsConfig()
+        dump = cfg.model_dump()
+        forbidden_keys = {
+            "_VALID_SOURCES",
+            "_VALID_RETURN_TYPES",
+            "_VALID_TASKS",
+            "_VALID_SAMPLE_WEIGHTS",
+        }
+        leaked = forbidden_keys & dump.keys()
+        assert not leaked, (
+            f"ClassVar[frozenset] constants leaked into model_dump: {leaked}. "
+            f"The v3-A ClassVar annotation is the fix — without it, Pydantic "
+            f"treats class-level attributes as model fields and they appear "
+            f"in serialized output, breaking compatibility_fingerprint "
+            f"byte-identity across the dataclass→BaseModel migration. "
+            f"Fix: annotate each as `_VALID_X: ClassVar[frozenset[str]] = "
+            f"frozenset({{...}})` in LabelsConfig class body."
+        )
+
+    def test_class_constants_still_accessible_as_class_attrs(self):
+        """Defensive: ``ClassVar`` annotation MUST NOT break class-level
+        attribute access. The 4 constants remain usable by the validator
+        at ``__post_init__`` / ``@model_validator`` run time.
+        """
+        from lobtrainer.config.schema import LabelsConfig
+
+        assert "auto" in LabelsConfig._VALID_SOURCES
+        assert "forward_prices" in LabelsConfig._VALID_SOURCES
+        assert "smoothed_return" in LabelsConfig._VALID_RETURN_TYPES
+        assert "classification" in LabelsConfig._VALID_TASKS
+        assert "concurrent_overlap" in LabelsConfig._VALID_SAMPLE_WEIGHTS
+
+    def test_label_strategy_hash_real_pydantic_parity(self):
+        """Byte-identity lock against the A.5.1 frozen fixture.
+
+        The REAL migrated ``LabelsConfig`` (now BaseModel) MUST produce the
+        same ``compute_label_strategy_hash`` output as the pre-migration
+        dataclass fixture in hft-contracts (generated by the one-off
+        ``generate_pre_migration_snapshots.py`` script on 2026-04-24).
+
+        Ship-blocker: if this test fails, every post-migration
+        ``compatibility_fingerprint`` stored in the hft-ops ledger would
+        rotate silently — breaking
+        ``hft-ops ledger list --compatibility-fp <hex>`` cross-experiment
+        query comparability.
+        """
+        from hft_contracts._testing import require_monorepo_root
+        from hft_contracts.compatibility import compute_label_strategy_hash
+        from lobtrainer.config.schema import LabelsConfig
+        import json as _json
+
+        monorepo_root = require_monorepo_root(
+            "hft-contracts/tests/fixtures/pre_pydantic_label_strategy_hash.json"
+        )
+        fixture_path = (
+            monorepo_root
+            / "hft-contracts"
+            / "tests"
+            / "fixtures"
+            / "pre_pydantic_label_strategy_hash.json"
+        )
+        with open(fixture_path) as f:
+            frozen = _json.load(f)
+        expected_hash = frozen["label_strategy_hash"]
+
+        # Real LabelsConfig with default field values — MUST match the
+        # fixture which was generated from the dataclass mirror with
+        # identical defaults (source="auto", task="auto", horizons=[], ...).
+        real_labels = LabelsConfig()
+        real_hash = compute_label_strategy_hash(real_labels)
+
+        assert real_hash == expected_hash, (
+            f"Real Pydantic LabelsConfig hash {real_hash!r} != "
+            f"frozen dataclass fixture hash {expected_hash!r}. "
+            f"The A.5.3a migration has rotated compatibility_fingerprint. "
+            f"Possible causes: (1) new field added to LabelsConfig without "
+            f"regenerating the fixture; (2) _VALID_* ClassVar annotation "
+            f"missing (leaks class constants into model_dump); (3) model_dump "
+            f"divergence from asdict for some field type. "
+            f"Fixture path: {fixture_path}"
+        )
+
+    def test_labels_config_to_dict_via_experiment_config(self):
+        """Mixed-state to_dict parity: DataConfig (still @dataclass) + nested
+        LabelsConfig (now BaseModel) must serialize cleanly via
+        ``ExperimentConfig.to_dict()``.
+
+        Without the BaseModel branch patch in ``_convert``, the recursive
+        walker would fall through to the passthrough case for BaseModel
+        instances, leaving a raw ``LabelsConfig`` object in the output dict
+        — yaml.dump would then crash with `cannot represent an object` or
+        emit a useless !!python/object tag.
+
+        The patch dispatches to ``model_dump(exclude_none=False)`` BEFORE
+        the dataclass check, producing a clean nested dict.
+        """
+        from lobtrainer.config.schema import (
+            DataConfig,
+            ExperimentConfig,
+            LabelsConfig,
+        )
+
+        ec = ExperimentConfig(
+            name="mixed_state_test",
+            data=DataConfig(
+                feature_count=98,
+                labels=LabelsConfig(
+                    source="forward_prices",
+                    task="regression",
+                    horizons=[10, 60],
+                    primary_horizon_idx=0,
+                ),
+            ),
+        )
+        d = ec.to_dict()
+        # Labels must be a dict (not a raw BaseModel instance).
+        assert isinstance(d["data"]["labels"], dict), (
+            f"labels serialized as {type(d['data']['labels']).__name__}, "
+            f"expected dict. _convert's BaseModel branch isn't firing."
+        )
+        # Key fields present + no Pydantic internals leaked.
+        labels_dict = d["data"]["labels"]
+        assert labels_dict["source"] == "forward_prices"
+        assert labels_dict["task"] == "regression"
+        assert labels_dict["horizons"] == [10, 60]
+        assert labels_dict["primary_horizon_idx"] == 0
+        # Pydantic internals MUST NOT appear anywhere in the nested dict.
+        def _walk(obj):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if isinstance(k, str) and k.startswith("__pydantic_"):
+                        return True
+                    if _walk(v):
+                        return True
+            elif isinstance(obj, list):
+                return any(_walk(item) for item in obj)
+            return False
+        assert not _walk(d), (
+            "Pydantic internals (__pydantic_*) leaked into to_dict output; "
+            "_convert's BaseModel branch should have stripped them via model_dump."
+        )
+        # ClassVar constants MUST NOT appear either.
+        assert "_VALID_SOURCES" not in labels_dict
