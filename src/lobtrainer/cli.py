@@ -130,13 +130,17 @@ def apply_overrides(config: ExperimentConfig, args: argparse.Namespace) -> Exper
     Returns:
         Modified configuration with overrides applied
     """
-    # Data overrides
+    # Phase A.5.3g (2026-04-24): DataConfig is a frozen Pydantic BaseModel
+    # post-migration — direct field mutation raises ValidationError. Same
+    # _train_overrides dict pattern from A.5.3e/f.1 applied to the single
+    # known DataConfig CLI override (`--data-dir`). If future CLI flags
+    # expand, accumulate them here alongside data_dir.
+    _data_overrides: Dict[str, Any] = {}
     if getattr(args, 'data_dir', None) is not None:
-        config.data.data_dir = args.data_dir
-    
-    # Training overrides
-    # (epochs handled via _train_overrides block below — A.5.3f.1 hardening)
-    
+        _data_overrides["data_dir"] = args.data_dir
+    if _data_overrides:
+        config.data = config.data.model_copy(update=_data_overrides)
+
     # Phase A.5.3e (2026-04-24) + A.5.3f.1 hardening (2026-04-24 post-audit):
     # TrainConfig is a frozen Pydantic BaseModel post-migration; direct field
     # mutation raises ValidationError. Accumulate CLI overrides into a dict

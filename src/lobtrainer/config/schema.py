@@ -35,7 +35,11 @@ import yaml
 # so each subsequent migration inherits "fail-fast by default" rather than
 # re-deriving. See lobtrainer.config.base module docstring for the full
 # rationale + 4-bug empirical trace.
-from pydantic import BaseModel, Field, field_validator, model_validator
+# Phase A.5.3g (2026-04-24): + PrivateAttr for DataConfig's resolver caches
+# (_feature_indices_resolved + _feature_set_ref_resolved). PrivateAttr is
+# explicitly designed to be mutable even under frozen=True — correct escape
+# hatch for post-construction state written by an external resolver.
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 from lobtrainer.config.base import SafeBaseModel
 
@@ -734,12 +738,56 @@ class NormalizationConfig(SafeBaseModel):
         return self
 
 
-@dataclass
-class DataConfig:
+class DataConfig(SafeBaseModel):
     """
     Configuration for data loading and preprocessing.
-    
+
     Data is loaded from NumPy arrays exported by the Rust pipeline.
+
+    **Phase A.5.3g (2026-04-24)**: migrated from ``@dataclass`` to Pydantic
+    v2 ``BaseModel`` via shared ``SafeBaseModel`` base — the most complex
+    leaf migration in the Phase A.5 cycle. Composite class holding 4
+    already-migrated SafeBaseModel children (LabelsConfig, SequenceConfig,
+    NormalizationConfig, SourceConfig) plus 2 ``PrivateAttr`` resolver
+    caches.
+
+    Key design decisions (from pre-planning agents):
+
+    1. ``_feature_indices_resolved`` + ``_feature_set_ref_resolved`` use
+       Pydantic ``PrivateAttr()`` — explicitly designed to be mutable
+       even under ``frozen=True``. The resolver at trainer.py:416-419
+       continues to write via direct assignment; NO ``object.__setattr__``
+       needed. Pydantic excludes PrivateAttr from ``model_dump()`` by
+       default, preserving the Phase 4 R3 invariant (caches must NOT leak
+       into YAML round-trip).
+
+    2. ``feature_indices: List[int]`` → ``Tuple[int, ...]`` + pre-validator
+       for list→tuple coercion (A.5.3a.1 pattern applied to the 3rd
+       migrated container field).
+
+    3. ``label_encoding: LabelEncoding`` + ``labeling_strategy: LabelingStrategy``
+       get ``@field_validator(mode="before")`` for string→Enum coercion
+       (NormalizationConfig.strategy pattern / A.5.3c precedent).
+
+    4. T9 labels auto-derivation: when ``labels is None`` the validator
+       constructs a LabelsConfig from legacy fields. Under frozen=True,
+       public field assignment raises — uses ``object.__setattr__`` which
+       is the Pydantic v2-sanctioned escape hatch for in-validator
+       self-mutation (per the Pydantic docs + plan v4 lines 3725, 3740).
+       NOT ``model_copy(update=...)`` which would recursively re-trigger
+       the same validator.
+
+    5. T12 sources validation: exactly-one-primary + unique-names check
+       preserved from @dataclass __post_init__ body — operates on the
+       already-migrated SourceConfig BaseModels.
+
+    6. DeprecationWarning for legacy ``feature_preset``: fires inside
+       ``@model_validator(mode="after")``. Under ``model_copy(update={"feature_preset": "x"})``
+       via SafeBaseModel's override, the warning RE-FIRES — this is
+       correct (user created a new config with deprecated field set).
+
+    Retires same 4 bug classes as other SafeBaseModel subclasses. Adds
+    the nested-BaseModel pattern that A.5.3h/i will reuse.
     """
     
     data_dir: str = "../data/exports/nvda_11month_complete"
@@ -767,10 +815,10 @@ class DataConfig:
     IMPORTANT: Changing this requires also changing model.input_size.
     """
     
-    sequence: SequenceConfig = field(default_factory=SequenceConfig)
+    sequence: SequenceConfig = Field(default_factory=SequenceConfig)
     """Sequence construction configuration."""
-    
-    normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
+
+    normalization: NormalizationConfig = Field(default_factory=NormalizationConfig)
     """Feature normalization configuration."""
     
     label_encoding: LabelEncoding = LabelEncoding.CATEGORICAL
@@ -841,17 +889,29 @@ class DataConfig:
     Note: Either feature_preset OR feature_indices can be set, not both.
     """
     
-    feature_indices: Optional[List[int]] = None
+    feature_indices: Optional[Tuple[int, ...]] = None
     """
     Custom feature indices for selection (optional).
 
     If specified, only these feature indices are passed to the model.
     Requires model.input_size to match len(feature_indices).
 
-    Example: [84, 85, 86, 87, 88] to select only signal features.
+    Example: [84, 85, 86, 87, 88] to select only signal features (YAML
+    list input coerced to tuple via @field_validator(mode="before")).
+
+    Phase A.5.3g (2026-04-24): type changed from ``Optional[List[int]]``
+    to ``Optional[Tuple[int, ...]]`` for true immutability (A.5.3a.1
+    pattern — tuple has no .append, closes the frozen-bypass). YAML
+    loaders emit list; the coercer below converts before strict type
+    check fires. ``sanitize_for_hash`` canonicalizes tuples to lists
+    before hashing so fingerprint byte-identity is preserved.
+
+    Consumer tolerance (verified): trainer.py:416 already wraps in
+    ``list(...)`` when reading; other reads iterate or len-check which
+    works identically on tuple.
 
     Note: At most ONE of {feature_set, feature_indices, feature_preset}
-    may be set (mutual exclusion enforced in __post_init__ — Phase 4
+    may be set (mutual exclusion enforced in _validate_all — Phase 4
     Batch 4c). ``feature_set_per_horizon`` was removed in 4c hardening
     and returns in 4d alongside HMHP ``feature_attention`` activation.
     """
@@ -901,7 +961,7 @@ class DataConfig:
     fallback when unset; used directly when set.
     """
 
-    sources: Optional[List[SourceConfig]] = None
+    sources: Optional[List[SourceConfig]] = Field(default=None)
     """Multi-source configuration (T12). When provided, data is loaded from
     multiple sources and fused at load time. Exactly one source must have
     role='primary'. The existing data_dir field is used as the single source
@@ -918,30 +978,80 @@ class DataConfig:
               role: auxiliary
     """
 
-    # -- Private runtime caches (NOT serialized, NOT user-facing) ------------
+    # -- Private runtime caches (Phase A.5.3g: PrivateAttr pattern) ----------
     # Phase 4 Batch 4c: populated by the FeatureSet resolver at dataloader
     # construction time. Consumers read these INSTEAD of resolving from
-    # `feature_set` every call. Non-init + non-repr so `to_yaml()` /
-    # dataclasses.asdict() do not leak them into the on-disk YAML (the
-    # source of truth stays `feature_set: <name>`, preserving round-trip
-    # fidelity — see Phase 4 R3 "runtime cache, not YAML mutation").
+    # `feature_set` every call.
+    #
+    # Phase A.5.3g (2026-04-24): migrated from dataclass
+    # ``field(default=None, init=False, repr=False, compare=False)`` to
+    # Pydantic ``PrivateAttr(default=None)``. PrivateAttr is EXPLICITLY
+    # designed to be mutable even under ``frozen=True`` — Pydantic
+    # guarantees it is NOT included in ``model_dump()`` (preserving the
+    # Phase 4 R3 "cache MUST NOT leak into YAML round-trip" invariant),
+    # NOT included in ``__eq__`` comparisons, NOT included in ``__init__``
+    # signature (underscore-prefix naming convention), but IS mutable
+    # via direct attribute assignment from external code.
+    #
+    # This is the correct architectural escape hatch for "runtime state
+    # populated post-construction by an external resolver" — the pattern
+    # was absent from the pre-Pydantic @dataclass version but enforced
+    # indirectly via field metadata (init=False, repr=False, compare=False).
 
-    _feature_indices_resolved: Optional[List[int]] = field(
-        default=None, init=False, repr=False, compare=False
-    )
-    """Resolved `feature_set` → list[int] cache. Populated by the trainer's
+    _feature_indices_resolved: Optional[List[int]] = PrivateAttr(default=None)
+    """Resolved ``feature_set`` → list[int] cache. Populated by the trainer's
     feature_set_resolver at dataloader construction. Do NOT read directly
-    from user code — use the public field(s) that drive the semantics."""
+    from user code — use the public field(s) that drive the semantics.
 
-    _feature_set_ref_resolved: Optional[Tuple[str, str]] = field(
-        default=None, init=False, repr=False, compare=False
-    )
+    Phase A.5.3g: list kept (NOT converted to tuple) because the resolver
+    writes the result via ``cfg_data._feature_indices_resolved = list(...)``
+    at trainer.py:416; consumer expects List[int]."""
+
+    _feature_set_ref_resolved: Optional[Tuple[str, str]] = PrivateAttr(default=None)
     """Resolved (name, content_hash) pair for the active FeatureSet.
     Propagated into signal_metadata.json and ExperimentRecord by
     downstream stages so backtest artifacts self-identify the selection
     provenance. None when no feature_set was used."""
 
-    def __post_init__(self) -> None:
+    @field_validator("label_encoding", mode="before")
+    @classmethod
+    def _coerce_label_encoding_string(cls, v: Any) -> Any:
+        """Accept YAML string input under strict=True (A.5.3c pattern)."""
+        if isinstance(v, str):
+            return LabelEncoding(v)
+        return v
+
+    @field_validator("labeling_strategy", mode="before")
+    @classmethod
+    def _coerce_labeling_strategy_string(cls, v: Any) -> Any:
+        """Accept YAML string input under strict=True (A.5.3c pattern)."""
+        if isinstance(v, str):
+            return LabelingStrategy(v)
+        return v
+
+    @field_validator("feature_indices", mode="before")
+    @classmethod
+    def _coerce_feature_indices_to_tuple(cls, v: Any) -> Any:
+        """Accept YAML list input under strict Tuple[int, ...] (A.5.3a.1 pattern)."""
+        if isinstance(v, list):
+            return tuple(v)
+        return v
+
+    @model_validator(mode="after")
+    def _validate_all(self) -> "DataConfig":
+        """Pydantic equivalent of the legacy ``__post_init__``.
+
+        Preserves every invariant from the dataclass version:
+        - feature_count range + standard-value advisory
+        - horizon_idx >= 0 or None
+        - 3-field mutual exclusion on {feature_set, feature_indices, feature_preset}
+        - feature_set shape (non-empty str, no path separators)
+        - feature_preset existence check + DeprecationWarning emission
+        - feature_indices: non-empty + unique + non-negative
+        - T12 sources: exactly-one-primary + unique-names
+        - T9 labels derivation from legacy fields (uses object.__setattr__
+          because direct field assignment raises under frozen=True)
+        """
         # Validate feature_count is reasonable
         # Supported configurations:
         # - 40: Raw LOB only (official TLOB repo, DeepLOB benchmark)
@@ -951,7 +1061,7 @@ class DataConfig:
         # - 116: Full + experimental features (no MLOFI)
         # - 128: Full + all experimental including MLOFI (Kolm 2023)
         VALID_FEATURE_COUNTS = {40, 48, 76, 98, 116, 128}
-        
+
         if self.feature_count < 1:
             raise ValueError(
                 f"feature_count must be >= 1, got {self.feature_count}"
@@ -967,19 +1077,16 @@ class DataConfig:
                 f"Expected one of: {sorted(VALID_FEATURE_COUNTS)}. "
                 "Proceeding anyway, but ensure your export matches this count."
             )
-        
+
         # horizon_idx validation: None is valid for multi-horizon mode
         if self.horizon_idx is not None and self.horizon_idx < 0:
             raise ValueError(
                 f"horizon_idx must be >= 0 or None, got {self.horizon_idx}"
             )
-        
+
         # Feature selection: mutual exclusion across the three user-facing
         # fields (Phase 4 Batch 4c, 2026-04-15). At most ONE of
         # {feature_set, feature_indices, feature_preset} may be set.
-        # Raises immediately if the user (or a _base: merge) produces
-        # more than one — explicit is better than a silent priority-based
-        # precedence.
         _selection_fields = [
             ("feature_set", self.feature_set),
             ("feature_indices", self.feature_indices),
@@ -995,10 +1102,7 @@ class DataConfig:
                 "(e.g., `feature_preset: null` alongside `feature_set: my_v1`)."
             )
 
-        # Validate `feature_set` shape (Phase 4 Batch 4c). The resolver
-        # (feature_set_resolver.resolve_feature_set) does the full
-        # integrity + contract-compat check at dataloader construction
-        # time; here we just catch obviously-wrong values at parse time.
+        # Validate `feature_set` shape (Phase 4 Batch 4c).
         if self.feature_set is not None:
             if not isinstance(self.feature_set, str) or not self.feature_set.strip():
                 raise ValueError(
@@ -1012,11 +1116,7 @@ class DataConfig:
                     f"registry resolver). Got: {self.feature_set!r}"
                 )
 
-        # Validate preset exists (import here to avoid circular imports)
-        # AND emit DeprecationWarning — feature_preset is scheduled for
-        # removal (Phase 4 4-month 3-step deprecation; see
-        # FEATURE_PRESET_DEPRECATION_SCHEDULE in feature_presets.py for
-        # the authoritative timeline).
+        # Validate preset exists AND emit DeprecationWarning (Phase 4 Batch 4c).
         if self.feature_preset is not None:
             from lobtrainer.constants import FEATURE_PRESETS
             from lobtrainer.constants.feature_presets import (
@@ -1048,7 +1148,7 @@ class DataConfig:
                 stacklevel=3,
             )
 
-        # Validate feature_indices if provided
+        # Validate feature_indices if provided (now Tuple[int, ...] post-migration)
         if self.feature_indices is not None:
             if len(self.feature_indices) == 0:
                 raise ValueError("feature_indices cannot be empty")
@@ -1056,7 +1156,6 @@ class DataConfig:
                 raise ValueError("feature_indices contains duplicate values")
             if any(idx < 0 for idx in self.feature_indices):
                 raise ValueError("feature_indices contains negative values")
-            # Note: Upper bound checked at runtime when we know source_feature_count
 
         # T12: validate sources configuration (if provided)
         if self.sources is not None:
@@ -1073,18 +1172,24 @@ class DataConfig:
                 )
 
         # T9: derive labels from legacy fields if user did not provide new config.
-        # DataConfig.__post_init__ runs before ExperimentConfig.__post_init__,
-        # guaranteeing self.labels is non-None when deprecation warnings fire.
+        # Phase A.5.3g (2026-04-24): under frozen=True, direct ``self.labels = ...``
+        # assignment raises. ``object.__setattr__`` is the Pydantic v2-sanctioned
+        # escape hatch for in-validator self-mutation (documented in Pydantic
+        # docs + plan v4). DO NOT use ``self.model_copy(update={"labels": ...})``
+        # here — that would recursively re-trigger _validate_all.
         if self.labels is None:
             if self.labeling_strategy == LabelingStrategy.REGRESSION:
                 derived_task = "regression"
             else:
                 derived_task = "classification"
-            self.labels = LabelsConfig(
+            derived = LabelsConfig(
                 source="auto",
                 task=derived_task,
                 primary_horizon_idx=self.horizon_idx,
             )
+            object.__setattr__(self, "labels", derived)
+
+        return self
 
 
 # =============================================================================
@@ -1643,9 +1748,10 @@ _PYDANTIC_CONFIG_CLASSES: List[type] = [
     NormalizationConfig,  # A.5.3c (commit 52516e5 — first Enum-field class)
     SourceConfig,         # A.5.3d (commit f54a838)
     TrainConfig,          # A.5.3e (commit 7c91170 — 2 Enum fields + cross-field)
-    CVConfig,             # A.5.3f (this commit)
-    # A.5.3g-h append one line each:
-    # DataConfig, ModelConfig — in dependency order.
+    CVConfig,             # A.5.3f (commit 26f6f2a)
+    DataConfig,           # A.5.3g (this commit — composite + PrivateAttr + in-validator derivation)
+    # A.5.3h appends one line:
+    # ModelConfig — final leaf before ExperimentConfig root.
 ]
 
 _PYDANTIC_TYPE_HOOKS: Dict[type, Any] = {

@@ -1285,6 +1285,238 @@ class TestCVConfigPydantic:
         assert cv.embargo_days == 1
 
 
+class TestDataConfigPydantic:
+    """Phase A.5.3g (2026-04-24) regression locks for DataConfig migration.
+
+    DataConfig is the most complex leaf migration in Phase A.5:
+    - Composite holding 4 SafeBaseModel children (LabelsConfig, SequenceConfig,
+      NormalizationConfig, SourceConfig)
+    - 2 PrivateAttr resolver caches (_feature_indices_resolved,
+      _feature_set_ref_resolved) — mutable under frozen, excluded from
+      model_dump AND __eq__ (see SafeBaseModel.__eq__ override).
+    - 2 Enum coercers (labeling_strategy + label_encoding)
+    - 1 Tuple immutability pattern (feature_indices: List → Tuple)
+    - T9 labels auto-derivation via object.__setattr__ (in-validator
+      cross-field self-mutation)
+    - T12 sources exactly-one-primary + unique-names validation
+    - 3-field mutual exclusion (feature_set / feature_indices / feature_preset)
+    - feature_preset DeprecationWarning emission
+    """
+
+    # --- Core hardening (inherited SafeBaseModel semantics) -----------------
+
+    def test_frozen_rejects_mutation(self):
+        """Public field assignment raises ValidationError under frozen=True."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import DataConfig
+        cfg = DataConfig()
+        with pytest.raises(ValidationError):
+            cfg.data_dir = "/somewhere/else"  # type: ignore[misc]
+        with pytest.raises(ValidationError):
+            cfg.feature_count = 40  # type: ignore[misc]
+        with pytest.raises(ValidationError):
+            cfg.feature_set = "foo_v1"  # type: ignore[misc]
+
+    def test_extra_forbid_rejects_typo(self):
+        """Typo ``feature_cont`` (for ``feature_count``) rejected."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import DataConfig
+        with pytest.raises(ValidationError):
+            DataConfig(feature_cont=98)  # type: ignore[call-arg]
+
+    def test_strict_rejects_string_feature_count(self):
+        """Strict mode — string-to-int rejected on feature_count."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import DataConfig
+        with pytest.raises(ValidationError):
+            DataConfig(feature_count="98")  # type: ignore[arg-type]
+
+    def test_strict_rejects_bool_feature_count(self):
+        """Strict mode — bool rejected (no bool-is-int coercion)."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import DataConfig
+        with pytest.raises(ValidationError):
+            DataConfig(feature_count=True)  # type: ignore[arg-type]
+
+    # --- Enum coercion for YAML string input --------------------------------
+
+    def test_labeling_strategy_accepts_yaml_string(self):
+        """YAML ``labeling_strategy: "tlob"`` → LabelingStrategy.TLOB
+        (pre-validator bridge — strict mode would otherwise reject string).
+        """
+        from lobtrainer.config.schema import DataConfig, LabelingStrategy
+        cfg = DataConfig(labeling_strategy="regression")
+        assert cfg.labeling_strategy == LabelingStrategy.REGRESSION
+
+    def test_label_encoding_accepts_yaml_string(self):
+        """YAML ``label_encoding: "binary_up"`` → LabelEncoding.BINARY_UP
+        (pre-validator bridge — strict mode would otherwise reject string).
+        """
+        from lobtrainer.config.schema import DataConfig, LabelEncoding
+        cfg = DataConfig(label_encoding="binary_up")
+        assert cfg.label_encoding == LabelEncoding.BINARY_UP
+
+    def test_labeling_strategy_invalid_string_rejected(self):
+        """Unknown ``labeling_strategy: "bogus"`` rejected — Enum coercer
+        raises when the string is not a valid variant.
+        """
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import DataConfig
+        with pytest.raises(ValidationError):
+            DataConfig(labeling_strategy="bogus_strategy")
+
+    # --- Tuple immutability + list→tuple coercion ---------------------------
+
+    def test_feature_indices_accepts_yaml_list(self):
+        """YAML ``feature_indices: [0, 5, 12]`` coerced to tuple."""
+        from lobtrainer.config.schema import DataConfig
+        cfg = DataConfig(feature_indices=[0, 5, 12])
+        assert cfg.feature_indices == (0, 5, 12)
+        assert isinstance(cfg.feature_indices, tuple)
+
+    def test_feature_indices_is_immutable_post_coercion(self):
+        """After list→tuple coercion, the field IS tuple (no .append)."""
+        from lobtrainer.config.schema import DataConfig
+        cfg = DataConfig(feature_indices=[0, 5, 12])
+        with pytest.raises(AttributeError):
+            cfg.feature_indices.append(99)  # type: ignore[union-attr]
+
+    # --- 3-field mutual exclusion (Phase 4 Batch 4c) ------------------------
+
+    def test_feature_set_plus_indices_rejected(self):
+        """``feature_set`` + ``feature_indices`` both set rejects at construction."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import DataConfig
+        with pytest.raises(ValidationError, match="At most one feature-selection field"):
+            DataConfig(feature_set="foo_v1", feature_indices=[0, 5])
+
+    def test_feature_set_plus_preset_rejected(self):
+        """``feature_set`` + ``feature_preset`` both set rejects."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import DataConfig
+        with pytest.raises(ValidationError, match="At most one feature-selection field"):
+            # Use a preset that exists so we test the mutual-exclusion
+            # check, not the "unknown preset" check.
+            DataConfig(feature_set="foo_v1", feature_preset="short_term_40")
+
+    # --- feature_preset DeprecationWarning (Phase 4 4c) ---------------------
+
+    def test_feature_preset_emits_deprecation_warning(self):
+        """``feature_preset`` still works but emits DeprecationWarning."""
+        from lobtrainer.config.schema import DataConfig
+        with pytest.warns(DeprecationWarning, match="DEPRECATED"):
+            DataConfig(feature_preset="short_term_40")
+
+    # --- T12 sources cross-field validation ---------------------------------
+
+    def test_sources_exactly_one_primary_enforced(self):
+        """T12: sources must have exactly ONE role='primary'."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import DataConfig, SourceConfig
+        # Zero primary
+        with pytest.raises(ValidationError, match="Exactly one source"):
+            DataConfig(sources=[
+                SourceConfig(name="a", data_dir="/a", role="auxiliary"),
+                SourceConfig(name="b", data_dir="/b", role="auxiliary"),
+            ])
+        # Two primary
+        with pytest.raises(ValidationError, match="Exactly one source"):
+            DataConfig(sources=[
+                SourceConfig(name="a", data_dir="/a", role="primary"),
+                SourceConfig(name="b", data_dir="/b", role="primary"),
+            ])
+
+    def test_sources_unique_names_enforced(self):
+        """T12: sources must have unique ``name`` values."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import DataConfig, SourceConfig
+        with pytest.raises(ValidationError, match="Duplicate source names"):
+            DataConfig(sources=[
+                SourceConfig(name="dup", data_dir="/a", role="primary"),
+                SourceConfig(name="dup", data_dir="/b", role="auxiliary"),
+            ])
+
+    # --- T9 labels auto-derivation via object.__setattr__ -------------------
+
+    def test_labels_auto_derived_from_labeling_strategy(self):
+        """When ``labels is None``, T9 validator derives LabelsConfig from
+        legacy fields via ``object.__setattr__`` (in-validator cross-field
+        mutation under frozen=True)."""
+        from lobtrainer.config.schema import DataConfig, LabelingStrategy
+        # Default (tlob) → classification
+        cfg = DataConfig()
+        assert cfg.labels is not None
+        assert cfg.labels.task == "classification"
+        # Regression strategy → regression labels
+        cfg_reg = DataConfig(labeling_strategy="regression")
+        assert cfg_reg.labels is not None
+        assert cfg_reg.labels.task == "regression"
+
+    # --- PrivateAttr semantics (mutable, excluded from dump + eq) -----------
+
+    def test_private_attr_is_mutable_under_frozen(self):
+        """PrivateAttr fields mutable even with frozen=True (Pydantic design)."""
+        from lobtrainer.config.schema import DataConfig
+        cfg = DataConfig(feature_set="foo_v1")
+        # Both resolver writes succeed (resolver pattern at trainer.py:416-417)
+        cfg._feature_indices_resolved = [0, 5, 12]
+        cfg._feature_set_ref_resolved = ("foo_v1", "a" * 64)
+        assert cfg._feature_indices_resolved == [0, 5, 12]
+        assert cfg._feature_set_ref_resolved == ("foo_v1", "a" * 64)
+
+    def test_private_attr_excluded_from_model_dump(self):
+        """PrivateAttr MUST NOT leak into model_dump() — Phase 4 R3 invariant."""
+        from lobtrainer.config.schema import DataConfig
+        cfg = DataConfig(feature_set="foo_v1")
+        cfg._feature_indices_resolved = [0, 5, 12]
+        cfg._feature_set_ref_resolved = ("foo_v1", "a" * 64)
+        dumped = cfg.model_dump()
+        assert "_feature_indices_resolved" not in dumped
+        assert "_feature_set_ref_resolved" not in dumped
+        assert "feature_set" in dumped  # public field IS preserved
+
+    def test_private_attr_excluded_from_eq(self):
+        """PrivateAttr MUST NOT affect __eq__ — Phase 4 R3 "cache is not
+        semantic identity". SafeBaseModel.__eq__ override ensures this."""
+        from lobtrainer.config.schema import DataConfig
+        c1 = DataConfig(feature_set="x_v1")
+        c2 = DataConfig(feature_set="x_v1")
+        c2._feature_indices_resolved = [0, 5, 12]
+        c2._feature_set_ref_resolved = ("x_v1", "a" * 64)
+        assert c1 == c2, (
+            "Cache state must not affect equality — violates Phase 4 R3 "
+            "if two configs with same user fields but different cache state "
+            "compare unequal. See SafeBaseModel.__eq__ override."
+        )
+
+    def test_eq_distinguishes_public_fields(self):
+        """Positive control — __eq__ DOES distinguish public-field changes."""
+        from lobtrainer.config.schema import DataConfig
+        c1 = DataConfig(feature_count=98)
+        c2 = DataConfig(feature_count=40)
+        assert c1 != c2
+
+    # --- Class-level constants (v3-A ClassVar discipline) -------------------
+    #
+    # DataConfig has NO class-level frozenset/Tuple constants. The VALID_* sets
+    # (VALID_FEATURE_COUNTS) live INSIDE ``_validate_all`` as local vars,
+    # NOT class-level — they do not need ClassVar annotation. This test
+    # documents that absence + locks the baseline.
+
+    def test_no_class_constants_leak_into_model_dump(self):
+        """Baseline check — DataConfig has no class-level constants, so
+        model_dump() has only public fields + inherited PrivateAttr exclusion.
+        """
+        from lobtrainer.config.schema import DataConfig
+        cfg = DataConfig()
+        dumped = cfg.model_dump()
+        # No accidental class constants leaking in
+        assert "VALID_FEATURE_COUNTS" not in dumped
+        # Only expected public fields
+        assert "data_dir" in dumped
+        assert "feature_count" in dumped
+
+
 # =============================================================================
 # Phase A.5.3f.1 post-audit hardening regression locks (2026-04-24).
 #

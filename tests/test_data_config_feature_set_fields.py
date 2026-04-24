@@ -282,8 +282,12 @@ class TestToDictFiltersPrivateFields:
     def test_resolved_cache_does_not_leak(self):
         # Simulate the trainer's post-resolve state: user set feature_set,
         # resolver populated the cache. to_dict() must hide the cache.
+        #
+        # Phase A.5.3g (2026-04-24): DataConfig is frozen Pydantic; public
+        # `feature_set` field assignment raises. Construct via model_copy
+        # which re-runs validators; PrivateAttr writes still work as-is.
         cfg = self._make_experiment_config()
-        cfg.data.feature_set = "momentum_v1"
+        cfg.data = cfg.data.model_copy(update={"feature_set": "momentum_v1"})
         cfg.data._feature_indices_resolved = [0, 5, 12, 84, 85]
         cfg.data._feature_set_ref_resolved = ("momentum_v1", "a" * 64)
 
@@ -297,10 +301,14 @@ class TestToDictFiltersPrivateFields:
     def test_yaml_round_trip_preserves_feature_set(self, tmp_path):
         # End-to-end R3: write to YAML, read back, verify the cache
         # state never crosses the serialization boundary.
+        #
+        # Phase A.5.3g (2026-04-24): DataConfig is frozen Pydantic; public
+        # `feature_set` field assignment raises. Use model_copy for the
+        # public setter; PrivateAttr write still works via direct assign.
         from lobtrainer.config import ExperimentConfig
 
         cfg = self._make_experiment_config()
-        cfg.data.feature_set = "test_v1"
+        cfg.data = cfg.data.model_copy(update={"feature_set": "test_v1"})
         cfg.data._feature_indices_resolved = [0, 5, 12]
 
         yaml_path = tmp_path / "roundtrip.yaml"

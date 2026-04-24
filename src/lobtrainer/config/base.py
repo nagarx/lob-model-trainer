@@ -165,6 +165,65 @@ class SafeBaseModel(BaseModel):
         strict=True,
     )
 
+    def __eq__(self, other: object) -> bool:
+        """Exclude ``PrivateAttr`` fields from semantic equality.
+
+        Closes Phase A.5.3g (2026-04-24) behavioral drift: Pydantic v2's
+        default ``__eq__`` compares BOTH ``self.__dict__`` AND
+        ``self.__pydantic_private__`` — including ``PrivateAttr`` fields.
+
+        The legacy ``@dataclass`` pattern this migration replaces used
+        ``field(init=False, repr=False, compare=False)`` for resolver
+        cache fields (DataConfig._feature_indices_resolved +
+        _feature_set_ref_resolved) — explicit ``compare=False`` meant
+        cache state never affected equality. Phase 4 R3 invariant codified
+        this: "the resolver-populated cache is an implementation detail,
+        not part of semantic identity" (test_cache_excluded_from_compare).
+
+        Without this override, two DataConfig instances with IDENTICAL
+        user-facing fields but DIFFERENT cache state (one pre-resolve,
+        one post-resolve) would compare unequal — silently violating R3
+        and breaking downstream dedup / fingerprint caching logic that
+        keys on config equality.
+
+        Design discipline (hft-rules §4 modularity + §0 reuse-first): the
+        override lives on ``SafeBaseModel`` so EVERY subclass inherits
+        correct semantics. Future classes adding PrivateAttr fields do
+        NOT need to re-derive this fix per-class.
+
+        Implementation: compare only ``self.__dict__`` (public fields)
+        and skip ``self.__pydantic_private__``. This matches the
+        ``@dataclass(compare=False)`` semantics exactly.
+
+        Args:
+            other: Object to compare. Must be same concrete subclass —
+                cross-class comparison returns False per Python convention.
+
+        Returns:
+            True iff ``other`` is the same subclass AND all public fields
+            (``self.__dict__``) are equal.
+        """
+        if type(self) is not type(other):
+            return NotImplemented
+        # Pydantic v2 populates self.__dict__ with public field values.
+        # PrivateAttr state lives in self.__pydantic_private__ (excluded here).
+        return self.__dict__ == other.__dict__  # type: ignore[attr-defined]
+
+    def __hash__(self) -> int:
+        """Hashable iff frozen=True.
+
+        Pydantic v2 default auto-generates ``__hash__`` from all fields
+        (public + private). Our ``__eq__`` override excludes private, so
+        we must align ``__hash__`` to hash only public fields — else the
+        invariant ``a == b => hash(a) == hash(b)`` breaks.
+
+        Hashes a sorted tuple of public-field ``(key, repr(value))`` pairs.
+        Uses ``repr`` because some field values (e.g., nested Tuple) are
+        hashable while others (nested dicts / lists, even under frozen)
+        may not be — ``repr`` gives a stable string key for the tuple.
+        """
+        return hash(tuple(sorted((k, repr(v)) for k, v in self.__dict__.items())))
+
     def model_copy(  # type: ignore[override]
         self,
         *,

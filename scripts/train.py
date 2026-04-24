@@ -274,15 +274,19 @@ def apply_overrides(config: ExperimentConfig, args) -> ExperimentConfig:
     into a dict and apply via SafeBaseModel.model_copy(update=...) which
     re-runs validators (including cross-field task↔loss compatibility).
 
-    ExperimentConfig + DataConfig remain @dataclass through A.5.3g, so
-    ``config.data.data_dir = ...`` and ``config.output_dir = ...`` still
-    work. Those direct mutations will migrate in A.5.3g + A.5.3i
-    respectively.
+    Phase A.5.3g (2026-04-24): DataConfig migrated to frozen Pydantic
+    BaseModel. ``config.data.data_dir = ...`` now raises. Same
+    model_copy(update=...) pattern applied to the single DataConfig CLI
+    override (``--data-dir``). ExperimentConfig stays @dataclass through
+    A.5.3i; ``config.output_dir = ...`` still works at this stage.
     """
     from typing import Any, Dict
 
+    _data_overrides: Dict[str, Any] = {}
     if args.data_dir is not None:
-        config.data.data_dir = args.data_dir
+        _data_overrides["data_dir"] = args.data_dir
+    if _data_overrides:
+        config.data = config.data.model_copy(update=_data_overrides)
 
     if args.output_dir is not None:
         config.output_dir = args.output_dir
