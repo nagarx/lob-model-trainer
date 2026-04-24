@@ -66,11 +66,19 @@ class TestSourceConfigValidation:
         assert sc.feature_count == 98
 
     def test_negative_feature_count_raises(self):
-        with pytest.raises(ValueError, match="feature_count"):
+        """Phase A.5.3d (2026-04-24): SourceConfig is now Pydantic BaseModel
+        via SafeBaseModel; `raise ValueError(...)` in @model_validator is
+        auto-wrapped as pydantic.ValidationError. match=substring still fires."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="feature_count"):
             SourceConfig(name="x", data_dir="/tmp", feature_count=-1)
 
     def test_invalid_role_raises(self):
-        with pytest.raises(ValueError, match="primary.*auxiliary"):
+        """Phase A.5.3d: error message now cites sorted(_VALID_ROLES) which
+        places 'auxiliary' BEFORE 'primary' alphabetically. Updated the match
+        pattern to the stable substring 'must be one of'."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="role must be one of"):
             SourceConfig(name="x", data_dir="/tmp", role="bad")
 
 

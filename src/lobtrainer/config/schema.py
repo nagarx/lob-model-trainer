@@ -198,38 +198,51 @@ def _coerce_importance(config: Any) -> None:
     )
 
 
-@dataclass
-class SourceConfig:
+class SourceConfig(SafeBaseModel):
     """Single data source specification (T12).
 
     Used in DataConfig.sources for multi-source fusion.
+
+    **Phase A.5.3d (2026-04-24)**: migrated to SafeBaseModel. No Enum fields,
+    no mutable containers — simplest migration in the cycle after SequenceConfig.
+    ``role`` uses the LabelsConfig-style ``ClassVar[frozenset[str]]`` pattern
+    for discoverable allowed values + v3-A ClassVar-leak regression coverage.
 
     Args:
         name: Unique identifier (e.g., "mbo", "basic").
         data_dir: Path to export directory containing train/val/test/.
         role: "primary" (labels + features) or "auxiliary" (features only).
             Exactly one source must be primary.
+        feature_count: Feature count for this source. 0 = auto-detect at
+            load time. When all sources specify feature_count > 0,
+            model.input_size can be auto-derived as the sum (T13).
     """
 
     name: str = "mbo"
     data_dir: str = ""
     role: str = "primary"
     feature_count: int = 0
-    """Feature count for this source. 0 = auto-detect at load time.
-    When all sources specify feature_count > 0, model.input_size can
-    be auto-derived as the sum (T13)."""
 
-    def __post_init__(self) -> None:
-        if self.role not in ("primary", "auxiliary"):
+    # Phase A.5.3d (2026-04-24): ClassVar[frozenset[str]] annotation is
+    # LOAD-BEARING under Pydantic v2 strict=True. Without it, Pydantic would
+    # treat the constant as a model FIELD and leak it into model_dump(),
+    # polluting YAML round-trips. See v3-A plan amendment + LabelsConfig
+    # precedent (_VALID_SOURCES etc.).
+    _VALID_ROLES: ClassVar[frozenset[str]] = frozenset({"primary", "auxiliary"})
+
+    @model_validator(mode="after")
+    def _validate_all(self) -> "SourceConfig":
+        if self.role not in self._VALID_ROLES:
             raise ValueError(
-                f"SourceConfig.role must be 'primary' or 'auxiliary', "
-                f"got {self.role!r}"
+                f"SourceConfig.role must be one of "
+                f"{sorted(self._VALID_ROLES)}, got {self.role!r}"
             )
         if self.feature_count < 0:
             raise ValueError(
                 f"SourceConfig.feature_count must be >= 0, "
                 f"got {self.feature_count}"
             )
+        return self
 
 
 class LabelsConfig(SafeBaseModel):
@@ -1559,10 +1572,10 @@ class CVConfig:
 _PYDANTIC_CONFIG_CLASSES: List[type] = [
     LabelsConfig,         # A.5.3a (commit 1507b87)
     SequenceConfig,       # A.5.3b (commit f32288f)
-    NormalizationConfig,  # A.5.3c (this commit — first Enum-field class)
-    # A.5.3d-h append one line each:
-    # SourceConfig, TrainConfig, CVConfig, DataConfig, ModelConfig — in
-    # dependency order.
+    NormalizationConfig,  # A.5.3c (commit 52516e5 — first Enum-field class)
+    SourceConfig,         # A.5.3d (this commit)
+    # A.5.3e-h append one line each:
+    # TrainConfig, CVConfig, DataConfig, ModelConfig — in dependency order.
 ]
 
 _PYDANTIC_TYPE_HOOKS: Dict[type, Any] = {

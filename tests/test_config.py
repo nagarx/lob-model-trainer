@@ -998,3 +998,109 @@ class TestNormalizationConfigPydantic:
         cfg2 = cfg.model_copy(update={"strategy": "none"})
         from lobtrainer.config.schema import NormalizationStrategy
         assert cfg2.strategy == NormalizationStrategy.NONE
+
+
+class TestSourceConfigPydantic:
+    """Phase A.5.3d (2026-04-24) regression locks for SourceConfig migration.
+
+    SourceConfig is a simple leaf (4 scalar fields: name, data_dir, role,
+    feature_count) with no Enum, no mutable containers. Uses the
+    LabelsConfig-pattern ``ClassVar[frozenset[str]] _VALID_ROLES`` for
+    role-value discoverability + v3-A ClassVar-leak regression coverage.
+    """
+
+    def test_frozen_rejects_mutation(self):
+        """Field assignment raises ValidationError (inherited from SafeBaseModel)."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import SourceConfig
+        cfg = SourceConfig(name="mbo", data_dir="/tmp", role="primary")
+        with pytest.raises(ValidationError):
+            cfg.name = "different"  # type: ignore[misc]
+
+    def test_extra_forbid_rejects_typo(self):
+        """Typo rejected by extra='forbid' (inherited)."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import SourceConfig
+        with pytest.raises(ValidationError):
+            SourceConfig(nmae="mbo")  # type: ignore[call-arg]
+
+    def test_strict_rejects_string_feature_count(self):
+        """Strict mode — string-to-int rejected (inherited)."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import SourceConfig
+        with pytest.raises(ValidationError):
+            SourceConfig(feature_count="98")  # type: ignore[arg-type]
+
+    def test_strict_rejects_bool_feature_count(self):
+        """bool-to-int rejected (inherited — bug #3 from A.5.3a.1)."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import SourceConfig
+        with pytest.raises(ValidationError):
+            SourceConfig(feature_count=True)  # type: ignore[arg-type]
+
+    def test_invalid_role_rejected(self):
+        """Role must be 'primary' or 'auxiliary' per _VALID_ROLES frozenset."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import SourceConfig
+        with pytest.raises(ValidationError, match="role must be one of"):
+            SourceConfig(role="bogus")
+
+    def test_negative_feature_count_rejected(self):
+        """feature_count must be >= 0 (legacy invariant preserved)."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import SourceConfig
+        with pytest.raises(ValidationError, match="feature_count"):
+            SourceConfig(feature_count=-1)
+
+    def test_class_constant_not_in_model_dump(self):
+        """v3-A ClassVar discipline: _VALID_ROLES annotated as
+        ClassVar[frozenset[str]] MUST be excluded from model_dump output.
+        Without the ClassVar annotation, Pydantic would treat it as a
+        model field, leaking into YAML round-trips."""
+        from lobtrainer.config.schema import SourceConfig
+        cfg = SourceConfig(name="mbo", data_dir="/tmp", role="primary")
+        dump = cfg.model_dump()
+        assert "_VALID_ROLES" not in dump, (
+            f"ClassVar _VALID_ROLES leaked into model_dump: {list(dump.keys())}. "
+            f"Annotation as `ClassVar[frozenset[str]]` is LOAD-BEARING."
+        )
+        # Positive control — legitimate fields ARE in model_dump.
+        assert "role" in dump
+        assert "feature_count" in dump
+
+    def test_class_constant_accessible_as_class_attr(self):
+        """Defensive — ClassVar annotation must NOT break class-attr access."""
+        from lobtrainer.config.schema import SourceConfig
+        assert "primary" in SourceConfig._VALID_ROLES
+        assert "auxiliary" in SourceConfig._VALID_ROLES
+
+    def test_model_copy_revalidates_role(self):
+        """Inherited model_copy override re-runs _validate_all on update,
+        rejecting invalid role mutations."""
+        from pydantic import ValidationError
+        from lobtrainer.config.schema import SourceConfig
+        cfg = SourceConfig(name="mbo", data_dir="/tmp", role="primary")
+        with pytest.raises(ValidationError, match="role must be one of"):
+            cfg.model_copy(update={"role": "bogus"})
+        # Valid update passes
+        cfg2 = cfg.model_copy(update={"role": "auxiliary"})
+        assert cfg2.role == "auxiliary"
+
+    def test_multi_source_via_dataconfig(self):
+        """Integration: SourceConfig held as Optional[List[SourceConfig]] on
+        DataConfig (@dataclass) — mixed-state List[BaseModel] construction.
+
+        Verifies dacite type_hooks correctly route each list item through
+        model_validate (critical for T12 multi-source fusion YAML configs)."""
+        from lobtrainer.config.schema import DataConfig, SourceConfig
+        # Programmatic construction — BaseModel instances in List
+        dc = DataConfig(
+            sources=[
+                SourceConfig(name="mbo", data_dir="/tmp", role="primary", feature_count=98),
+                SourceConfig(name="basic", data_dir="/tmp", role="auxiliary", feature_count=34),
+            ],
+        )
+        assert dc.sources is not None
+        assert len(dc.sources) == 2
+        assert dc.sources[0].role == "primary"
+        assert dc.sources[1].role == "auxiliary"
