@@ -308,13 +308,16 @@ class LogisticBaseline(BaseModel):
     def __init__(self, config: Optional[LogisticBaselineConfig] = None):
         self.config = config or LogisticBaselineConfig()
         
+        # Phase A.5.9 (2026-04-25): `n_jobs=-1` removed. sklearn 1.8+ docs:
+        # "'n_jobs' has no effect since 1.8 and will be removed in 1.10.
+        # You provided 'n_jobs=-1', please leave it unspecified." Behavior
+        # unchanged — sklearn already ignored the argument.
         self._model = LogisticRegression(
             C=self.config.C,
             max_iter=self.config.max_iter,
             solver=self.config.solver,
             class_weight=self.config.class_weight,
             random_state=self.config.random_state,
-            n_jobs=-1,
         )
         self._scaler = StandardScaler() if self.config.normalize else None
         self._fitted = False

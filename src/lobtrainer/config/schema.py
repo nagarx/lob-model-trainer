@@ -2622,5 +2622,19 @@ def save_config(config: ExperimentConfig, path: str) -> None:
 
 _PYDANTIC_CONFIG_CLASSES: List[type] = list(SafeBaseModel._registry)
 """Phase A.5.7a re-export shim. Canonical source is ``SafeBaseModel._registry``
-(auto-populated via ``__pydantic_init_subclass__``). New code should
-reference the canonical location."""
+(auto-populated via ``__pydantic_init_subclass__`` in lobtrainer.config.base).
+
+**IMPORTANT SEMANTIC** (clarified Phase A.5.9, 2026-04-25): this is a
+SNAPSHOT captured at module-load time, NOT a live view. Any subclass
+defined AFTER schema.py import (plugin code, post-import test fixtures
+that don't start with ``_``) will appear in the live
+``SafeBaseModel._registry`` but NOT in this frozen list. For live
+iteration, import ``SafeBaseModel._registry`` directly.
+
+New code should reference the canonical location. This shim exists only
+for pre-Phase-A.5.7a callers that imported ``_PYDANTIC_CONFIG_CLASSES``
+directly. Existing tests + production code have migrated except where
+listed in tests/test_config.py::TestSafeBaseModelRegistry, which
+continues to assert ``len(_PYDANTIC_CONFIG_CLASSES) == 9`` to lock the
+current 9-class snapshot semantic.
+"""
