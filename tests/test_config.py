@@ -2281,3 +2281,252 @@ model:
         )
         # Other fields unchanged
         assert cfg2.train.batch_size == cfg.train.batch_size
+
+
+# =============================================================================
+# Phase A.5.7a (2026-04-25) — SafeBaseModel canonical-form SSoT regression locks
+# =============================================================================
+#
+# Three regression locks for the A.5.7a hardening cycle:
+#
+#   1. SB-1 fix: ``__hash__`` was order-sensitive on dict-typed fields,
+#      while ``__eq__`` (via ``__dict__ ==``) was order-insensitive — silently
+#      violating Python's ``a == b ⇒ hash(a) == hash(b)`` invariant.
+#      Reachable via ``ModelConfig.params: Dict[str, Any]``. Locked by
+#      tests below.
+#
+#   2. HP-2: ``__pydantic_init_subclass__`` auto-registration. Replaces the
+#      hand-maintained ``_PYDANTIC_CONFIG_CLASSES`` list. Registry-completeness
+#      test asserts exactly 9 production classes registered.
+#
+#   3. HP-3: ClassVar discipline. Parametric test walks the auto-registry
+#      and asserts no class leaks ``_``-prefixed keys into ``model_dump()``
+#      — catches a contributor forgetting the ``ClassVar[...]`` annotation
+#      on a class-level constant (which would silently flow into
+#      cross-module fingerprints, rotating every byte-identity hash).
+# =============================================================================
+
+
+def _list_safe_base_model_subclasses():
+    """Helper for parametric tests over ``SafeBaseModel._registry``.
+
+    Imports ``schema`` to ensure all 9 production config classes have been
+    defined (their ``__pydantic_init_subclass__`` hooks fire at definition
+    time, populating the registry). Returns a snapshot list so the
+    parametric expansion is stable even if test fixtures temporarily
+    register additional subclasses (which the hook explicitly excludes
+    via leading-underscore name filter).
+    """
+    from lobtrainer.config import base, schema  # noqa: F401 — populates registry
+    return list(base.SafeBaseModel._registry)
+
+
+class TestSafeBaseModelCanonicalForm:
+    """Phase A.5.7a SB-1 regression locks: ``_canonical_form()`` SSoT.
+
+    Pre-A.5.7a, ``__hash__`` used ``hash(tuple(sorted((k, repr(v)) for ...)))``
+    which was order-sensitive on dict-typed fields like
+    ``ModelConfig.params``. ``__eq__`` (``self.__dict__ == other.__dict__``)
+    was order-insensitive. The mismatch silently violated Python's
+    ``a == b ⇒ hash(a) == hash(b)`` invariant — corrupting any set/dict
+    deduplication using these classes as keys.
+
+    Post-A.5.7a both ``__eq__`` and ``__hash__`` consume the SAME
+    ``_canonical_form()`` (sorted-keys JSON of ``model_dump(mode="json")``).
+    Aligned by SSoT construction; invariant holds structurally.
+    """
+
+    def test_dict_field_insertion_order_invariance_for_hash(self):
+        """SB-1: dict-typed field with same logical content but different
+        insertion order MUST produce the same hash.
+
+        Reachable via ``ModelConfig.params: Dict[str, Any]``. The smoking
+        gun: pre-A.5.7a, ``repr({"a":1,"b":2}) != repr({"b":2,"a":1})``
+        but the dicts compared equal. Hash invariant violated.
+        """
+        from lobtrainer.config.schema import ModelConfig
+
+        mc1 = ModelConfig(model_type="tlob", input_size=98, params={"a": 1, "b": 2})
+        mc2 = ModelConfig(model_type="tlob", input_size=98, params={"b": 2, "a": 1})
+
+        assert mc1 == mc2, (
+            "Dict order-insensitive equality should hold (params dicts "
+            "have same content, different insertion order)."
+        )
+        assert hash(mc1) == hash(mc2), (
+            "Hash MUST be order-insensitive when __eq__ is order-insensitive. "
+            "Pre-A.5.7a: __hash__ used repr() over sorted-key tuple, but "
+            "repr({'a':1,'b':2}) != repr({'b':2,'a':1}). Python's invariant "
+            "a == b ⇒ hash(a) == hash(b) was silently violated. Post-A.5.7a: "
+            "_canonical_form() uses json.dumps(sort_keys=True) on the "
+            "model_dump output — order-independent by construction."
+        )
+
+    def test_set_membership_works_under_order_insensitive_keys(self):
+        """SB-1 invariant in production-realistic context: a set built
+        from ``ModelConfig`` instances with semantically-equal params
+        dicts must have exactly ONE member.
+
+        Pre-A.5.7a: `len({mc1, mc2}) == 2` (broken hash) even though
+        `mc1 == mc2`. Post-A.5.7a: `len({mc1, mc2}) == 1` (correct).
+        """
+        from lobtrainer.config.schema import ModelConfig
+
+        mc1 = ModelConfig(model_type="tlob", input_size=98, params={"a": 1, "b": 2})
+        mc2 = ModelConfig(model_type="tlob", input_size=98, params={"b": 2, "a": 1})
+        s = {mc1, mc2}
+        assert len(s) == 1, (
+            f"Set membership broken — pre-A.5.7a __hash__ ordering bug. "
+            f"Expected len==1, got {len(s)}."
+        )
+
+    def test_eq_excludes_private_attr_via_canonical_form(self):
+        """Phase 4 R3 invariant preserved post-refactor: PrivateAttr fields
+        do NOT affect equality. ``model_dump`` excludes PrivateAttr by
+        default; ``_canonical_form`` is built on ``model_dump`` output ⇒
+        PrivateAttr structurally absent from canonical form."""
+        from lobtrainer.config.schema import DataConfig
+
+        dc1 = DataConfig(feature_set="x_v1")
+        dc2 = DataConfig(feature_set="x_v1")
+        dc2._feature_indices_resolved = [0, 5, 12]
+        dc2._feature_set_ref_resolved = ("x_v1", "a" * 64)
+        assert dc1 == dc2, (
+            "DataConfig equality must exclude PrivateAttr fields "
+            "(Phase 4 R3 invariant — resolver caches are not part of "
+            "semantic identity)."
+        )
+        assert hash(dc1) == hash(dc2)
+
+    def test_canonical_form_is_deterministic_string(self):
+        """``_canonical_form()`` returns a stable JSON string. Same instance
+        called twice returns identical bytes (no nondeterministic key
+        ordering, no timestamp embedding, no UUID drift)."""
+        from lobtrainer.config.schema import LabelsConfig
+
+        lc = LabelsConfig(horizons=[10, 60, 300], primary_horizon_idx=1)
+        cf1 = lc._canonical_form()
+        cf2 = lc._canonical_form()
+        assert cf1 == cf2, "Canonical form must be deterministic"
+        # Sanity: it's actual JSON
+        import json
+        parsed = json.loads(cf1)
+        assert parsed["primary_horizon_idx"] == 1
+
+    def test_canonical_form_excludes_private_attr_field(self):
+        """Direct verification: PrivateAttr value does NOT appear in the
+        canonical form string."""
+        from lobtrainer.config.schema import DataConfig
+
+        dc = DataConfig(feature_set="x_v1")
+        dc._feature_indices_resolved = [0, 5, 12, 84, 85]
+        cf = dc._canonical_form()
+        assert "_feature_indices_resolved" not in cf
+        assert "84, 85" not in cf  # the value bytes don't leak either
+
+
+class TestSafeBaseModelRegistry:
+    """Phase A.5.7a HP-2 + HP-3 regression locks: ``__pydantic_init_subclass__``
+    auto-registration replaces the hand-maintained
+    ``_PYDANTIC_CONFIG_CLASSES`` list.
+    """
+
+    def test_registry_contains_all_9_production_classes(self):
+        """HP-2: registry auto-populates with exactly 9 classes (the
+        production config hierarchy). If a contributor adds a 10th class
+        and this test still expects 9, the test fails — forcing the
+        new class to either (a) be intentionally added to the count or
+        (b) be excluded via leading-underscore name (test fixture)."""
+        from lobtrainer.config.base import SafeBaseModel
+        from lobtrainer.config.schema import (
+            LabelsConfig, SequenceConfig, NormalizationConfig, SourceConfig,
+            TrainConfig, CVConfig, DataConfig, ModelConfig, ExperimentConfig,
+        )
+        # Filter to current concrete classes (test fixtures with leading-
+        # underscore names should already be excluded by the hook itself).
+        production_classes = {
+            cls for cls in SafeBaseModel._registry
+            if not cls.__name__.startswith("_")
+        }
+        expected = {
+            LabelsConfig, SequenceConfig, NormalizationConfig, SourceConfig,
+            TrainConfig, CVConfig, DataConfig, ModelConfig, ExperimentConfig,
+        }
+        assert production_classes == expected, (
+            f"Registry mismatch.\n"
+            f"  Missing from registry: {expected - production_classes}\n"
+            f"  Unexpected in registry: {production_classes - expected}\n"
+            f"If you added a new SafeBaseModel subclass, update this "
+            f"test's `expected` set + the count below."
+        )
+        assert len(production_classes) == 9
+
+    def test_underscore_prefixed_test_fixtures_excluded(self):
+        """HP-2: test fixtures defined inside test methods (with
+        leading-underscore names like ``_FixtureConfig``) are EXCLUDED
+        from the registry. Without this filter, every test method that
+        creates a temporary SafeBaseModel subclass would pollute the
+        production-class count."""
+        from lobtrainer.config.base import SafeBaseModel
+
+        # Force-create a fixture-style subclass; it should NOT appear in the registry.
+        class _TempUnregisteredConfig(SafeBaseModel):
+            x: int = 0
+
+        registered_names = {cls.__name__ for cls in SafeBaseModel._registry}
+        assert "_TempUnregisteredConfig" not in registered_names, (
+            "Underscore-prefixed test fixture leaked into the registry. "
+            "Check `__pydantic_init_subclass__` filter in base.py."
+        )
+
+    def test_pydantic_config_classes_shim_matches_registry(self):
+        """A.5.7a back-compat: ``schema._PYDANTIC_CONFIG_CLASSES`` is a
+        re-export shim of ``SafeBaseModel._registry``. Any external code
+        that imported the hand-list must continue to work — this lock
+        catches a regression where the shim drifts from the registry."""
+        from lobtrainer.config.base import SafeBaseModel
+        from lobtrainer.config.schema import _PYDANTIC_CONFIG_CLASSES
+
+        # Filter both to production classes for stability under test-fixture pollution
+        registry_prod = [
+            cls for cls in SafeBaseModel._registry
+            if not cls.__name__.startswith("_")
+        ]
+        shim_prod = [
+            cls for cls in _PYDANTIC_CONFIG_CLASSES
+            if not cls.__name__.startswith("_")
+        ]
+        assert set(shim_prod) == set(registry_prod), (
+            "Re-export shim drifted from canonical SafeBaseModel._registry."
+        )
+
+    @pytest.mark.parametrize(
+        "cls",
+        _list_safe_base_model_subclasses(),
+        ids=lambda c: c.__name__,
+    )
+    def test_no_underscore_prefixed_keys_in_model_dump(self, cls):
+        """HP-3: ClassVar discipline. No production class should emit
+        ``_``-prefixed keys in its ``model_dump()`` output.
+
+        Why this matters: class-level constants (e.g., LabelsConfig's
+        ``_VALID_SOURCES``) MUST be annotated as ``ClassVar[...]`` to be
+        recognized by Pydantic as constants rather than fields. Without
+        the annotation, Pydantic v2 treats them as mutable fields ⇒
+        they leak into ``model_dump()`` ⇒ they appear in serialized
+        configs ⇒ they corrupt cross-module fingerprint byte-identity
+        (every fingerprint hash rotates).
+
+        Parametric over ALL 9 SafeBaseModel subclasses. A new class added
+        to the registry (via auto-registration) is automatically covered.
+        """
+        instance = cls()  # all 9 classes have all-defaults working construction
+        dumped = instance.model_dump()
+        leaked = [k for k in dumped if isinstance(k, str) and k.startswith("_")]
+        assert not leaked, (
+            f"{cls.__name__}.model_dump() leaked private/class-constant key(s): {leaked}.\n"
+            f"  - If it's a class-level constant: annotate as `ClassVar[...]`\n"
+            f"  - If it's runtime-only state: use `PrivateAttr()`\n"
+            f"Phase A.5.7a HP-3 lock: this regression silently rotates "
+            f"every cross-module fingerprint hash."
+        )

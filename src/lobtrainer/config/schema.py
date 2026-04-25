@@ -2598,33 +2598,29 @@ def save_config(config: ExperimentConfig, path: str) -> None:
 
 
 # =============================================================================
-# Migrated-class registry (Phase A.5.3i relocation)
+# Migrated-class registry (Phase A.5.3i relocation; Phase A.5.7a re-export shim)
 # =============================================================================
 #
-# Placed AFTER ``ExperimentConfig`` (forward-reference impossible earlier
-# in module load order — the registry would reference an undefined name).
-# The registry is retained post-dacite-retirement as:
+# Phase A.5.7a (2026-04-25): the hand-maintained list was retired in favor
+# of ``SafeBaseModel._registry`` which auto-populates via
+# ``__pydantic_init_subclass__``. The hand-list created a silent-coverage-
+# gap risk: a contributor adding a new SafeBaseModel subclass had to manually
+# append, otherwise parametric coverage tests (pickle/deepcopy/ClassVar
+# discipline) would silently exclude the new class.
 #
-#   - **Parametrized regression-test target** — ``TestPydanticHardeningCoverageGaps``
-#     in test_config.py iterates this list for pickle/deepcopy round-trip
-#     sweeps. Every migrated class gets uniform cross-class coverage.
-#   - **Audit / discovery aid** — ``grep _PYDANTIC_CONFIG_CLASSES`` is a
-#     single-query "which classes use SafeBaseModel?" — future contributors
-#     are reminded via this grep that the pattern is convention.
+# This module-level binding is now a RE-EXPORT SHIM for back-compat with any
+# external/internal code that imported ``_PYDANTIC_CONFIG_CLASSES`` directly.
+# Reads the auto-populated registry from SafeBaseModel — single source of
+# truth at this point in module load order (all 9 classes have already
+# been defined above; their ``__pydantic_init_subclass__`` invocations
+# populated the registry).
 #
 # ``_PYDANTIC_TYPE_HOOKS`` (ex-dacite bridge table) retired in A.5.3i —
-# ``ExperimentConfig.from_dict`` now delegates to ``cls.model_validate(data)``
+# ``ExperimentConfig.from_dict`` delegates to ``cls.model_validate(data)``
 # which handles nested BaseModel construction natively.
 # =============================================================================
 
-_PYDANTIC_CONFIG_CLASSES: List[type] = [
-    LabelsConfig,         # A.5.3a (commit 1507b87)
-    SequenceConfig,       # A.5.3b (commit f32288f)
-    NormalizationConfig,  # A.5.3c (commit 52516e5 — first Enum-field class)
-    SourceConfig,         # A.5.3d (commit f54a838)
-    TrainConfig,          # A.5.3e (commit 7c91170 — 2 Enum fields + cross-field)
-    CVConfig,             # A.5.3f (commit 26f6f2a)
-    DataConfig,           # A.5.3g (commit dd23333 — composite + PrivateAttr + in-validator derivation)
-    ModelConfig,          # A.5.3h (commit dd2bf20 — last leaf; Enum + nested tuple + params self-mutation)
-    ExperimentConfig,     # A.5.3i (this commit — KEYSTONE; dacite retired; closes A.5 Scope D)
-]
+_PYDANTIC_CONFIG_CLASSES: List[type] = list(SafeBaseModel._registry)
+"""Phase A.5.7a re-export shim. Canonical source is ``SafeBaseModel._registry``
+(auto-populated via ``__pydantic_init_subclass__``). New code should
+reference the canonical location."""

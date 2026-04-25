@@ -105,7 +105,8 @@ Scope D v4 (see "Phase A.5.3b" + the A.5.3a.1 hardening round summary).
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+import json
+from typing import Any, ClassVar, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -165,64 +166,159 @@ class SafeBaseModel(BaseModel):
         strict=True,
     )
 
-    def __eq__(self, other: object) -> bool:
-        """Exclude ``PrivateAttr`` fields from semantic equality.
+    # =========================================================================
+    # Phase A.5.7a (2026-04-25) — auto-populated subclass registry
+    # =========================================================================
+    #
+    # Replaces the hand-maintained ``_PYDANTIC_CONFIG_CLASSES`` list at
+    # ``schema.py`` end-of-file (now a re-export shim). Eliminates the
+    # silent-coverage-gap risk: previously, a contributor adding a new
+    # ``SafeBaseModel`` subclass had to manually append it to the list,
+    # otherwise parametric coverage tests (pickle / deepcopy / ClassVar
+    # discipline) would silently exclude it.
+    #
+    # Hook choice — ``__pydantic_init_subclass__`` (NOT ``__init_subclass__``):
+    # Pydantic v2 reserves ``__init_subclass__`` for its metaclass machinery
+    # (per Pydantic v2 docs). Subclassing hook for user code is
+    # ``__pydantic_init_subclass__``, called AFTER the class is fully
+    # initialized by ``ModelMetaclass``.
+    #
+    # Test-fixture exclusion: the hook skips classes with leading-underscore
+    # names (e.g., ``_FixtureConfig`` defined inside test methods). Every
+    # production config class is PascalCase without leading underscore.
+    #
+    # Mutability concern: ``_registry`` is a class-level mutable list shared
+    # across the SafeBaseModel hierarchy. Test code that imports schema.py
+    # gets a populated registry by class-definition time; pytest's
+    # ``@pytest.mark.parametrize`` evaluates registry contents at test-
+    # collection time (before any test method runs), guaranteeing stable
+    # parametrization over the 9 production classes.
+    # =========================================================================
 
-        Closes Phase A.5.3g (2026-04-24) behavioral drift: Pydantic v2's
-        default ``__eq__`` compares BOTH ``self.__dict__`` AND
-        ``self.__pydantic_private__`` — including ``PrivateAttr`` fields.
+    _registry: ClassVar[List[type]] = []
+    """Auto-populated list of concrete SafeBaseModel subclasses (production
+    config classes only — test fixtures with leading-underscore names are
+    excluded). Used by parametric coverage tests in tests/test_config.py
+    (TestPydanticHardeningCoverageGaps) so a new class added to the
+    hierarchy is automatically covered by pickle/deepcopy/ClassVar
+    discipline tests with zero manual registration."""
 
-        The legacy ``@dataclass`` pattern this migration replaces used
-        ``field(init=False, repr=False, compare=False)`` for resolver
-        cache fields (DataConfig._feature_indices_resolved +
-        _feature_set_ref_resolved) — explicit ``compare=False`` meant
-        cache state never affected equality. Phase 4 R3 invariant codified
-        this: "the resolver-populated cache is an implementation detail,
-        not part of semantic identity" (test_cache_excluded_from_compare).
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        """Auto-register concrete subclasses (Phase A.5.7a).
 
-        Without this override, two DataConfig instances with IDENTICAL
-        user-facing fields but DIFFERENT cache state (one pre-resolve,
-        one post-resolve) would compare unequal — silently violating R3
-        and breaking downstream dedup / fingerprint caching logic that
-        keys on config equality.
+        Called by Pydantic's ``ModelMetaclass`` AFTER the subclass is fully
+        initialized. Production config classes are PascalCase
+        (LabelsConfig, ModelConfig, ...); test fixtures use
+        leading-underscore names (_FixtureConfig). Only the former are
+        added to the registry.
 
-        Design discipline (hft-rules §4 modularity + §0 reuse-first): the
-        override lives on ``SafeBaseModel`` so EVERY subclass inherits
-        correct semantics. Future classes adding PrivateAttr fields do
-        NOT need to re-derive this fix per-class.
+        Always calls ``super().__pydantic_init_subclass__(**kwargs)`` to
+        chain into Pydantic internals (cooperative inheritance).
+        """
+        super().__pydantic_init_subclass__(**kwargs)
+        # Skip test fixtures (leading-underscore convention). Production
+        # config classes are PascalCase without leading underscore.
+        if not cls.__name__.startswith("_"):
+            SafeBaseModel._registry.append(cls)
 
-        Implementation: compare only ``self.__dict__`` (public fields)
-        and skip ``self.__pydantic_private__``. This matches the
-        ``@dataclass(compare=False)`` semantics exactly.
+    # =========================================================================
+    # Phase A.5.7a (2026-04-25) — _canonical_form() SSoT
+    # =========================================================================
+    #
+    # Single canonical-form computation feeds BOTH ``__eq__`` and ``__hash__``,
+    # eliminating the order-sensitivity bug in the prior ``__hash__`` impl
+    # (hash used ``repr(v)`` over sorted-key tuple; for dict-typed fields
+    # like ``ModelConfig.params``, ``repr({"a":1,"b":2}) != repr({"b":2,"a":1})``
+    # but ``__eq__`` via ``self.__dict__ == other.__dict__`` IS dict
+    # order-insensitive — violating Python's invariant
+    # ``a == b ⇒ hash(a) == hash(b)``).
+    #
+    # The fix: serialize via ``model_dump(mode="json")`` + ``json.dumps``
+    # with ``sort_keys=True``. Pydantic's ``model_dump(mode="json")``
+    # recursively converts:
+    #   - Enum instances → .value strings
+    #   - Tuples → JSON arrays (lists)
+    #   - PrivateAttr fields → EXCLUDED (Pydantic default)
+    # Combined with ``sort_keys=True``, dict insertion-order independence
+    # is structural, not coincidental.
+    #
+    # Performance: ~50µs per ExperimentConfig serialize. Config equality
+    # / hashing is NOT in any hot path; acceptable.
+    #
+    # PrivateAttr exclusion (Phase 4 R3 invariant) is preserved: Pydantic's
+    # ``model_dump`` excludes PrivateAttr by default, so resolver caches
+    # like ``DataConfig._feature_indices_resolved`` do NOT affect either
+    # ``__eq__`` or ``__hash__`` — semantic identity remains driven by
+    # public fields only.
+    # =========================================================================
 
-        Args:
-            other: Object to compare. Must be same concrete subclass —
-                cross-class comparison returns False per Python convention.
+    def _canonical_form(self) -> str:
+        """SSoT canonical form for both ``__eq__`` and ``__hash__``.
+
+        Returns a JSON string with sorted keys, recursively canonicalized
+        via ``model_dump(mode="json")``:
+
+          - Enum instances → ``.value`` strings (byte-stable across
+            module-load orderings)
+          - Tuples → JSON arrays (matches Pydantic-strict tuple-coercion
+            invariant: post-construction sequence fields are tuples, but
+            JSON has no native tuple type)
+          - Dicts → sorted-key JSON objects (insertion-order independent)
+          - PrivateAttr → EXCLUDED (Pydantic default; matches Phase 4 R3
+            invariant that resolver caches are not part of semantic identity)
+
+        Used by ``__eq__`` for canonical-form comparison and by ``__hash__``
+        for hash derivation. Both consume the SAME canonical form ⇒
+        Python's ``a == b ⇒ hash(a) == hash(b)`` invariant holds by
+        construction.
 
         Returns:
-            True iff ``other`` is the same subclass AND all public fields
-            (``self.__dict__``) are equal.
+            A canonical JSON string. Same logical content always produces
+            the same string regardless of dict insertion order, Enum
+            module-load order, or tuple-vs-list ambiguity post-coercion.
+        """
+        return json.dumps(self.model_dump(mode="json"), sort_keys=True)
+
+    def __eq__(self, other: object) -> bool:
+        """Equality via canonical-form comparison (Phase A.5.7a SSoT).
+
+        Compares the canonical JSON form (PrivateAttr-excluded, sorted-keys,
+        Enum-as-string, tuple-as-list). Aligned with ``__hash__`` by
+        construction — both consume ``_canonical_form()``.
+
+        Phase 4 R3 invariant preserved: resolver-cache PrivateAttr fields
+        (``DataConfig._feature_indices_resolved``, ``_feature_set_ref_resolved``)
+        do NOT affect equality (Pydantic's ``model_dump`` excludes them).
+
+        Args:
+            other: Object to compare. Must be the same concrete subclass —
+                cross-class comparison returns NotImplemented per Python
+                convention; Python falls back to ``other.__eq__(self)``
+                which returns NotImplemented in turn ⇒ False.
+
+        Returns:
+            True iff ``other`` is the same subclass AND its canonical form
+            equals ``self``'s canonical form.
         """
         if type(self) is not type(other):
             return NotImplemented
-        # Pydantic v2 populates self.__dict__ with public field values.
-        # PrivateAttr state lives in self.__pydantic_private__ (excluded here).
-        return self.__dict__ == other.__dict__  # type: ignore[attr-defined]
+        return self._canonical_form() == other._canonical_form()  # type: ignore[attr-defined]
 
     def __hash__(self) -> int:
-        """Hashable iff frozen=True.
+        """Hash via canonical form (Phase A.5.7a SSoT).
 
-        Pydantic v2 default auto-generates ``__hash__`` from all fields
-        (public + private). Our ``__eq__`` override excludes private, so
-        we must align ``__hash__`` to hash only public fields — else the
-        invariant ``a == b => hash(a) == hash(b)`` breaks.
+        Closes the order-sensitivity bug in the prior implementation:
+        previously hashed ``repr(v)`` over sorted-key tuple, which produced
+        DIFFERENT hashes for dicts with same content but different
+        insertion order — while ``__eq__`` (via ``__dict__ ==``) returned
+        True. This violated Python's ``a == b ⇒ hash(a) == hash(b)``
+        invariant.
 
-        Hashes a sorted tuple of public-field ``(key, repr(value))`` pairs.
-        Uses ``repr`` because some field values (e.g., nested Tuple) are
-        hashable while others (nested dicts / lists, even under frozen)
-        may not be — ``repr`` gives a stable string key for the tuple.
+        Post-A.5.7a: hash IS the canonical form's hash. Aligned with
+        ``__eq__`` by SSoT construction.
         """
-        return hash(tuple(sorted((k, repr(v)) for k, v in self.__dict__.items())))
+        return hash(self._canonical_form())
 
     def model_copy(  # type: ignore[override]
         self,
