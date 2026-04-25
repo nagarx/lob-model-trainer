@@ -76,8 +76,14 @@ ship-blocker-class bugs in the naive Pydantic v2 defaults:
         break invariants: change to ``Tuple[..., ...]`` + add
         ``@field_validator(mode="before")`` for list→tuple coercion
         (YAML input compatibility)
-    [ ] Add class to ``schema._PYDANTIC_CONFIG_CLASSES`` registry —
-        auto-populates dacite's ``type_hooks`` table.
+    [ ] Auto-registration is handled by ``SafeBaseModel.__pydantic_init_subclass__``
+        (see class body below) — every non-``_``-prefixed subclass
+        auto-populates ``SafeBaseModel._registry``. The
+        ``schema._PYDANTIC_CONFIG_CLASSES`` re-export shim reads the
+        registry at module-load time. NO MANUAL registration needed.
+        (Phase A.5.7a: dacite ``type_hooks`` table retired in A.5.3i —
+        Pydantic v2 ``model_validate`` constructs nested BaseModels
+        natively without a bridge table.)
 
 Design gate analysis (hft-rules §0-§14):
 

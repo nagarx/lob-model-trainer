@@ -38,8 +38,23 @@ Usage:
     >>> lob_indices = get_feature_preset("lob_only")
     >>> full_indices = get_feature_preset("full")
     >>>
-    >>> # Use in config
-    >>> config.model.feature_indices = get_feature_preset("signals_core")
+    >>> # Use in config — direct field mutation crashes under Pydantic
+    >>> # frozen=True (Phase A.5.3i, 2026-04-24 KEYSTONE). Two patterns:
+    >>> #
+    >>> # (a) Re-fire validators on user-data path (RECOMMENDED for
+    >>> #     external callers — catches invalid feature_indices):
+    >>> config = ExperimentConfig.model_validate({
+    ...     **config.model_dump(),
+    ...     "model": {**config.model.model_dump(),
+    ...               "feature_indices": get_feature_preset("signals_core")},
+    ... })
+    >>> #
+    >>> # (b) Skip validators (FASTER; safe INSIDE validators only —
+    >>> #     state is already validated):
+    >>> new_model = config.model.model_copy(
+    ...     update={"feature_indices": get_feature_preset("signals_core")}
+    ... )
+    >>> config = config.model_copy(update={"model": new_model})
 """
 
 # Phase 4 Batch 4c (2026-04-15): single source of truth for the

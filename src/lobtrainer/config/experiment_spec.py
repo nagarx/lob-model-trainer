@@ -82,7 +82,10 @@ class ExperimentSpec:
     All fields mirror the ExperimentConfig hierarchy but are stored as
     plain dicts for flexible YAML parsing. The ``to_experiment_config()``
     method passes them through ``ExperimentConfig.from_dict()`` which
-    handles all dataclass construction via dacite.
+    wraps ``cls.model_validate(data)`` — Pydantic v2 handles nested
+    BaseModel construction natively (dacite retired in Phase A.5.3i,
+    2026-04-24 KEYSTONE; every sub-config's field + model validators
+    fire as part of the single ``model_validate`` call).
     """
 
     experiment: ExperimentMetadata = field(
@@ -157,7 +160,10 @@ class ExperimentSpec:
         """Convert to a standard ExperimentConfig for Trainer/CVTrainer.
 
         Builds a dict matching the ExperimentConfig.from_dict() schema
-        and delegates to dacite for full dataclass construction.
+        and delegates to ``ExperimentConfig.from_dict`` which wraps
+        ``cls.model_validate(data)`` — Pydantic v2 constructs every
+        nested BaseModel sub-config natively (dacite retired in
+        Phase A.5.3i, 2026-04-24 KEYSTONE).
 
         Returns:
             ExperimentConfig ready for Trainer(config).
