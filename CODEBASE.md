@@ -1,12 +1,20 @@
 # LOB-Model-Trainer: Codebase Technical Reference
 
-> **Version**: 0.4.0  
-> **Schema**: 2.2 (via `hft-contracts` package)  
-> **Tests**: 1183 collected (1118 passed + 65 skipped) — Phase 8C-α Integration Close-Out adds trainer wire-in: `PermutationImportanceCallback` (16 new callback unit tests) + `ImportanceConfig` field on `ExperimentConfig` via `_coerce_importance` (breaks schema.py ↔ training.importance.config circular) + `configs/bases/train/importance_default.yaml` partial base fragment  
-> **Last Updated**: 2026-04-20 (Phase 8C-α Integration Close-Out — Q7 trainer wire-in COMPLETE: `PermutationImportanceCallback` at `training/importance/callback.py` auto-registered by `train_from_config` when `config.importance is not None`; `make_pytorch_predict_fn` / `make_metric_fn_for_task` / `_extract_eval_tensors` factories; graceful-failure (observation-tier errors log+swallow, do NOT kill training); preserves Stage C.1 + 2-round post-audit: `compute_permutation_importance` pure function + `ImportanceConfig` + `block_length_samples` rename + RNG decorrelation + NaN-baseline fail-loud + failed-seed drop + degenerate-block guard)  
+> **Version**: 0.7.0 (Phase A.5 Scope D v2 Pydantic migration — 2026-04-25)  
+> **Schema**: 2.2 (via `hft-contracts` package, v2.3.0 runtime dep)  
+> **Tests**: 1434 collected (1369 passed + 65 skipped) — Phase A.5 Scope D v2 adds 9 Pydantic-migration commits (A.5.3a-i) + 3 post-audit commits (A.5.7a-c): SafeBaseModel base class with `_canonical_form()` SSoT + `__pydantic_init_subclass__` auto-registry (`config/base.py`); parametric pickle/deepcopy/partial-base-rejection tests over auto-registry; full `Trainer.setup() + SignalExporter.export()` integration test in `tests/test_signal_exporter_integration.py` (`@pytest.mark.integration`); `LabelsConfig.validate_primary_horizon_idx_for()` bounds-validation method; `CalibrationContext` TypedDict.  
+> **Last Updated**: 2026-04-25 (Phase A.5 Scope D v2 — Pydantic v2 migration COMPLETE: all 9 config classes inherit from `SafeBaseModel(BaseModel)` with `ConfigDict(frozen=True, extra="forbid", strict=True, validate_assignment=True, arbitrary_types_allowed=True)`; `dacite>=1.8` DROPPED; `pydantic>=2.7,<3.0` pinned with explicit upper bound; `hatchling>=1.26` build-constraint. Four bug classes retired at TYPE layer: canonical-path-drift, silent mutation, extra-field acceptance, silent-None field access. 5-agent adversarial audit (A.5.7a-c) closed 4 ship-blockers (SB-1 canonical-form SSoT, SB-2 composite pickle/deepcopy, SB-3 full Trainer+export integration, SB-4 parametric partial-base rejection). See CHANGELOG.md v0.7.0 + `/contracts/pipeline_contract.toml` v2.16 + `/PIPELINE_ARCHITECTURE.md` §11 Configuration System Architecture.)  
 > **Purpose**: Complete technical reference for LLMs and developers to understand, modify, and extend the codebase.
 >
 > **Scope**: This library focuses solely on **model training**. For dataset analysis, use `lob-dataset-analyzer`.
+>
+> **New in 0.7.0 (Phase A.5 Scope D v2, 2026-04-24→2026-04-25)**:
+> - Pydantic v2 migration of all 9 config classes — `SafeBaseModel` base class at `src/lobtrainer/config/base.py` with `frozen=True, extra="forbid", strict=True`; dacite dropped; Pydantic v2 subsumes all coercion patterns. Four bug classes retired at the TYPE layer (canonical-path-drift, silent mutation, extra-field acceptance, silent-None field access).
+> - `_canonical_form()` SSoT aligns `__eq__` + `__hash__` per Python invariant; `__pydantic_init_subclass__` auto-registry replaces hand-maintained `_PYDANTIC_CONFIG_CLASSES` list (5-agent adversarial audit closed 4 ship-blockers SB-1..SB-4 + 3 HP items).
+> - New SSoT method `LabelsConfig.validate_primary_horizon_idx_for(n_horizons)` — bounds-validation co-located with data owner; fail-loud on negative (no silent last-column selection) or out-of-bounds; consumed by 4 exporter.py slicing sites + callback.py.
+> - New `CalibrationContext(TypedDict, total=False)` inline in `variance.py` — typed calibration provenance context; extension point for Phase B calibrators.
+> - Full `Trainer.setup() + SignalExporter.export()` integration test in `tests/test_signal_exporter_integration.py` (`@pytest.mark.integration`) — locks 7 invariants end-to-end including producer-consumer byte-identity fingerprint recompute.
+> - CLI refactor: `ExperimentConfig.model_validate({**base.model_dump(), **args_overrides})` pattern replaces dataclass post-construction mutation; re-fires every validator on user-provided overrides.
 >
 > **New in 0.4.0 (cumulative through Phase 7 Stage 7.4 Round 4)**:
 > - Phase 2 Strategy Pattern refactoring — Trainer decomposed from 1,657L; 4 concrete strategies (Classification, Regression, HMHPClassification, HMHPRegression) under `src/lobtrainer/training/strategies/`. Model Registry integration via lob-models.
@@ -80,8 +88,9 @@ pandas = ">=2.0"          # Data manipulation
 scikit-learn = ">=1.3"    # Classical ML, metrics
 scipy = ">=1.10"          # Statistical tests
 pyyaml = ">=6.0"          # Configuration files
-dacite = ">=1.8"          # Dataclass from dict
+pydantic = ">=2.7,<3.0"   # Config schema (A.5.3i: replaces dacite; explicit v3 upper bound)
 tqdm = ">=4.65"           # Progress bars
+# dacite removed (Phase A.5.3i, 2026-04-24) — Pydantic v2 subsumes all coercion patterns
 ```
 
 ---
@@ -379,9 +388,35 @@ describe_preset("signals_core")  # Prints description and indices
 
 ## 5. Configuration System
 
+### Pydantic v2 Architecture (Phase A.5 Scope D v2, 2026-04-24→2026-04-25)
+
+> **All 9 config classes** — `ExperimentConfig`, `DataConfig`, `ModelConfig`, `TrainConfig`, `LabelsConfig`, `SequenceConfig`, `NormalizationConfig`, `SourceConfig`, `CVConfig` — **inherit from `SafeBaseModel`** (at `src/lobtrainer/config/base.py`) which is a Pydantic v2 `BaseModel` subclass with:
+>
+> ```python
+> model_config = ConfigDict(
+>     frozen=True,              # Post-construction assignment raises ValidationError
+>     extra="forbid",           # Unknown fields raise ValidationError at model_validate
+>     strict=True,              # No loose coercion (e.g., "123" → 123)
+>     validate_assignment=True, # Even allowed assignments re-fire validators
+>     arbitrary_types_allowed=True,  # PrivateAttr, numpy types, etc.
+> )
+> ```
+>
+> The class code samples below show the dataclass-era shape for historical reference. In the current codebase every `@dataclass` decorator shown is REPLACED by `class X(SafeBaseModel):` inheritance. Functional semantics match (same field names, defaults, types) with these additions:
+>
+> 1. **`_canonical_form() -> str` SSoT method** — returns `json.dumps(self.model_dump(mode="json"), sort_keys=True)`. Drives both `__eq__` and `__hash__` to preserve Python's `a == b ⇒ hash(a) == hash(b)` invariant (Phase A.5.7a — pre-A.5.7a `__hash__` used `repr()` which is dict-order-sensitive while `__eq__` compared via `__dict__ ==` which is dict-order-insensitive; silent invariant break for any dict-typed field).
+> 2. **Auto-registry via `__pydantic_init_subclass__`** — `SafeBaseModel._registry: ClassVar[List[type]]` auto-populates on every non-`_`-prefixed subclass. `schema.py::_PYDANTIC_CONFIG_CLASSES` is a re-export shim `list(SafeBaseModel._registry)` — NEVER hand-maintain this list. Parametric tests (`TestSafeBaseModelRegistry`, pickle/deepcopy round-trip, partial-base rejection) iterate the auto-registry so future config classes are covered automatically.
+> 3. **`ClassVar[...]` discipline on class-level constants** — every non-field class-level attribute (`_VALID_SOURCES`, `_VALID_RETURN_TYPES`, `SCIENTIFIC_NOTATION_PATTERN`, etc.) MUST carry explicit `ClassVar[frozenset | Tuple | re.Pattern | ...]` annotation. Without it, Pydantic v2 treats them as model fields → leaks into `model_dump()` → breaks `CompatibilityContract.fingerprint()` byte-identity (fingerprint drift on every post-migration record; silent ledger corruption).
+> 4. **`PrivateAttr` for runtime caches** — `DataConfig._feature_indices_resolved` + `_feature_set_ref_resolved` use `PrivateAttr(default=None)` which permits mutation even under `frozen=True` AND is automatically stripped from `model_dump()` — preserving Phase 4 R3 invariant (YAML round-trip without private-cache leakage) at the type-system layer.
+> 5. **In-validator self-mutation pattern** — `@model_validator(mode="after")` that needs to rewrite fields returns `self.model_copy(update={"field": new_value})`. `model_copy(update=...)` documentedly SKIPS validators, which is SAFE here because state is already-validated. **External CLI / user-data paths MUST use `ExperimentConfig.model_validate({**base.model_dump(), **overrides})`** — re-fires every validator on the merged dict. Round-3 adversarial audit caught CLI mutation `config.train.lr = args.lr` (crashes under frozen=True) + `model_copy(update={"train.lr": -1.0})` (silently accepts invalid override) as CRITICAL.
+> 6. **Live-YAML corpus regression** — `tests/test_pydantic_migration.py` parametrizes `ExperimentConfig.from_yaml()` over every file under `configs/**/*.yaml` + `tests/fixtures/**/*.yaml`; fails-loud on any `ValidationError` (catches latent typos + unknown fields that pre-Pydantic dacite silently dropped).
+> 7. **`_partial: true` strip** — `configs/bases/` partial YAMLs carrying the `_partial: true` sentinel MUST have it stripped by `config/merge.py::resolve_inheritance()` BEFORE `ExperimentConfig.from_dict()` — otherwise `extra="forbid"` rejects. `test_all_partial_bases_rejected_on_direct_load` parametrized over all 22 partial bases locks the invariant.
+>
+> **Dependencies**: `pydantic>=2.7,<3.0` (explicit upper bound); `hatchling>=1.26` (build); `dacite>=1.8` DROPPED. See `/PIPELINE_ARCHITECTURE.md` §11 Configuration System Architecture for the full migration narrative + bug-class-retirement table + CLI override pattern.
+
 ### ExperimentConfig (src/lobtrainer/config/schema.py)
 
-Root configuration object:
+Root configuration object (now a `SafeBaseModel` subclass — the dataclass-era shape shown here matches field-for-field):
 
 ```python
 @dataclass
@@ -1492,5 +1527,5 @@ from lobtrainer.constants import FeatureIndex, get_feature_preset
 
 ---
 
-*Last updated: April 9, 2026*
-*Version: 0.4.0*
+*Last updated: April 25, 2026 (Phase A.5 Scope D v2 — Pydantic v2 migration)*
+*Version: 0.7.0*
