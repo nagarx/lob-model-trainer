@@ -91,6 +91,9 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_functions = "test_*"
 addopts = "-v --tb=short"
+markers = [
+    "integration: full Trainer.setup() + SignalExporter.export() chain (Phase A.5.7c). Skip via `pytest -m 'not integration'` for fast CI.",
+]
 
 [tool.ruff]
 line-length = 100
