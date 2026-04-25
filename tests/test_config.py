@@ -1784,8 +1784,13 @@ class TestExperimentConfigPydantic:
 
     def test_partial_base_rejected_on_direct_load(self):
         """Partial bases (``_partial: true``) cannot be loaded standalone —
-        must be composed via multi-base inheritance. Pre-migration behavior
-        preserved; test locks the clear error message."""
+        must be composed via multi-base inheritance.
+
+        Phase A.5.7b SB-4: this test is the PRESENCE smoke check. The
+        parametric test below (``test_all_partial_bases_rejected_on_direct_load``)
+        exercises ALL 22 partial bases — this single-input test stays as a
+        readability anchor (faster failure when the corpus is empty).
+        """
         import glob
         from pathlib import Path
         from lobtrainer.config.schema import ExperimentConfig
@@ -1798,6 +1803,36 @@ class TestExperimentConfigPydantic:
         # Try loading ONE partial directly — must raise clearly
         with pytest.raises(ValueError, match="Partial base"):
             ExperimentConfig.from_yaml(str(partials[0]))
+
+    @pytest.mark.parametrize(
+        "partial_path",
+        [
+            p for p in (Path(__file__).parent.parent / "configs").glob("**/*.yaml")
+            if (lambda p: p.exists() and p.is_file() and __import__(
+                "lobtrainer.config.merge", fromlist=["is_partial_base"]
+            ).is_partial_base(p))(p)
+        ],
+        ids=lambda p: str(p.relative_to(Path(__file__).parent.parent / "configs")),
+    )
+    def test_all_partial_bases_rejected_on_direct_load(self, partial_path):
+        """Phase A.5.7b SB-4: EVERY partial base under configs/ MUST raise
+        ValueError when loaded directly via ``ExperimentConfig.from_yaml``.
+
+        Pre-A.5.7b, only ``partials[0]`` (one of 22) was tested — a
+        regression that affected only specific axis types (model / dataset /
+        label) would silently break 21 of 22 with no signal.
+
+        Parametric expansion catches:
+          - Per-axis schema drift (model bases vs dataset bases vs label
+            bases vs train bases differ structurally)
+          - YAML parse-error masking ``_partial: true`` detection
+          - Future partial-base additions (CI fails when a new partial
+            doesn't raise as expected)
+        """
+        from lobtrainer.config.schema import ExperimentConfig
+
+        with pytest.raises(ValueError, match="Partial base"):
+            ExperimentConfig.from_yaml(str(partial_path))
 
     # --- Fingerprint byte-stability (hft-contracts cross-repo invariant) ---
 
@@ -2170,6 +2205,162 @@ class TestPydanticHardeningCoverageGaps:
                 f"PyDantic internals may be sharing mutable state across "
                 f"what appears to be independent copies."
             )
+
+    # =========================================================================
+    # Phase A.5.7b (2026-04-25) — Composite-class pickle/deepcopy tests (SB-2)
+    # =========================================================================
+    #
+    # Pre-A.5.7b, the round-trip parametric tests above covered only the 6
+    # LEAF classes. The 3 COMPOSITES (DataConfig + ModelConfig +
+    # ExperimentConfig) were untested — but CVTrainer._build_fold_config
+    # deep-copies ExperimentConfig per-fold (the docstring of the deepcopy
+    # test even cites cv_trainer.py:250).
+    #
+    # Composite-specific concerns the leaf tests miss:
+    #
+    # 1. DataConfig has PrivateAttr fields (_feature_indices_resolved,
+    #    _feature_set_ref_resolved). Pydantic excludes PrivateAttr from
+    #    model_dump by default — but does pickle/deepcopy preserve them?
+    #    Critical because the trainer's resolver writes to the PrivateAttr
+    #    AFTER construction (trainer.py:416-419). If pickle drops it, the
+    #    DataLoader worker copies lose resolver state.
+    #
+    # 2. ModelConfig has params: Dict[str, Any] (mutable container). Naive
+    #    deepcopy could share dict references across "independent" copies
+    #    if Pydantic's __copy__ is shallow.
+    #
+    # 3. ExperimentConfig embeds ALL 8 sub-configs as nested BaseModel
+    #    fields. Recursive pickle/deepcopy must work end-to-end — a
+    #    regression in any nested layer would manifest at the composite
+    #    level only.
+    # =========================================================================
+
+    def test_pickle_round_trip_composite_configs(self):
+        """SB-2: composite classes (DataConfig, ModelConfig, ExperimentConfig)
+        with non-default state survive pickle round-trip.
+
+        Specifically exercises:
+          - DataConfig with PrivateAttr populated (resolver-cache state)
+          - ModelConfig with non-empty params dict (mutable container)
+          - ExperimentConfig with non-default sub-configs (nested BaseModel)
+
+        Locks the production pickle path used by PyTorch DataLoader workers
+        (num_workers > 0) — silent worker pickle failure was the v3 round-3
+        ship-blocker concern that A.5.3f.1 partially addressed for leaves.
+        """
+        import pickle
+        from lobtrainer.config.schema import (
+            DataConfig, ExperimentConfig, LabelsConfig, ModelConfig,
+        )
+        from pydantic import ValidationError
+
+        # 1. DataConfig with PrivateAttr populated (resolver post-state)
+        dc = DataConfig(feature_set="x_v1")
+        dc._feature_indices_resolved = [0, 5, 12, 84, 85]
+        dc._feature_set_ref_resolved = ("x_v1", "a" * 64)
+
+        # 2. ModelConfig with non-empty params (mutable dict + nested types)
+        mc = ModelConfig(
+            model_type="tlob", input_size=98, num_classes=3,
+            params={"hidden_dim": 64, "num_layers": 4, "use_bin": True},
+        )
+
+        # 3. ExperimentConfig with non-default sub-configs (nested BaseModel chain)
+        ec = ExperimentConfig(
+            name="composite_pickle_test",
+            data=DataConfig(
+                feature_count=98,
+                labels=LabelsConfig(horizons=[10, 60, 300], primary_horizon_idx=1),
+            ),
+            model=ModelConfig(model_type="tlob", input_size=98),
+            tags=["composite", "pickle", "test"],
+        )
+
+        for cfg in [dc, mc, ec]:
+            blob = pickle.dumps(cfg)
+            restored = pickle.loads(blob)
+            assert type(restored) is type(cfg)
+            assert restored.model_dump() == cfg.model_dump(), (
+                f"{type(cfg).__name__} pickle round-trip altered fields"
+            )
+            # Frozen invariant survives pickle
+            with pytest.raises(ValidationError):
+                fields = list(restored.model_dump().keys())
+                if fields:
+                    setattr(restored, fields[0], "mutated_value")
+
+        # PrivateAttr-specific assertion: DataConfig pickle MUST preserve
+        # the resolver cache (Pydantic v2 PrivateAttr docs guarantee this)
+        dc_restored = pickle.loads(pickle.dumps(dc))
+        assert dc_restored._feature_indices_resolved == [0, 5, 12, 84, 85], (
+            "DataConfig pickle dropped PrivateAttr — Pydantic v2 should "
+            "preserve _feature_indices_resolved through pickle. Regression "
+            "would silently lose resolver-cache state in DataLoader workers."
+        )
+        assert dc_restored._feature_set_ref_resolved == ("x_v1", "a" * 64)
+
+    def test_deepcopy_round_trip_composite_configs(self):
+        """SB-2: composite classes survive deepcopy with NO shared mutable state.
+
+        ``ModelConfig.params`` is a Dict[str, Any] — a mutable container.
+        Naive shallow-copy implementations would share the dict reference
+        across what appears to be independent copies; mutating one would
+        silently affect the other. Locks correct deepcopy semantics.
+
+        ``ExperimentConfig`` is the production deepcopy target at
+        cv_trainer.py:250 (per-fold config build). End-to-end round-trip
+        must produce structurally-independent copies.
+        """
+        import copy
+        from lobtrainer.config.schema import (
+            DataConfig, ExperimentConfig, LabelsConfig, ModelConfig,
+        )
+
+        # ModelConfig with mutable dict — verify NO shared reference post-deepcopy
+        mc = ModelConfig(
+            model_type="tlob", input_size=98,
+            params={"hidden_dim": 64, "extra": ["a", "b"]},
+        )
+        mc_copy = copy.deepcopy(mc)
+        assert mc_copy is not mc
+        assert mc_copy.model_dump() == mc.model_dump()
+        # The params dict MUST be a different object (deep, not shallow)
+        assert mc_copy.params is not mc.params, (
+            "ModelConfig.params dict was shared post-deepcopy — Pydantic v2 "
+            "deepcopy may have produced a shallow copy. Mutating mc_copy.params "
+            "would silently affect mc.params, corrupting CVTrainer's per-fold "
+            "isolation (cv_trainer.py:250 deepcopy contract)."
+        )
+        # The nested list inside params should also be a different object
+        assert mc_copy.params["extra"] is not mc.params["extra"]
+
+        # DataConfig with PrivateAttr — verify deepcopy preserves it as fresh state
+        dc = DataConfig(feature_set="x_v1")
+        dc._feature_indices_resolved = [0, 5, 12]
+        dc_copy = copy.deepcopy(dc)
+        assert dc_copy is not dc
+        assert dc_copy.model_dump() == dc.model_dump()
+        # PrivateAttr value preserved (semantic content)
+        assert dc_copy._feature_indices_resolved == [0, 5, 12]
+        # PrivateAttr list is a different object (deep copy)
+        assert dc_copy._feature_indices_resolved is not dc._feature_indices_resolved
+
+        # ExperimentConfig with nested BaseModel chain — recursive deepcopy
+        ec = ExperimentConfig(
+            name="deepcopy_composite_test",
+            data=DataConfig(
+                feature_count=98,
+                labels=LabelsConfig(horizons=[10, 60, 300]),
+            ),
+            tags=["a", "b", "c"],
+        )
+        ec_copy = copy.deepcopy(ec)
+        assert ec_copy is not ec
+        assert ec_copy.data is not ec.data, "Nested DataConfig shared reference"
+        assert ec_copy.data.labels is not ec.data.labels, "Nested LabelsConfig shared reference"
+        assert ec_copy.model_dump() == ec.model_dump()
+        # Mutable list field
+        assert ec_copy.tags is not ec.tags, "tags list shared reference"
 
     def test_enum_serialization_emits_string_value(self):
         """Enum fields MUST serialize as string .value in model_dump().
