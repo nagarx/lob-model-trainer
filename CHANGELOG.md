@@ -4,6 +4,64 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] — 2026-04-27 — REV 3.1 Phase G G.6.A→G.8 (SchemaVersion 2.2 → 3.0 MAJOR)
+
+REV 3.1 cycle Phase G consumer-side cascade. NO trainer-internal logic
+changes — purely fixture + documentation cascade flowing the producer-side
+SchemaVersion bump from `feature-extractor-MBO-LOB` (2.2 → 3.0 MAJOR per
+CLAUDE.md root rule: any modification to stable features 0-97 = BREAKING).
+
+**Trainer-side changes**:
+- `tests/conftest.py:112` — fixture `data[:, 97] = 2.2` flipped to `0.0`
+  per Phase G.1 RESERVED (in-NPY emission DROPPED; JSON metadata is the
+  canonical schema_version SSoT post-Phase-G.1).
+- `tests/test_phase2_signal_metadata_emit.py:30,31` — `_fixture_contract`
+  defaults `contract_version="3.0"` + `schema_version="3.0"`.
+- `tests/test_feature_set_resolver.py:46-65` — golden hash
+  `GOLDEN_HASH_98F_5_12 = 1fc8d7f8dee2c9a07617c995ba492b2cb14cb81e1857d8b57fd7cb5f888480d2`
+  (regenerated via SSoT `hft_contracts.feature_sets.hashing.compute_feature_set_hash`
+  from the bumped contract_version 3.0).
+- `tests/test_feature_preset_migration.py` — 4 cascade sites updating
+  `expected_contract_version="3.0"`.
+- `tests/test_sources_and_bundle.py:245` + `tests/test_experiment_spec_and_gates.py:249`
+  — NEW `@pytest.mark.xfail(strict=False, reason=...)` markers on 2 tests
+  that exercise `data/exports/e5_timebased_60s` legacy NPYs at schema 2.2
+  (correctly REJECTED post-G.6.A by `validate_schema_version`). The xfail
+  markers are the structural reminder that re-export of legacy data is
+  gated on Phase G+1 (re-export execution + scripts/ trigger
+  infrastructure); test will pass once Phase G+1 ships and operator runs
+  the regen.
+- 5 production-config FeatureSet content_hashes regenerated via
+  `hft_contracts.feature_sets.hashing.compute_feature_set_hash` cascade
+  (G.6.D ship — locked across 3 production JSONs at
+  `contracts/feature_sets/`).
+- README.md banner: Version 0.4.0 → 0.7.1 + Schema 2.2 → 3.0 + new v0.7.1
+  history row + corrected SCHEMA_VERSION assertion to use string
+  comparison `assert SCHEMA_VERSION == "3.0"` (matches `_generated.py`).
+- CODEBASE.md banner: Schema 2.2 → 3.0 with Phase G G.6.A bump rationale
+  inline.
+
+**Test counts post-cascade**: trainer **1367 passed + 65 skipped + 2
+xfailed** (xfailed = legacy-corpus xfail markers per Phase G+1 deferral);
+broader pipeline aggregate **3,676 tests passing** across 5 modules
+(Rust 800 + analyzer 358 + hft-contracts 518 + trainer 1367 + hft-ops 633).
+ZERO regressions across all 5 module test suites.
+
+**Validation provenance**: 17+ fresh-eyes adversarial agents (V1-V6
+round-1 + W1-W6 round-2 + post-G.6 cumulative audit + G.6.F cascade
+completeness + G.6.A→G.8 closure verification + G.9 investigation).
+Standing user mandate "ULTRATHINK + parallel adversarial agents +
+/effort max" upheld throughout.
+
+**Deferred** (not in this trainer release):
+- **Phase G.9** (FIND-H9 cross-language `config_hash` fold — Rust-side
+  `feature-extractor-MBO-LOB` change): investigation surfaced
+  implementation complexity beyond cycle scope; deferred to dedicated
+  mini-cycle for fresh adversarial validation.
+- **Phase G+1** (re-export execution): legacy `data/exports/*` NPYs at
+  schema "2.2" remain on disk; xfail markers in `test_sources_and_bundle.py`
+  + `test_experiment_spec_and_gates.py` are the structural reminders.
+
 ## [0.7.0] — 2026-04-24 — Phase A.5 Scope D (Pydantic Migration)
 
 Major cycle: migrate every config class in the 9-class hierarchy from

@@ -329,8 +329,8 @@ def _create_synthetic_export_with_fp(
         "n_sequences": n_seq,
         "window_size": window_size,
         "n_features": n_features,
-        "schema_version": "2.2",
-        "contract_version": "2.2",
+        "schema_version": "3.0",  # G.6.A bump
+        "contract_version": "3.0",  # G.6.A bump
         "label_strategy": "regression",
         "label_encoding": {"note": "smoothed forward returns in bps"},
         "normalization": {"strategy": "none", "applied": False, "params_file": ""},
@@ -339,7 +339,7 @@ def _create_synthetic_export_with_fp(
             "git_commit": "abc123",
             "git_dirty": False,
             "config_hash": "test",
-            "contract_version": "2.2",
+            "contract_version": "3.0",  # G.6.A bump
             "export_timestamp_utc": "2025-01-01T00:00:00Z",
         },
         "export_timestamp": "2025-01-01T00:00:00Z",

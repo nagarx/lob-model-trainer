@@ -58,7 +58,7 @@ def _create_synthetic_export(
         metadata = {
             "n_features": NUM_FEATURES,
             "n_sequences": NUM_SEQS,
-            "schema_version": "2.2",
+            "schema_version": "3.0",  # G.6.A bump
             "label_strategy": "tlob",
             "labeling": {
                 "horizons": HORIZONS,

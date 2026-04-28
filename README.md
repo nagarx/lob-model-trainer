@@ -5,7 +5,7 @@
 
 Machine learning experimentation for limit order book price prediction — the training plane of a multi-repo HFT pipeline.
 
-**Version**: 0.4.0 | **Schema**: 2.2 | **Tests**: 1149 (1084 passed + 65 skipped)
+**Version**: 0.7.1 | **Schema**: 3.0 (Phase G G.6.A bump per CLAUDE.md root rule: any modification to stable features 0-97 = MAJOR) | **Tests**: 1432 (1367 passed + 65 skipped)
 
 ---
 
@@ -51,7 +51,7 @@ python scripts/export_signals.py --checkpoint outputs/.../best.pt --split test
 
 ---
 
-## Data Contract (Schema v2.2)
+## Data Contract (Schema v3.0)
 
 | Property | Value |
 |----------|-------|
@@ -270,7 +270,7 @@ from lobtrainer.constants import (
 )
 
 assert FEATURE_COUNT == 98        # 98 stable features
-assert SCHEMA_VERSION == 2.2
+assert SCHEMA_VERSION == "3.0"  # Phase G G.6.A bump 2.2 → 3.0 (string, not float — matches _generated.py)
 assert FeatureIndex.TRUE_OFI == 84
 ```
 
@@ -282,7 +282,7 @@ from lobtrainer.data.feature_set_resolver import resolve_feature_set
 resolved = resolve_feature_set(
     name="nvda_short_term_40_src128_v1",
     registry_dir="../contracts/feature_sets/",
-    expected_contract_version="2.2",
+    expected_contract_version="3.0",
     expected_source_feature_count=128,
 )
 # resolved.feature_indices → list of int
@@ -331,7 +331,7 @@ Labels are shifted for PyTorch `CrossEntropyLoss`:
 
 Shift happens in `LOBSequenceDataset.__getitem__()`.
 
-### Sign Conventions (Schema v2.2)
+### Sign Conventions (Schema v3.0)
 
 All directional features:
 - `> 0` = BULLISH (buy pressure)
@@ -414,6 +414,8 @@ pytest tests/ -v
 
 | Version | Schema | Changes |
 |---------|--------|---------|
+| **0.7.1** | 3.0 | REV 3.1 Phase G G.6.A bump 2.2 → 3.0 (MAJOR per CLAUDE.md root rule: any modification to stable features 0-97 = BREAKING). Phase G.1 dropped in-NPY schema_version emission (RESERVED 0.0 at idx 97); JSON metadata is canonical SSoT. Phase G.6.D regenerated 3 production FeatureSet content_hashes + trainer golden hash rotation. Phase G.6.F + G.7 fixture cascade (analyzer 358 / hft-contracts 518 / trainer 1367 / hft-ops 633 / Rust 800 = 3,676 tests passing post-cascade). +2 xfailed for legacy-corpus xfail markers per Phase G+1 deferral. |
+| **0.7.0** | 2.2 | Phase A.5 Scope D (Pydantic v2 migration). All 9 config classes migrated from dataclass+dacite to Pydantic v2 SafeBaseModel. 4 bug classes retired at TYPE layer. |
 | **0.4.0** | 2.2 | Strategy Pattern refactoring (4 concrete strategies), Model Registry integration, Phase 3 multi-base `_base:` composition (21 axis-partitioned bases, monolith retired 2026-04-15), Phase 4 Batch 4c FeatureSet registry consumer (`DataConfig.feature_set` + `feature_set_resolver.py` + canonical_hash parity lock via hft_contracts SSoT), Phase 4 4c.4 `signal_metadata.json` feature_set_ref propagation, Phase 6 6B.2 trainer inline `_compute_content_hash` retired (delegates to hft_contracts), Phase 6 6D 5 experimental fossils archived, Phase 7 Stage 7.1 5 config migrations from `feature_preset:` → `feature_set:` (+ 14 parity tests), Phase 7 Stage 7.4 Round 4 `scripts/train.py::_dump_test_metrics` (`test_metrics.json` persistence for PyTorch Trainer), 1149 tests |
 | 0.3.0 | 2.1 | Strategy-aware metrics, Focal Loss, TLOB support |
 | 0.2.0 | 2.1 | Training infrastructure, multi-horizon support |
@@ -421,4 +423,4 @@ pytest tests/ -v
 
 ---
 
-*Last updated: 2026-04-20 (Phase 7 Stage 7.4 Round 4)*
+*Last updated: 2026-04-27 (REV 3.1 Phase G G.6.A→G.6.F — SchemaVersion 2.2 → 3.0 MAJOR bump)*

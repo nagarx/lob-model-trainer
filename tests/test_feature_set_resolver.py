@@ -41,10 +41,14 @@ class TestCanonicalHashGolden:
     """
 
     # Golden hash of the canonical fixture {indices=[0,5,12],
-    # source_feature_count=98, contract_version="2.2"}, computed via
+    # source_feature_count=98, contract_version="3.0"}, computed via
     # hft_contracts.canonical_hash.canonical_json_blob + sha256_hex.
+    # Phase G G.6.D (2026-04-27): rotated from "2.2" → "3.0" per G.6.A
+    # MAJOR bump (CLAUDE.md "modification to stable features (0-97) =
+    # BREAKING"; G.1 retired in-NPY emission of schema_version at idx 97).
+    # Pre-G.6.D golden hash was 96f60276...fc28 bound to "2.2".
     GOLDEN_HASH_98F_5_12 = (
-        "96f60276d2768b39292f8798331cf302357c8f0314448dcfb62db46e1783fc28"
+        "1fc8d7f8dee2c9a07617c995ba492b2cb14cb81e1857d8b57fd7cb5f888480d2"
     )
 
     def test_trainer_delegates_to_ssot_canonical_form(self):
@@ -52,7 +56,7 @@ class TestCanonicalHashGolden:
         (a) `_compute_content_hash` stopped delegating to the SSoT, OR
         (b) the SSoT canonical form changed without a coordinated bump.
         """
-        h = _compute_content_hash([0, 5, 12], 98, "2.2")
+        h = _compute_content_hash([0, 5, 12], 98, "3.0")
         assert h == self.GOLDEN_HASH_98F_5_12, (
             f"Canonical-form drift detected. Expected {self.GOLDEN_HASH_98F_5_12}, "
             f"got {h}. See docstring for update procedure."
@@ -61,8 +65,8 @@ class TestCanonicalHashGolden:
     def test_cross_module_byte_parity(self):
         """Trainer and hft_contracts.feature_sets.hashing produce identical hashes."""
         from hft_contracts.feature_sets.hashing import compute_feature_set_hash
-        h_trainer = _compute_content_hash([0, 5, 12], 98, "2.2")
-        h_contracts = compute_feature_set_hash([0, 5, 12], 98, "2.2")
+        h_trainer = _compute_content_hash([0, 5, 12], 98, "3.0")
+        h_contracts = compute_feature_set_hash([0, 5, 12], 98, "3.0")
         assert h_trainer == h_contracts == self.GOLDEN_HASH_98F_5_12
 
 

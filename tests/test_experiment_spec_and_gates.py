@@ -246,6 +246,17 @@ class TestSignalQualityGate:
         result = run_signal_quality_gate(days, min_ic=0.05)
         assert len(result.details) == 5
 
+    @pytest.mark.xfail(
+        strict=False,
+        reason="Phase G G.6.A bumped SchemaVersion 2.2 → 3.0 (MAJOR per "
+        "CLAUDE.md root rule). Legacy production exports at "
+        "data/exports/e5_timebased_60s are at schema '2.2' and correctly "
+        "rejected by validate_schema_version. Re-export of these legacy "
+        "exports is gated on Phase G+1 (re-export execution + scripts/ "
+        "trigger infrastructure); test will pass once Phase G+1 ships and "
+        "operator runs the regen. Until then this xfail is the structural "
+        "marker that the legacy data needs re-export at schema 3.0.",
+    )
     def test_real_e5_60s_data(self):
         """Signal quality gate on real NVDA E5 60s data should pass."""
         import warnings

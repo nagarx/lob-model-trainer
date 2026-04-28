@@ -62,8 +62,10 @@ class TestFeatureCounts:
         assert SIGNAL_FEATURE_COUNT == 14
     
     def test_schema_version(self):
-        """Schema version should be 2.2 (MBO core renames + experimental features)."""
-        assert SCHEMA_VERSION == "2.2"
+        """Schema version should be 3.0 (Phase G G.6.A MAJOR bump 2.2 → 3.0
+        per CLAUDE.md root rule "modification to stable features (0-97) =
+        BREAKING"; G.1 retired in-NPY emission of schema_version at idx 97)."""
+        assert SCHEMA_VERSION == "3.0"
 
 
 class TestFeatureIndexRanges:

@@ -82,7 +82,7 @@ def simple_data_dir(tmp_path):
                 "day": day,
                 "n_sequences": n,
                 "n_features": NUM_FEATURES,
-                "schema_version": "2.2",
+                "schema_version": "3.0",  # G.6.A bump
             }
             with open(split_dir / f"{day}_metadata.json", "w") as f:
                 json.dump(metadata, f)

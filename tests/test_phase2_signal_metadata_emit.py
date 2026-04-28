@@ -27,8 +27,8 @@ from lobtrainer.export.metadata import build_signal_metadata
 
 def _fixture_contract(**overrides) -> CompatibilityContract:
     defaults = dict(
-        contract_version="2.2",
-        schema_version="2.2",
+        contract_version="3.0",
+        schema_version="3.0",
         feature_count=98,
         window_size=100,
         feature_layout="default",

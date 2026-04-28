@@ -151,7 +151,7 @@ class TestAllFeatureSetsResolve:
         fs = self._resolver()(
             "nvda_short_term_40_src128_v1",
             registry_dir=_REGISTRY_DIR,
-            expected_contract_version="2.2",
+            expected_contract_version="3.0",
             expected_source_feature_count=128,
         )
         assert len(fs.feature_indices) == 40
@@ -160,7 +160,7 @@ class TestAllFeatureSetsResolve:
         fs = self._resolver()(
             "nvda_short_term_40_src116_v1",
             registry_dir=_REGISTRY_DIR,
-            expected_contract_version="2.2",
+            expected_contract_version="3.0",
             expected_source_feature_count=116,
         )
         assert len(fs.feature_indices) == 40
@@ -169,7 +169,7 @@ class TestAllFeatureSetsResolve:
         fs = self._resolver()(
             "nvda_analysis_ready_119_src128_v1",
             registry_dir=_REGISTRY_DIR,
-            expected_contract_version="2.2",
+            expected_contract_version="3.0",
             expected_source_feature_count=128,
         )
         assert len(fs.feature_indices) == 119
@@ -184,7 +184,7 @@ class TestAllFeatureSetsResolve:
             self._resolver()(
                 "nvda_analysis_ready_119_src128_v1",
                 registry_dir=_REGISTRY_DIR,
-                expected_contract_version="2.2",
+                expected_contract_version="3.0",
                 expected_source_feature_count=98,  # deliberate mismatch
             )
 

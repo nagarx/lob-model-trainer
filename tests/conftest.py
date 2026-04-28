@@ -109,7 +109,8 @@ def _make_synthetic_lob_data(
     if num_features > 96:
         data[:, 96] = 0.0      # INVALIDITY_DELTA: always valid
     if num_features > 97:
-        data[:, 97] = 2.2      # SCHEMA_VERSION
+        data[:, 97] = 0.0      # RESERVED post Phase G.1 (in-NPY emission DROPPED;
+                               # schema_version is JSON-metadata-only canonical SSoT)
 
     return data
 
@@ -143,8 +144,11 @@ def _make_metadata(
         "n_sequences": num_seqs,
         "window_size": seq_len,
         "n_features": num_features,
-        "schema_version": "2.2",
-        "contract_version": "2.2",
+        # Phase G G.6.A (2026-04-27): MAJOR bump 2.2 → 3.0 per CLAUDE.md
+        # root rule "modification to stable features (0-97) = BREAKING".
+        # Synthetic metadata mock mirrors live SCHEMA_VERSION.
+        "schema_version": "3.0",
+        "contract_version": "3.0",
         "label_strategy": label_strategy,
         "label_dtype": "int8",
         "tensor_format": None,
@@ -173,7 +177,7 @@ def _make_metadata(
             "git_commit": "test_fixture",
             "git_dirty": False,
             "config_hash": "test",
-            "contract_version": "2.2",
+            "contract_version": "3.0",  # G.6.A bump
             "export_timestamp_utc": "2026-04-01T12:00:00Z",
         },
         "validation": {
