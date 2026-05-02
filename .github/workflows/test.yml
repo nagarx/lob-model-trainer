@@ -12,9 +12,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Minimum GITHUB_TOKEN permissions — OpenSSF least-privilege. This workflow
-# reads repo contents (this repo + three public siblings) and writes no
-# artifacts, so `contents: read` is sufficient.
+# Minimum GITHUB_TOKEN permissions — OpenSSF least-privilege. The default
+# GITHUB_TOKEN reads only this repo's own contents; sibling-repo checkouts
+# below pass `token: ${{ secrets.CROSS_REPO_PAT }}` for the two private
+# siblings (hft-metrics, lob-models). hft-contracts is public and uses
+# the default token. No artifacts written, so `contents: read` suffices
+# for this repo's GITHUB_TOKEN.
 permissions:
   contents: read
 
@@ -58,6 +61,7 @@ jobs:
           repository: nagarx/hft-metrics
           path: _deps/hft-metrics
           ref: main
+          token: ${{ secrets.CROSS_REPO_PAT }}
 
       - name: Checkout lob-models
         uses: actions/checkout@v4
@@ -65,6 +69,7 @@ jobs:
           repository: nagarx/lob-models
           path: _deps/lob-models
           ref: main
+          token: ${{ secrets.CROSS_REPO_PAT }}
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
