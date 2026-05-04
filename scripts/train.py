@@ -185,7 +185,17 @@ Examples:
         action="store_true",
         help="Only run evaluation (requires --resume)",
     )
-    
+    parser.add_argument(
+        "--strict-checkpoint-fingerprint",
+        action="store_true",
+        help=(
+            "Phase X.1 v2 (2026-05-04): when set, ``--resume`` raises "
+            "CheckpointConfigMismatchError on compatibility/model_config_hash "
+            "mismatch instead of emitting CheckpointConfigMismatchWarning. "
+            "Default is warn-only per Phase X.4 promotion plan."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -399,7 +409,22 @@ def main():
         if not checkpoint_path.exists():
             logger.error(f"Checkpoint not found: {checkpoint_path}")
             sys.exit(1)
-        trainer.load_checkpoint(checkpoint_path)
+        # Phase X.1 v2 (2026-05-04): pass operator strict-flag through to
+        # Trainer.load_checkpoint. Default warn-only; --strict promotes to raise.
+        # SimpleModelTrainer.load_checkpoint accepts the same flag (sklearn path).
+        try:
+            trainer.load_checkpoint(
+                checkpoint_path,
+                strict_config=args.strict_checkpoint_fingerprint,
+            )
+        except TypeError:
+            # Fallback for legacy trainers that don't accept strict_config kwarg yet.
+            # Logs a warning and falls back to default (warn-only).
+            logger.warning(
+                "Trainer.load_checkpoint does not accept strict_config kwarg; "
+                "falling back to default warn-only mode."
+            )
+            trainer.load_checkpoint(checkpoint_path)
         logger.info(f"Resumed from checkpoint: {checkpoint_path}")
     
     # Evaluation only mode

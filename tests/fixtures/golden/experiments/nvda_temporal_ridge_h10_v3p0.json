@@ -1,0 +1,57 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/e5_timebased_60s_v3p0",
+      "feature_count": 98,
+      "horizon_idx": 0,
+      "labeling_strategy": "regression",
+      "sequence": {
+        "stride": 1,
+        "window_size": 20
+      }
+    },
+    "description": "Temporal Ridge regression on e5_timebased_60s_v3p0 (98-feat, 60s bins,\n162 train + 35 val + 33 test days). First-live-experiment for the\nPhase Q Trainer Spine Unification cycle: validates that\n`python scripts/train.py --config <sklearn-yaml>` succeeds end-to-end\nvia the framework-aware factory dispatch (Q.5) \u2192 SimpleModelTrainer\n(Q.6) \u2192 canonical signal_metadata SSoT (Q.7) + atomic write (Q.8).\n\nNote: the original 2026-05-04 v3p0 cycle pointed at\n`nvda_xnas_128feat_regression_fwd_prices_v3p0` but that export has\nonly train/ (no val/test) \u2014 a producer-side issue tracked in\nPHASE_P_BACKLOG. This config uses the e5_60s baseline which has\nfull splits and exercises the Phase Q chain end-to-end.\n",
+    "log_level": "INFO",
+    "model": {
+      "input_size": 0,
+      "model_type": "temporal_ridge",
+      "params": {
+        "alpha": 1.0,
+        "features": {
+          "include_momentum": true,
+          "include_volatility": true,
+          "rolling_windows": [
+            3,
+            5,
+            10
+          ],
+          "signal_indices": [
+            85,
+            84,
+            86,
+            56,
+            45
+          ],
+          "top_k_signals": 3
+        }
+      }
+    },
+    "name": "TemporalRidge_NVDA_H10_e5_60s_v3p0",
+    "output_dir": "outputs/experiments/nvda_temporal_ridge_h10_v3p0",
+    "tags": [
+      "nvda",
+      "xnas",
+      "temporal-ridge",
+      "regression",
+      "128-features",
+      "h10",
+      "simple-model",
+      "v3p0"
+    ],
+    "train": {
+      "loss_type": "huber",
+      "task_type": "regression"
+    }
+  },
+  "status": "ok"
+}

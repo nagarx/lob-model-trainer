@@ -3,11 +3,20 @@ Signal metadata builder for signal export.
 
 Produces a superset metadata JSON that includes everything all 3 old
 export scripts produced, plus additional provenance fields.
+
+Phase O Cycle 1 (H-1, 2026-05-04): emits ``schema_version`` and
+``contract_version`` at the manifest root so the backtester's loader can
+fail-loud on schema-version skew between the trainer and the consumer.
+The previously-present Phase II ``compatibility`` block tracks tamper
+detection but did not surface schema-version drift to non-Phase-II
+backtester paths; these two top-level fields close that gap.
 """
 
 from datetime import datetime, timezone
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional
+
+from hft_contracts import SCHEMA_VERSION as _CONTRACT_SCHEMA_VERSION
 
 
 def build_signal_metadata(
@@ -42,6 +51,10 @@ def build_signal_metadata(
     # Regression-specific
     metrics: Optional[Dict[str, float]] = None,
     calibration: Optional[Dict[str, Any]] = None,
+    # Phase Q.7 (2026-05-04): sklearn-path feature engineering config
+    # (TemporalFeatureConfig.to_dict()). Emitted only when explicitly
+    # provided; PyTorch path passes None.
+    feature_config: Optional[Dict[str, Any]] = None,
     # Phase II (2026-04-20): cross-module CompatibilityContract.
     # When provided, emits the 11-key contract block + its SHA-256 fingerprint
     # into signal_metadata.json. Backtester validates by recomputing from the
@@ -68,6 +81,10 @@ def build_signal_metadata(
     All fields are keyword-only to prevent positional mistakes.
     """
     meta: Dict[str, Any] = {
+        # Phase O Cycle 1 (H-1, 2026-05-04): contract pin. Required by
+        # backtester loader.py post-C-4 (presence check; raises on absence).
+        "schema_version": str(_CONTRACT_SCHEMA_VERSION),
+        "contract_version": str(_CONTRACT_SCHEMA_VERSION),
         # Core (always present)
         "model_type": model_type,
         "model_name": model_name,
@@ -101,6 +118,11 @@ def build_signal_metadata(
         meta["feature_set_ref"] = feature_set_ref
     if normalization_strategy is not None:
         meta["normalization_strategy"] = normalization_strategy
+    if feature_config is not None:
+        # Phase Q.7 (2026-05-04): the sklearn trainer's TemporalFeatureConfig
+        # dict — emitted only by the sklearn (SimpleModelTrainer) path.
+        # PyTorch trainers leave this None.
+        meta["feature_config"] = feature_config
 
     # Statistics (always include when available)
     if prediction_stats is not None:

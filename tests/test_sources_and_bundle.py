@@ -211,7 +211,11 @@ class TestRealDataFusion:
 
     @pytest.fixture
     def real_sources(self):
-        mbo_dir = Path("../data/exports/e5_timebased_60s")
+        # Phase O Cycle 1 (2026-05-04): primary MBO source migrated to v3p0
+        # baseline (schema_version="3.0") so the post-C-3 strict validator
+        # in `load_split_data` passes. BASIC has an independent off-exchange
+        # contract (`off_exchange_1.0`) that is unaffected by the MBO bump.
+        mbo_dir = Path("../data/exports/e5_timebased_60s_v3p0")
         basic_dir = Path("../data/exports/basic_nvda_60s")
         if not mbo_dir.exists() or not basic_dir.exists():
             pytest.skip("Real export data not available")
@@ -242,17 +246,6 @@ class TestRealDataFusion:
         assert day.labels is not None
         assert day.is_aligned
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="Phase G G.6.A bumped SchemaVersion 2.2 → 3.0 (MAJOR per "
-        "CLAUDE.md root rule). Legacy production data sources used by "
-        "real_sources fixture are at schema '2.2' and correctly rejected "
-        "by validate_schema_version. Re-export of these legacy exports is "
-        "gated on Phase G+1 (re-export execution + scripts/ trigger "
-        "infrastructure); test will pass once Phase G+1 ships and operator "
-        "runs the regen. Until then this xfail is the structural marker "
-        "that the legacy data needs re-export at schema 3.0.",
-    )
     def test_alignment_preserves_primary_n(self, real_sources):
         """Fused N should equal primary source's N (MBO has fewer)."""
         from lobtrainer.config.schema import LabelsConfig

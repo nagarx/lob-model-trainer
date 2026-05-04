@@ -57,6 +57,7 @@ from lobtrainer.training.callbacks import (
     MetricLogger,
 )
 from lobtrainer.training.metrics import ClassificationMetrics
+from lobtrainer.training.simple_trainer import SimpleModelTrainer
 from lobtrainer.training.strategy import TrainingStrategy, create_strategy
 from lobtrainer.utils.reproducibility import set_seed
 
@@ -187,6 +188,12 @@ class Trainer:
         
         # Initialize state
         self.state = TrainingState()
+
+        # Phase X.1.K minimum-viable: resume signal flag. Set to True at the end
+        # of load_checkpoint(); reset to False at the end of train(). Consumed
+        # by callbacks' on_train_start to skip resetting in-process state
+        # (EarlyStopping patience, ModelCheckpoint best_value snapshot).
+        self._resumed_from_checkpoint: bool = False
         
         # Lazy initialization
         self._optimizer: Optional[torch.optim.Optimizer] = None
@@ -784,27 +791,31 @@ class Trainer:
     def train(self) -> Dict[str, Any]:
         """
         Run full training loop.
-        
+
         Returns:
             Dict with final metrics and training history
-        
+
         Raises:
             ValueError: If no training data available
         """
-        # Setup if not already done
-        if self._train_loader is None:
-            self.setup()
-        
-        cfg = self.config.train
-        self.state.training_started = True
-        
-        # Notify callbacks
-        self.callbacks.on_train_start()
-        
-        logger.info(f"Starting training for {cfg.epochs} epochs")
+        # Phase X.1 v2 post-validation fix (Agent 1 Q6 2026-05-04):
+        # Wrap entire body in try/finally so the `_resumed_from_checkpoint`
+        # flag-reset is unconditional, even when setup() / config-access
+        # raises BEFORE on_train_start. Pre-fix, a setup() failure would
+        # leak the True flag into the next train() call.
         start_time = time.time()
-        
         try:
+            # Setup if not already done
+            if self._train_loader is None:
+                self.setup()
+
+            cfg = self.config.train
+            self.state.training_started = True
+
+            # Notify callbacks
+            self.callbacks.on_train_start()
+
+            logger.info(f"Starting training for {cfg.epochs} epochs")
             for epoch in range(cfg.epochs):
                 self.state.current_epoch = epoch
                 self.callbacks.on_epoch_start(epoch)
@@ -849,6 +860,9 @@ class Trainer:
         finally:
             self.state.training_completed = True
             self.callbacks.on_train_end()
+            # Phase X.1.K: consume the resumed-from-checkpoint flag. A subsequent
+            # train() call (without re-load) resets callback state normally.
+            self._resumed_from_checkpoint = False
         
         total_time = time.time() - start_time
         logger.info(
@@ -979,57 +993,248 @@ class Trainer:
     # Checkpoint Management
     # =========================================================================
     
-    def save_checkpoint(self, path: Union[str, Path]) -> None:
-        """
-        Save model checkpoint.
-        
+    def _build_checkpoint_dict(
+        self,
+        *,
+        epoch_override: Optional[int] = None,
+        metrics_override: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """Build the canonical checkpoint dict.
+
+        Phase X.1 v2 (2026-05-04): centralizes the checkpoint contract so
+        Trainer.save_checkpoint AND ModelCheckpoint._save_checkpoint emit
+        IDENTICAL keys. Eliminates the pre-X.1 3-writer divergence (per
+        Agent 1 sanity-check Q9 finding).
+
+        Includes 3 NEW Phase X.1 v2 keys:
+          * ``compatibility``: full CompatibilityContract dict (data-side
+            architecture: feature_count, window_size, horizons,
+            primary_horizon_idx, normalization_strategy, label_strategy_hash,
+            feature_layout, data_source, calibration_method, contract_version,
+            schema_version).
+          * ``compatibility_fingerprint``: 64-hex SHA-256 over the
+            CompatibilityContract canonical form.
+          * ``model_config_hash``: 64-hex SHA-256 over filtered model.params
+            (loss-tuning keys excluded per ``_LOSS_TUNING_KEYS`` denylist).
+
         Args:
-            path: Path to save checkpoint
+            epoch_override: Used by ModelCheckpoint callback to record per-epoch
+                'epoch' separate from trainer's current_epoch state.
+            metrics_override: Used by ModelCheckpoint callback to record
+                per-epoch metrics dict from on_epoch_end logs.
+
+        Returns:
+            Checkpoint dict (NOT yet saved). Caller adds 'scheduler_state_dict'
+            if scheduler exists, then torch.save's the result.
         """
-        checkpoint = {
-            'epoch': self.state.current_epoch,
+        from lobtrainer.training.compatibility import (
+            build_compatibility_contract,
+            compute_model_config_hash,
+        )
+
+        compat = build_compatibility_contract(self.config)
+        model_cfg_hash = compute_model_config_hash(self.config.model)
+
+        # Phase X.1 v2 post-validation fix (Agent 1 Q1 + Q1b 2026-05-04):
+        # - `self.optimizer` is a lazy property (line 237) that CONSTRUCTS an
+        #   optimizer on demand. Using it in `is not None` would always trigger
+        #   construction (which requires `_create_optimizer` to succeed; this
+        #   side-effect can fail in test bypass paths). Use `self._optimizer`
+        #   (the underlying private attr) directly for the None-check.
+        # - When `_optimizer is None`, write None into the dict (NOT call
+        #   `.state_dict()` on None which would AttributeError). The mirror
+        #   guard in `load_checkpoint` skips `load_state_dict(None)`.
+        return {
+            'epoch': epoch_override if epoch_override is not None else self.state.current_epoch,
             'global_step': self.state.global_step,
             'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
+            'optimizer_state_dict': (
+                self._optimizer.state_dict() if self._optimizer is not None else None
+            ),
             'config': self.config.to_dict(),
             'state': {
                 'best_val_metric': self.state.best_val_metric,
                 'best_epoch': self.state.best_epoch,
             },
+            'metrics': metrics_override or {},  # callback supplies per-epoch metrics
+            # Phase X.1 v2: 3 NEW keys (additive, back-compat preserved — pre-X.1
+            # checkpoints simply lack them; load_checkpoint emits
+            # CheckpointMissingFingerprintWarning in that case).
+            'compatibility': compat.to_canonical_dict() if compat is not None else None,
+            'compatibility_fingerprint': compat.fingerprint() if compat is not None else None,
+            'model_config_hash': model_cfg_hash,
         }
-        
+
+    def save_checkpoint(self, path: Union[str, Path]) -> None:
+        """
+        Save model checkpoint.
+
+        Phase X.1 v2 (2026-05-04): embeds CompatibilityContract +
+        compatibility_fingerprint + model_config_hash via
+        ``_build_checkpoint_dict`` shared helper. Pre-X.1 v2 callers see
+        the 3 new keys as additive — back-compat preserved.
+
+        Args:
+            path: Path to save checkpoint
+        """
+        checkpoint = self._build_checkpoint_dict()
         if self._scheduler is not None:
             checkpoint['scheduler_state_dict'] = self._scheduler.state_dict()
-        
+
         torch.save(checkpoint, path)
         logger.info(f"Saved checkpoint to {path}")
     
-    def load_checkpoint(self, path: Union[str, Path], load_optimizer: bool = True) -> None:
+    def load_checkpoint(
+        self,
+        path: Union[str, Path],
+        load_optimizer: bool = True,
+        strict_config: bool = False,
+    ) -> None:
         """
         Load model from checkpoint.
-        
+
+        Phase X.1 v2 (2026-05-04): validates the checkpoint's
+        ``compatibility_fingerprint`` + ``model_config_hash`` against the
+        active config. Default ``strict_config=False`` emits
+        ``CheckpointConfigMismatchWarning`` on mismatch (warn-only mode);
+        ``strict_config=True`` promotes to ``CheckpointConfigMismatchError``.
+        Pre-X.1 checkpoints lacking the contract fields emit
+        ``CheckpointMissingFingerprintWarning`` and bypass validation
+        entirely (operators must re-train or opt-in via strict).
+
+        Phase X.4 will flip the default to ``strict_config=True`` once all
+        in-flight checkpoints have fingerprints — gated by:
+          (a) zero CheckpointMissingFingerprintWarning across CI runs for 2 weeks
+          (b) PHASE_P_BACKLOG.md F-12 retrain item closed
+          (c) audit script reports 100% coverage
+
         Args:
             path: Path to checkpoint
             load_optimizer: Whether to load optimizer state
+            strict_config: When True, raise on fingerprint mismatch instead
+                of warn. Default False (warn-only) per Phase X.4 promotion plan.
         """
+        import warnings
+        from lobtrainer.training.compatibility import (
+            build_compatibility_contract,
+            compute_model_config_hash,
+            CheckpointConfigMismatchError,
+            CheckpointConfigMismatchWarning,
+            CheckpointMissingFingerprintWarning,
+        )
+
         checkpoint = torch.load(path, map_location=self.device)
-        
+
+        # Phase X.1 v2: 3-way contract validation BEFORE model_state_dict load.
+        # Reads checkpoint['compatibility_fingerprint'] + ['model_config_hash'].
+        # Pre-X.1 checkpoints lack both keys → CheckpointMissingFingerprintWarning.
+        ckpt_compat_dict = checkpoint.get('compatibility')
+        ckpt_compat_fingerprint = checkpoint.get('compatibility_fingerprint')
+        ckpt_model_cfg_hash = checkpoint.get('model_config_hash')
+
+        if ckpt_compat_fingerprint is None and ckpt_model_cfg_hash is None:
+            warnings.warn(
+                f"Checkpoint at {path} lacks Phase X.1 v2 contract fields "
+                f"('compatibility_fingerprint', 'model_config_hash'). "
+                f"Pre-X.1 artifact — cannot validate against active config. "
+                f"Re-train or opt-in via strict_config=True to raise.",
+                CheckpointMissingFingerprintWarning,
+                stacklevel=2,
+            )
+        else:
+            active_compat = build_compatibility_contract(self.config)
+            active_model_cfg_hash = compute_model_config_hash(self.config.model)
+
+            # Compatibility-contract mismatch (data-side architecture)
+            if (
+                ckpt_compat_fingerprint is not None
+                and active_compat is not None
+                and ckpt_compat_fingerprint != active_compat.fingerprint()
+            ):
+                # Reconstruct ckpt_compat for actionable diff()
+                from hft_contracts.compatibility import CompatibilityContract
+                try:
+                    # Phase X.1 v2 sanity-check fix: CompatibilityContract has no
+                    # from_dict classmethod — reconstruct via direct **dict expansion.
+                    # Frozen @dataclass __post_init__ runs validation + horizons coercion.
+                    ckpt_compat = CompatibilityContract(**(ckpt_compat_dict or {}))
+                    diff = active_compat.diff(ckpt_compat)
+                    diff_msg = (
+                        f"Checkpoint compatibility mismatch at {path}.\n"
+                        f"  Differing fields (active vs checkpoint): {diff}\n"
+                        f"  Likely cause: feature_count, window_size, horizons, "
+                        f"primary_horizon_idx, normalization_strategy, label_strategy, "
+                        f"or feature_layout differs between checkpoint and active config."
+                    )
+                except Exception as exc:
+                    # Reconstruction failed (corrupt dict shape) — fall back to opaque hash msg
+                    diff_msg = (
+                        f"Checkpoint compatibility_fingerprint mismatch at {path}.\n"
+                        f"  Checkpoint: {ckpt_compat_fingerprint[:16]}...\n"
+                        f"  Active:     {active_compat.fingerprint()[:16]}...\n"
+                        f"  (could not reconstruct CompatibilityContract for diff: {exc})"
+                    )
+                if strict_config:
+                    raise CheckpointConfigMismatchError(diff_msg)
+                else:
+                    warnings.warn(
+                        diff_msg, CheckpointConfigMismatchWarning, stacklevel=2,
+                    )
+
+            # Model architecture hash mismatch (model-side)
+            if (
+                ckpt_model_cfg_hash is not None
+                and ckpt_model_cfg_hash != active_model_cfg_hash
+            ):
+                msg = (
+                    f"Checkpoint model_config_hash mismatch at {path}.\n"
+                    f"  Checkpoint: {ckpt_model_cfg_hash[:16]}...\n"
+                    f"  Active:     {active_model_cfg_hash[:16]}...\n"
+                    f"  Likely cause: model_type, hidden_dim, num_layers, num_heads, "
+                    f"dropout, hmhp_pool_mode, attention, use_bin, num_classes, "
+                    f"or other architectural keys differ.\n"
+                    f"  Loss-tuning keys (gmadl_a/b, regression_loss_*, loss_weights) "
+                    f"are excluded from this hash."
+                )
+                if strict_config:
+                    raise CheckpointConfigMismatchError(msg)
+                else:
+                    warnings.warn(
+                        msg, CheckpointConfigMismatchWarning, stacklevel=2,
+                    )
+
+        # Existing model + optimizer + scheduler load (preserved verbatim).
         self.model.load_state_dict(checkpoint['model_state_dict'])
-        
-        if load_optimizer and 'optimizer_state_dict' in checkpoint:
+
+        # Phase X.1 v2 post-validation fix (Agent 1 Q1): guard against
+        # `optimizer_state_dict: None` from a checkpoint built when
+        # `_optimizer` was None at save time. PyTorch's load_state_dict(None)
+        # raises TypeError. Three conditions: (a) caller wants optimizer load,
+        # (b) checkpoint actually has a non-None optimizer state, (c) target
+        # trainer has an optimizer to load into.
+        if (
+            load_optimizer
+            and checkpoint.get('optimizer_state_dict') is not None
+            and self._optimizer is not None
+        ):
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        
+
         if 'scheduler_state_dict' in checkpoint and self._scheduler is not None:
             self._scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        
+
         # Restore state
         self.state.current_epoch = checkpoint.get('epoch', 0)
         self.state.global_step = checkpoint.get('global_step', 0)
-        
+
         if 'state' in checkpoint:
             self.state.best_val_metric = checkpoint['state'].get('best_val_metric', float('inf'))
             self.state.best_epoch = checkpoint['state'].get('best_epoch', 0)
-        
+
+        # Phase X.1.K minimum-viable: signal that this is a resume so callbacks
+        # can preserve state across the load_checkpoint → train() boundary.
+        # The flag is reset back to False at the end of train() (consumed once).
+        self._resumed_from_checkpoint = True
+
         logger.info(f"Loaded checkpoint from {path} (epoch {self.state.current_epoch})")
 
 
@@ -1041,55 +1246,111 @@ class Trainer:
 def create_trainer(
     config: Union[str, Path, ExperimentConfig],
     **kwargs,
-) -> Trainer:
+):
     """
-    Create a Trainer from config file or object.
-    
+    Create a trainer from a config file or object, dispatched on the
+    model's registered ``framework`` field.
+
+    Phase Q.5 (2026-05-04): closes the dispatch fault line where
+    sklearn-registered models (``framework="sklearn"``) silently fell
+    through to the PyTorch ``Trainer`` and failed at
+    ``model.parameters()``. Now ``ModelRegistry.get(name).framework``
+    is inspected and the appropriate trainer is returned. Both
+    ``Trainer`` (PyTorch) and ``SimpleModelTrainer`` (sklearn) satisfy
+    the ``BaseTrainer`` Protocol so callers (``scripts/train.py``,
+    ``hft-ops``) can use a uniform interface.
+
     Args:
-        config: Path to config file or ExperimentConfig object
-        **kwargs: Additional arguments passed to Trainer
-    
+        config: Path to config file or ExperimentConfig object.
+        **kwargs: Additional arguments passed to the concrete trainer.
+            For sklearn dispatch, a ``callbacks`` kwarg is dropped
+            with an INFO log (sklearn trainer doesn't run callbacks).
+
     Returns:
-        Configured Trainer instance
-    
+        Concrete trainer satisfying ``BaseTrainer``: ``Trainer`` for
+        PyTorch frameworks, ``SimpleModelTrainer`` for sklearn.
+
+    Raises:
+        ValueError: If the registered framework is neither ``"pytorch"``
+            nor ``"sklearn"``.
+
     Example:
-        >>> trainer = create_trainer("configs/lstm.yaml")
+        >>> trainer = create_trainer("configs/lstm.yaml")  # → Trainer
+        >>> trainer = create_trainer("configs/temporal_ridge.yaml")  # → SimpleModelTrainer
         >>> trainer.train()
     """
     from lobtrainer.config import load_config
-    
+
     if isinstance(config, (str, Path)):
         config = load_config(str(config))
-    
-    # Setup default callbacks if none provided
-    if 'callbacks' not in kwargs:
-        output_dir = Path(config.output_dir)
-        callbacks = [
-            EarlyStopping(
-                patience=config.train.early_stopping_patience,
-                metric='val_loss',
-                mode='min',
-                restore_best_weights=True,
-            ),
-            ModelCheckpoint(
-                save_dir=output_dir / 'checkpoints',
-                metric='val_loss',
-                mode='min',
-                save_best_only=True,
-            ),
-            MetricLogger(
-                log_to_file=True,
-                log_file=output_dir / 'training_history.json',
-            ),
-        ]
-        # Phase 8C-α Integration Close-Out Round-3 post-audit note:
-        # PermutationImportanceCallback auto-registration moved to
-        # `Trainer.__init__` (see callback-registration block there).
-        # Moving it earlier ensures `scripts/train.py` path (which
-        # explicitly passes `callbacks=...` kwarg and bypasses this
-        # block entirely) still gets the callback wired, and covers
-        # CVTrainer which calls Trainer(fold_config, ...) directly.
-        kwargs['callbacks'] = callbacks
 
-    return Trainer(config, **kwargs)
+    # Resolve the registered framework. Default "pytorch" for unknown
+    # models so the existing fallback (Trainer raises a descriptive
+    # error at model construction) is preserved.
+    framework = "pytorch"
+    try:
+        from lobmodels import ModelRegistry  # type: ignore
+        model_name = config.model.name  # property → registry key
+        framework = ModelRegistry.get(model_name).framework
+    except (KeyError, ImportError, AttributeError):
+        # Unknown model name OR registry not importable OR
+        # config.model.name unresolvable — fall through to PyTorch.
+        # This preserves prior behavior for any unusual config that
+        # bypassed the registry.
+        framework = "pytorch"
+
+    if framework == "sklearn":
+        # Sklearn trainers run a one-shot fit; PyTorch callbacks
+        # (early-stopping, checkpoint, metric-logger, progress) don't
+        # apply. Drop them with a single INFO log so the caller sees
+        # what was discarded.
+        if "callbacks" in kwargs:
+            dropped = kwargs.pop("callbacks")
+            n = len(dropped) if dropped is not None else 0
+            logger.info(
+                "Dropping %d callback(s) for sklearn trainer "
+                "(framework=%s, model=%s)",
+                n, framework, getattr(config.model, "name", "?"),
+            )
+        return SimpleModelTrainer.from_config(config, **kwargs)
+
+    if framework == "pytorch":
+        # Existing default-callbacks block — preserved verbatim for
+        # PyTorch back-compat.
+        if 'callbacks' not in kwargs:
+            output_dir = Path(config.output_dir)
+            callbacks = [
+                EarlyStopping(
+                    patience=config.train.early_stopping_patience,
+                    metric='val_loss',
+                    mode='min',
+                    restore_best_weights=True,
+                ),
+                ModelCheckpoint(
+                    save_dir=output_dir / 'checkpoints',
+                    metric='val_loss',
+                    mode='min',
+                    save_best_only=True,
+                ),
+                MetricLogger(
+                    log_to_file=True,
+                    log_file=output_dir / 'training_history.json',
+                ),
+            ]
+            # Phase 8C-α Integration Close-Out Round-3 post-audit note:
+            # PermutationImportanceCallback auto-registration moved to
+            # `Trainer.__init__` (see callback-registration block there).
+            # Moving it earlier ensures `scripts/train.py` path (which
+            # explicitly passes `callbacks=...` kwarg and bypasses this
+            # block entirely) still gets the callback wired, and covers
+            # CVTrainer which calls Trainer(fold_config, ...) directly.
+            kwargs['callbacks'] = callbacks
+        return Trainer(config, **kwargs)
+
+    raise ValueError(
+        f"Unknown framework '{framework}' for model "
+        f"'{getattr(config.model, 'name', '?')}'. Expected one of "
+        f"'pytorch', 'sklearn'. Update the @register decorator on the "
+        f"model class to specify a supported framework."
+    )
 

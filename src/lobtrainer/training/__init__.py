@@ -59,6 +59,7 @@ from lobtrainer.training.callbacks import (
     ProgressCallback,
 )
 
+from lobtrainer.training.base import BaseTrainer
 from lobtrainer.training.trainer import (
     Trainer,
     TrainingState,
@@ -100,6 +101,7 @@ from lobtrainer.training.monitoring import (
 
 __all__ = [
     # Core Trainer
+    "BaseTrainer",
     "Trainer",
     "TrainingState",
     "create_trainer",

@@ -21,120 +21,22 @@ import torch
 from lobtrainer.config.paths import resolve_labels_config
 from lobtrainer.export.raw_features import RawFeatureExtractor
 from lobtrainer.export.metadata import build_signal_metadata
+# Phase X.1 v2 (2026-05-04): build_compatibility_contract + derive_data_source moved
+# to lobtrainer.training.compatibility (shared with Trainer.save_checkpoint +
+# SimpleModelTrainer.save_checkpoint sidecar). NO behavior change here — same body.
+from lobtrainer.training.compatibility import (
+    build_compatibility_contract,
+    derive_data_source,
+)
+
+# Phase X.1 v2 (2026-05-04): back-compat aliases for callers that still import
+# the pre-X.1 underscore-prefixed names. New callers should use the public
+# names re-exported above. These aliases will be retained until 2026-10-31
+# (matching hft-contracts._atomic_io shim deadline pattern).
+_build_compatibility_contract = build_compatibility_contract
+_derive_data_source = derive_data_source
 
 logger = logging.getLogger(__name__)
-
-
-def _derive_data_source(data_dir: Any) -> str:
-    """Infer the data_source tag from the export directory path.
-
-    Phase II (2026-04-20): used to populate the ``data_source`` field of
-    CompatibilityContract. Heuristic: directory name prefixed with ``basic_`` is
-    the off-exchange (CMBP-1) pipeline; otherwise MBO LOB.
-
-    This heuristic is documented as the canonical "infer from convention" fallback
-    until each DataConfig carries an explicit ``data_source: Literal[...]`` field.
-    Future DataConfig schema bump should make this explicit — see root CLAUDE.md
-    Change-Coordination Checklist (Phase II → Phase III).
-    """
-    name = Path(str(data_dir)).name
-    if name.startswith("basic_"):
-        return "off_exchange"
-    return "mbo_lob"
-
-
-def _build_compatibility_contract(
-    config: Any,
-    feature_set_ref: Optional[Dict[str, str]],
-    calibration_method: Optional[str],
-) -> Optional[Any]:
-    """Construct a ``hft_contracts.compatibility.CompatibilityContract`` from config.
-
-    Returns ``None`` when import fails (hft-contracts not installed in this venv)
-    so pre-Phase-II environments gracefully omit the new metadata block. Production
-    consumers see the full 11-key block; legacy consumers ignore the unrecognized key.
-
-    Phase II (2026-04-20). See hft_contracts.compatibility for the contract surface.
-    """
-    try:
-        from hft_contracts import SCHEMA_VERSION
-        from hft_contracts.compatibility import (
-            CompatibilityContract,
-            compute_label_strategy_hash,
-        )
-    except Exception as exc:  # broad: package missing / import chain broken
-        logger.warning(
-            "CompatibilityContract not constructed — hft_contracts unavailable: %s", exc
-        )
-        return None
-
-    # Phase A (2026-04-23): explicit defensive reads via ``resolve_labels_config``.
-    # The inner ``try / except Exception`` was deleted — any path-drift (wrong
-    # ``config.labels`` access, missing ``DataConfig.data`` attribute, etc.)
-    # now raises ``AttributeError`` loudly at the helper boundary. Silent-None
-    # was the anti-pattern that masked the Phase II producer-path bug cluster
-    # (see Phase A plan + lobtrainer.config.paths docstring). The outer
-    # ``except ImportError`` guard above preserves the pre-Phase-II soft-dep
-    # fallback; it is the only graceful-degradation path here.
-    labels_cfg = resolve_labels_config(config)
-
-    feature_layout = (
-        feature_set_ref["content_hash"]
-        if feature_set_ref and "content_hash" in feature_set_ref
-        else "default"
-    )
-    horizons_list = labels_cfg.horizons or getattr(
-        config.model, "hmhp_horizons", None
-    )
-    horizons_tuple = tuple(horizons_list) if horizons_list else None
-
-    # Label strategy hash captures the full LabelsConfig — strategy + horizons +
-    # thresholds + smoothing — so parameter variations don't collide under a
-    # flat strategy-name string.
-    label_hash = compute_label_strategy_hash(labels_cfg)
-
-    # Safely coerce feature_count — dataset configs use slightly different
-    # attribute names across asset classes (``feature_count`` vs ``num_features``).
-    feature_count = int(
-        getattr(config.data, "feature_count", None)
-        or getattr(config.data, "num_features", 0)
-    )
-    # Window size lives on ``DataConfig.sequence.window_size`` (the canonical
-    # location post-T9). A legacy ``DataConfig.window_size`` / ``sequence_length``
-    # surface never existed on current schemas, but we keep those fallbacks for
-    # defensive compatibility with any external DataConfig-shape callers.
-    sequence_cfg = getattr(config.data, "sequence", None)
-    window_size = int(
-        getattr(sequence_cfg, "window_size", None)
-        or getattr(config.data, "window_size", None)
-        or getattr(config.data, "sequence_length", 0)
-    )
-    if feature_count == 0 or window_size == 0:
-        logger.warning(
-            "CompatibilityContract has zero feature_count (%d) or window_size (%d) — "
-            "config surface may have drifted; check DataConfig attribute names.",
-            feature_count, window_size,
-        )
-
-    return CompatibilityContract(
-        contract_version=str(SCHEMA_VERSION),
-        schema_version=str(SCHEMA_VERSION),
-        feature_count=feature_count,
-        window_size=window_size,
-        feature_layout=str(feature_layout),
-        data_source=_derive_data_source(config.data.data_dir),
-        label_strategy_hash=label_hash,
-        calibration_method=calibration_method,
-        # Phase A (2026-04-23): source from canonical LabelsConfig, not the
-        # deprecated legacy ``DataConfig.horizon_idx`` field (schema.py:1472
-        # DeprecationWarning). Silent-wrong-fingerprint for non-zero
-        # primary horizons before this fix.
-        primary_horizon_idx=labels_cfg.primary_horizon_idx,
-        horizons=horizons_tuple,
-        normalization_strategy=str(
-            getattr(config.data.normalization, "strategy", "unknown")
-        ),
-    )
 
 
 def _feature_set_ref_dict(data_config: Any) -> Optional[Dict[str, str]]:
@@ -266,12 +168,19 @@ class SignalExporter:
         )
 
         # 6. Build and write metadata
+        # Phase Q.8 (2026-05-04): atomic write via SSoT. Previously a
+        # naive ``with open(...) as f; json.dump`` could leave a partial
+        # JSON file on SIGKILL/ENOSPC mid-write, poisoning a
+        # previously-good signal directory. ``atomic_write_json``
+        # (tmp + fsync + os.replace + cleanup) is the canonical writer
+        # convention used by ``ExperimentRecord.save``,
+        # ``hft_ops.feature_sets.writer``, and ``hft_ops.ledger._save_index``.
+        from hft_contracts.atomic_io import atomic_write_json
         metadata = self._build_metadata(
             inference, raw, split, output_dir, calibration_result
         )
         meta_path = output_dir / "signal_metadata.json"
-        with open(meta_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+        atomic_write_json(meta_path, metadata)
         files_written.append("signal_metadata.json")
 
         logger.info(
@@ -754,12 +663,12 @@ class SignalExporter:
         calibration_method = (
             configured_calibration if calibration_applied else None
         )
-        compatibility = _build_compatibility_contract(
+        compatibility = build_compatibility_contract(
             config=config,
             feature_set_ref=fs_ref,
             calibration_method=calibration_method,
         )
-        data_source_tag = _derive_data_source(config.data.data_dir)
+        data_source_tag = derive_data_source(config.data.data_dir)
 
         return build_signal_metadata(
             model_type=model_type_str,

@@ -19,3 +19,12 @@ _partial: true
 model:
   model_type: hmhp_regression
   hmhp_regression_loss_type: huber
+  # Phase S (2026-05-04): preserve legacy mean-pool behavior for all
+  # HMHP-R children. Pre-Phase-S, HMHP-R's HorizonRegressionDecoder
+  # used `shared_repr.mean(dim=1)`; post-Phase-S the default flipped
+  # to `"last"` (matching HMHP classification — CLAUDE.md validated
+  # findings). This explicit override keeps existing HMHP-R experiments
+  # bit-identical to their pre-Phase-S behavior, while letting future
+  # cross-class ablations (HMHP vs HMHP-R) configure pool_mode
+  # consistently for valid comparisons.
+  hmhp_pool_mode: mean

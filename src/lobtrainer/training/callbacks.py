@@ -244,7 +244,22 @@ class EarlyStopping(Callback):
             self._is_better = lambda new, best: new > best + min_delta
     
     def on_train_start(self) -> None:
-        """Reset state at start of training."""
+        """Reset state at start of training.
+
+        Phase X.1.K minimum-viable (2026-05-04): when the trainer is
+        resuming from a checkpoint (``trainer._resumed_from_checkpoint=True``),
+        SKIP the reset so the patience counter / best_value / best_weights
+        carry over the resume boundary. The flag is consumed (reset to
+        False) by Trainer.train()'s finally block, so a subsequent
+        train() call without re-load resets normally.
+        """
+        if (
+            self.trainer is not None
+            and getattr(self.trainer, "_resumed_from_checkpoint", False)
+        ):
+            # Resume mode — preserve state from the prior checkpoint
+            return
+
         if self.mode == 'min':
             self._state.best_value = float('inf')
         else:
@@ -253,7 +268,7 @@ class EarlyStopping(Callback):
         self._state.wait_count = 0
         self._state.stopped = False
         self._best_weights = None
-    
+
     def on_epoch_end(self, epoch: int, logs: Dict[str, float]) -> None:
         """Check if metric improved."""
         if self.metric not in logs:
@@ -388,10 +403,22 @@ class ModelCheckpoint(Callback):
         self._best_checkpoint_path: Optional[Path] = None
     
     def on_train_start(self) -> None:
-        """Create save directory."""
+        """Create save directory.
+
+        Phase X.1.K minimum-viable (2026-05-04): when resuming, SKIP the
+        ``_best_value`` reset so the next epoch's metric is compared
+        against the prior session's best (not against fresh inf).
+        """
         self.save_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Reset state
+
+        if (
+            self.trainer is not None
+            and getattr(self.trainer, "_resumed_from_checkpoint", False)
+        ):
+            # Resume mode — preserve _best_value snapshot from prior session
+            return
+
+        # Reset state (fresh training)
         if self.mode == 'min':
             self._best_value = float('inf')
         else:
@@ -443,21 +470,29 @@ class ModelCheckpoint(Callback):
         )
         filepath = self.save_dir / filename
         
-        # Build checkpoint
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': self.trainer.model.state_dict(),
-            'metrics': logs,
-        }
-        
-        # Add optimizer state if available
-        if hasattr(self.trainer, 'optimizer') and self.trainer.optimizer is not None:
-            checkpoint['optimizer_state_dict'] = self.trainer.optimizer.state_dict()
-        
-        # Add config if available
-        if hasattr(self.trainer, 'config') and self.trainer.config is not None:
-            checkpoint['config'] = self.trainer.config.to_dict()
-        
+        # Phase X.1 v2 (2026-05-04): build canonical checkpoint via the
+        # shared Trainer._build_checkpoint_dict helper. Eliminates 3-writer
+        # divergence — Trainer.save_checkpoint, this callback, and any
+        # future writer all emit IDENTICAL keys. Includes
+        # 'compatibility' / 'compatibility_fingerprint' / 'model_config_hash'.
+        if hasattr(self.trainer, '_build_checkpoint_dict'):
+            checkpoint = self.trainer._build_checkpoint_dict(
+                epoch_override=epoch,
+                metrics_override=logs,
+            )
+        else:
+            # Fallback for legacy trainers (e.g., third-party Trainer subclasses
+            # that haven't picked up X.1 v2). Same shape as pre-X.1 callback dict.
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': self.trainer.model.state_dict(),
+                'metrics': logs,
+            }
+            if hasattr(self.trainer, 'optimizer') and self.trainer.optimizer is not None:
+                checkpoint['optimizer_state_dict'] = self.trainer.optimizer.state_dict()
+            if hasattr(self.trainer, 'config') and self.trainer.config is not None:
+                checkpoint['config'] = self.trainer.config.to_dict()
+
         # Save
         torch.save(checkpoint, filepath)
         self._saved_checkpoints.append(filepath)
@@ -532,7 +567,19 @@ class MetricLogger(Callback):
         self._history: List[Dict[str, Any]] = []
     
     def on_train_start(self) -> None:
-        """Clear history at start of training."""
+        """Clear history at start of training.
+
+        Phase X.1.K minimum-viable (2026-05-04): when resuming, preserve
+        the in-memory history from the prior session — useful for
+        continuation runs that want to plot full training curves across
+        the resume boundary.
+        """
+        if (
+            self.trainer is not None
+            and getattr(self.trainer, "_resumed_from_checkpoint", False)
+        ):
+            # Resume mode — preserve _history list
+            return
         self._history = []
     
     def on_batch_end(self, batch_idx: int, logs: Dict[str, float]) -> None:

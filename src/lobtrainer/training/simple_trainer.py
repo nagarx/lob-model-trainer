@@ -10,15 +10,26 @@ Handles the full pipeline for simple models:
     6. Save model checkpoint
 
 Output format matches the PyTorch trainer so the backtester works unchanged.
+
+Phase Q (2026-05-04): conforms to ``BaseTrainer`` Protocol via four
+methods (``train``, ``evaluate(split)``, ``save_checkpoint``,
+``load_checkpoint``) so the framework-aware factory at
+``lobtrainer.training.create_trainer`` can return this class for
+sklearn models. ``from_config`` classmethod bridges the canonical
+``ExperimentConfig`` entry-point (``scripts/train.py``, ``hft-ops``)
+to the legacy flat-keyword constructor.
 """
 
 import json
 import logging
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from lobtrainer.config import ExperimentConfig
 
 # Phase IV (2026-04-20): canonical SSoT is ``hft_metrics.temporal``. The legacy
 # ``lobmodels.features.temporal`` path is a re-export shim that emits a
@@ -36,6 +47,7 @@ from lobmodels.models.simple import (
     TemporalGradBoost,
     TemporalGradBoostConfig,
 )
+from lobtrainer.data.dataset import _validate_day_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +58,17 @@ except ImportError:
     MID_PRICE_IDX = 40
     SPREAD_BPS_IDX = 42
 
+from hft_contracts import SCHEMA_VERSION as _CONTRACT_SCHEMA_VERSION
+
 
 def _load_split(data_dir: Path, split: str, horizon_idx: int = 0, max_days: int = None):
-    """Load sequences and regression labels for one split."""
+    """Load sequences and regression labels for one split.
+
+    Validates each day's metadata against the pipeline contract before
+    loading any numpy arrays (fail-fast at the boundary per hft-rules §8).
+    A schema_version mismatch (e.g., loading pre-Phase-O v2.2 exports against
+    the current v3.0 contract) raises ContractError up to the caller.
+    """
     split_dir = data_dir / split
     meta_files = sorted(split_dir.glob("*_metadata.json"))
     if max_days:
@@ -59,6 +79,7 @@ def _load_split(data_dir: Path, split: str, horizon_idx: int = 0, max_days: int 
         with open(mf) as f:
             m = json.load(f)
         day = m["day"]
+        _validate_day_metadata(m, day)
         seq = np.load(split_dir / f"{day}_sequences.npy", mmap_mode="r")
         reg = np.load(split_dir / f"{day}_regression_labels.npy")
         all_seqs.append(seq)
@@ -116,6 +137,77 @@ class SimpleModelTrainer:
         self.train_metrics: Dict[str, float] = {}
         self.val_metrics: Dict[str, float] = {}
         self.test_metrics: Dict[str, float] = {}
+        # Optional ExperimentConfig reference set by ``from_config`` for
+        # traceability; absent on the legacy flat-keyword construction path.
+        self.config: Optional["ExperimentConfig"] = None
+
+    @classmethod
+    def from_config(
+        cls,
+        config: "ExperimentConfig",
+        **kwargs: Any,
+    ) -> "SimpleModelTrainer":
+        """Build a SimpleModelTrainer from an ``ExperimentConfig``.
+
+        Phase Q.6 (2026-05-04): closes the dispatch gap where sklearn
+        models were unreachable through ``create_trainer(config)``. Reads
+        ``config.data.data_dir``, ``config.model.model_type``,
+        ``config.model.params``, the canonical
+        ``config.data.labels.primary_horizon_idx`` (with legacy
+        ``config.data.horizon_idx`` fallback per the H-6 backlog item),
+        and ``config.output_dir``.
+
+        The YAML convention ``model.params.features: {...}`` is mapped
+        to the constructor's ``feature_config`` argument; the alternate
+        key ``feature_config:`` is also accepted.
+        """
+        # Resolve primary horizon index: prefer the Phase A.5 canonical
+        # location, fall back to the deprecated ``data.horizon_idx`` field.
+        horizon_idx: Optional[int] = None
+        labels_obj = getattr(getattr(config, "data", None), "labels", None)
+        if labels_obj is not None:
+            horizon_idx = getattr(labels_obj, "primary_horizon_idx", None)
+        if horizon_idx is None:
+            horizon_idx = getattr(config.data, "horizon_idx", 0) or 0
+
+        # Extract feature_config from params under either YAML convention.
+        # Phase Q.6 post-audit fix: the previous nested-pop pattern
+        # `params.pop("features", params.pop("feature_config", None))`
+        # silently discarded `feature_config` when BOTH keys were present
+        # because Python evaluates the inner pop unconditionally before
+        # the outer. Replace with explicit precedence + fail-loud on
+        # ambiguous configs per hft-rules §5.
+        params = dict(config.model.params) if config.model.params else {}
+        has_features = "features" in params
+        has_feature_config = "feature_config" in params
+        if has_features and has_feature_config:
+            raise ValueError(
+                "model.params contains BOTH 'features' AND 'feature_config' "
+                "keys; provide only one. These are alternate YAML conventions "
+                "for the same SimpleModelTrainer feature_config argument."
+            )
+        if has_features:
+            feature_config = params.pop("features")
+        elif has_feature_config:
+            feature_config = params.pop("feature_config")
+        else:
+            feature_config = None
+
+        # Resolve model_type to its registry-key string.
+        mt = config.model.model_type
+        model_type_str = mt.value if hasattr(mt, "value") else str(mt)
+
+        instance = cls(
+            data_dir=str(config.data.data_dir),
+            model_type=model_type_str,
+            model_config=params,
+            feature_config=feature_config,
+            horizon_idx=int(horizon_idx),
+            output_dir=str(config.output_dir),
+            **kwargs,
+        )
+        instance.config = config
+        return instance
 
     def setup(self):
         """Load data, create model, engineer features."""
@@ -161,8 +253,29 @@ class SimpleModelTrainer:
 
         logger.info(f"Model: {self.model.name}")
 
-    def train(self) -> Dict[str, float]:
-        """Fit the model and compute train + val metrics."""
+    def train(self) -> Dict[str, Any]:
+        """Fit the model and compute train + val metrics.
+
+        Returns a dict shaped to match the PyTorch ``Trainer.train``
+        return value so callers (``scripts/train.py``) can read
+        ``total_epochs`` / ``best_val_metric`` / ``best_epoch`` keys
+        polymorphically. Sklearn fit is one-shot, so sentinel values
+        are emitted: ``total_epochs=1``, ``best_epoch=0``, and
+        ``best_val_metric`` falls back to the negative R² (so smaller
+        is better, mirroring loss conventions).
+
+        Phase Q.6 post-live-experiment fix (2026-05-04): mirrors the
+        PyTorch ``Trainer.train`` pattern of calling ``self.setup()``
+        if not already done — ``scripts/train.py:429`` calls
+        ``trainer.train()`` directly without an explicit setup, so the
+        sklearn path must auto-setup to be a drop-in replacement.
+        """
+        # Auto-setup if not already done (matches Trainer.train at
+        # trainer.py:797). Idempotent: setup() reloads data each call,
+        # so we guard via the populated-model check.
+        if self.model is None:
+            self.setup()
+
         t0 = time.time()
         self.model.fit(self._X_train, self._y_train)
         fit_time = time.time() - t0
@@ -179,16 +292,56 @@ class SimpleModelTrainer:
             f"Val: R²={self.val_metrics['r2']:.4f}, IC={self.val_metrics['ic']:.4f} | "
             f"Fit: {fit_time:.1f}s"
         )
-        return self.val_metrics
+        # Phase Q.6 (2026-05-04): augment return dict with PyTorch-shaped
+        # keys for cross-trainer caller compatibility.
+        result: Dict[str, Any] = {
+            **self.val_metrics,
+            "total_epochs": 1,
+            "best_epoch": 0,
+            "best_val_metric": float(-self.val_metrics.get("r2", 0.0)),
+            "val_metrics": dict(self.val_metrics),
+            "train_metrics": dict(self.train_metrics),
+        }
+        return result
 
-    def evaluate(self) -> Dict[str, float]:
-        """Evaluate on the test split."""
-        y_pred = self.model.predict(self._X_test)
-        self.test_metrics = _compute_metrics(self._y_test, y_pred)
-        return self.test_metrics
+    def evaluate(self, split: str = "test") -> Dict[str, float]:
+        """Evaluate the trained model on the named split.
+
+        Phase Q.6 (2026-05-04): accepts a ``split`` argument to satisfy
+        ``BaseTrainer`` Protocol parity with ``Trainer.evaluate(split)``.
+        """
+        if split == "test":
+            y_pred = self.model.predict(self._X_test)
+            self.test_metrics = _compute_metrics(self._y_test, y_pred)
+            return self.test_metrics
+        elif split == "val":
+            # If train() already ran, return cached val_metrics; else compute.
+            if not self.val_metrics:
+                y_pred_val = self.model.predict(self._X_val)
+                self.val_metrics = _compute_metrics(self._y_val, y_pred_val)
+            return self.val_metrics
+        elif split == "train":
+            if not self.train_metrics:
+                y_pred_train = self.model.predict(self._X_train)
+                self.train_metrics = _compute_metrics(self._y_train, y_pred_train)
+            return self.train_metrics
+        else:
+            raise ValueError(
+                f"Unknown split '{split}' for SimpleModelTrainer.evaluate; "
+                f"expected one of 'train', 'val', 'test'."
+            )
 
     def export_signals(self, split: str = "test") -> Path:
-        """Export predictions in the backtester-compatible format."""
+        """Export predictions in the backtester-compatible format.
+
+        Phase Q.7 (2026-05-04): SSoT migration. Previously SimpleModelTrainer
+        built an inline 9-field metadata dict; now uses canonical
+        ``build_signal_metadata`` so sklearn signals carry the same Phase II
+        + Phase 4c.4 surfaces as the PyTorch path. Phase Q.8 (2026-05-04):
+        write through ``atomic_write_json`` (tmp + fsync + os.replace) so a
+        SIGKILL mid-write doesn't poison a previously-good signal directory
+        with a partial JSON.
+        """
         if split == "test":
             X, y, spreads, prices = self._X_test, self._y_test, self._spreads_test, self._prices_test
         else:
@@ -204,29 +357,44 @@ class SimpleModelTrainer:
         np.save(signal_dir / "spreads.npy", spreads)
         np.save(signal_dir / "prices.npy", prices)
 
-        metadata = {
-            "model_type": self.model_type,
-            "model_name": self.model.name,
-            "parameters": self.model.num_parameters,
-            "total_samples": int(len(y_pred)),
-            "split": split,
-            "horizon_idx": self.horizon_idx,
-            "feature_config": self.feat_config.to_dict(),
-            "metrics": {k: round(v, 6) for k, v in self.test_metrics.items()},
-        }
-        with open(signal_dir / "signal_metadata.json", "w") as f:
-            json.dump(metadata, f, indent=2)
+        # Lazy-import the SSoT to avoid pulling exporter.py's PyTorch
+        # dependencies into the sklearn path's module-load surface.
+        from lobtrainer.export.metadata import build_signal_metadata
+        from hft_contracts.atomic_io import atomic_write_json
+
+        metadata = build_signal_metadata(
+            model_type=self.model_type,
+            model_name=self.model.name,
+            parameters=self.model.num_parameters,
+            signal_type="regression",
+            split=split,
+            total_samples=int(len(y_pred)),
+            checkpoint=str(self.output_dir / "checkpoints" / "best.pkl"),
+            horizon_idx=self.horizon_idx,
+            feature_config=self.feat_config.to_dict() if self.feat_config else None,
+            metrics={k: round(v, 6) for k, v in self.test_metrics.items()} if self.test_metrics else None,
+            # Phase II compatibility block: deferred to a future cycle that
+            # adds a sklearn-side CompatibilityContract builder. The PyTorch
+            # path's `_build_compatibility_contract` reads PyTorch-specific
+            # config; sklearn would need a parallel implementation.
+            # Top-level `schema_version` + `contract_version` (the H-1
+            # contract pin) are added by build_signal_metadata regardless.
+        )
+        atomic_write_json(signal_dir / "signal_metadata.json", metadata)
 
         logger.info(f"Exported {len(y_pred):,} signals to {signal_dir}")
         return signal_dir
 
-    def save(self):
-        """Save model checkpoint, metrics, and config."""
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        ckpt_dir = self.output_dir / "checkpoints"
-        ckpt_dir.mkdir(exist_ok=True)
+    def save(self) -> Path:
+        """Legacy save entry-point (preserved for back-compat).
 
-        self.model.save(ckpt_dir / "best.pkl")
+        New callers should use ``save_checkpoint(path)`` (Phase Q.6
+        Protocol method); this remains as a thin wrapper that delegates
+        to ``save_checkpoint`` with the default location and also writes
+        the ``test_metrics.json`` / ``training_history.json`` sidecar
+        files.
+        """
+        ckpt_path = self.save_checkpoint()
 
         if self.test_metrics:
             with open(self.output_dir / "test_metrics.json", "w") as f:
@@ -239,9 +407,221 @@ class SimpleModelTrainer:
             "train_metrics": self.train_metrics,
             "val_metrics": self.val_metrics,
             "test_metrics": self.test_metrics,
-            "feature_config": self.feat_config.to_dict(),
+            "feature_config": self.feat_config.to_dict() if self.feat_config else {},
         }
         with open(self.output_dir / "training_history.json", "w") as f:
             json.dump(history, f, indent=2)
 
         logger.info(f"Saved to {self.output_dir}")
+        return ckpt_path
+
+    def save_checkpoint(self, path: Optional[Path] = None) -> Path:
+        """Persist the fitted sklearn model to disk via pickle.
+
+        Phase Q.6 (2026-05-04): satisfies the ``BaseTrainer`` Protocol
+        contract that ``scripts/train.py`` relies on. Defaults to
+        ``<output_dir>/checkpoints/best.pkl`` matching the legacy
+        ``save()`` location.
+
+        Args:
+            path: Override default location. Parent directory is
+                created if missing.
+
+        Returns:
+            Absolute path actually written.
+        """
+        if path is None:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_dir = self.output_dir / "checkpoints"
+            ckpt_dir.mkdir(exist_ok=True)
+            path = ckpt_dir / "best.pkl"
+        else:
+            path = Path(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+        if self.model is None:
+            raise RuntimeError(
+                "Cannot save_checkpoint before train(): self.model is None."
+            )
+        self.model.save(path)
+
+        # Phase X.1 v2 (2026-05-04): write atomic sidecar with
+        # CompatibilityContract + model_config_hash for cross-checkpoint
+        # validation on load. Mirrors the PyTorch path's checkpoint dict
+        # contract — same primitives, same fingerprint format.
+        # Sidecar has its own schema_version='1.0' so future schema bumps
+        # can migrate older sidecars.
+        if self.config is not None:
+            from hft_contracts.atomic_io import atomic_write_json
+            from lobtrainer.training.compatibility import (
+                build_compatibility_contract,
+                compute_model_config_hash,
+            )
+            compat = build_compatibility_contract(self.config)
+            sidecar_path = path.with_suffix(path.suffix + ".config.json")
+            sidecar = {
+                "schema_version": "1.0",  # Phase X.1 v2 sidecar schema
+                "compatibility": compat.to_canonical_dict() if compat is not None else None,
+                "compatibility_fingerprint": compat.fingerprint() if compat is not None else None,
+                "model_config_hash": compute_model_config_hash(
+                    self.config.model
+                ),
+                "config": self.config.to_dict(),
+            }
+            atomic_write_json(sidecar_path, sidecar)
+            logger.info(f"Saved Phase X.1 v2 sidecar to {sidecar_path}")
+        else:
+            logger.warning(
+                f"SimpleModelTrainer.save_checkpoint at {path} did not write a "
+                f"sidecar — self.config is None (legacy flat-keyword "
+                f"construction path). Future load_checkpoint cannot validate."
+            )
+
+        return path
+
+    def load_checkpoint(self, path: Path, strict_config: bool = False) -> None:
+        """Restore the sklearn model from a pickle checkpoint.
+
+        Phase X.1 v2 (2026-05-04): validates the sidecar at
+        ``<path>.config.json`` against the active config. Mirrors
+        ``Trainer.load_checkpoint`` semantics:
+          * ``strict_config=False`` (default): warn on mismatch.
+          * ``strict_config=True``: raise CheckpointConfigMismatchError.
+          * Sidecar missing: warn CheckpointMissingFingerprintWarning.
+          * Sidecar parse error: warn + skip validation.
+          * Sidecar parses but lacks contract keys (partial-write or
+            pre-X.1 v2 schema): warn (Agent 4 sanity-check Q10 fix).
+
+        Args:
+            path: Pickle file written by ``save_checkpoint`` or
+                legacy ``save``.
+            strict_config: When True, raise on fingerprint mismatch.
+
+        Raises:
+            ValueError: If ``self.model_type`` is not a known sklearn
+                registry entry.
+        """
+        import warnings
+        import json
+        from lobtrainer.training.compatibility import (
+            build_compatibility_contract,
+            compute_model_config_hash,
+            CheckpointConfigMismatchError,
+            CheckpointConfigMismatchWarning,
+            CheckpointMissingFingerprintWarning,
+        )
+
+        path = Path(path)
+
+        # Phase X.1 v2 sidecar validation BEFORE pickle load.
+        sidecar_path = path.with_suffix(path.suffix + ".config.json")
+        if not sidecar_path.exists():
+            warnings.warn(
+                f"SimpleModelTrainer checkpoint at {path} lacks sidecar "
+                f"({sidecar_path}). Pre-X.1 v2 artifact — cannot validate "
+                f"against active config.",
+                CheckpointMissingFingerprintWarning,
+                stacklevel=2,
+            )
+        else:
+            try:
+                with open(sidecar_path) as f:
+                    sidecar = json.load(f)
+            except json.JSONDecodeError as exc:
+                warnings.warn(
+                    f"Sidecar at {sidecar_path} is corrupt JSON: {exc}. "
+                    f"Skipping validation.",
+                    CheckpointMissingFingerprintWarning,
+                    stacklevel=2,
+                )
+                sidecar = {}
+
+            ckpt_compat_dict = sidecar.get("compatibility")
+            ckpt_compat_fingerprint = sidecar.get("compatibility_fingerprint")
+            ckpt_model_cfg_hash = sidecar.get("model_config_hash")
+
+            # Per Agent 4 sanity check Q10: warn when sidecar parses cleanly but
+            # lacks BOTH contract keys (partial-write or pre-X.1 v2 schema).
+            if ckpt_compat_fingerprint is None and ckpt_model_cfg_hash is None and sidecar:
+                warnings.warn(
+                    f"Sidecar at {sidecar_path} parsed but lacks both "
+                    f"'compatibility_fingerprint' and 'model_config_hash' keys. "
+                    f"Pre-X.1 v2 schema or partial-write. Skipping validation.",
+                    CheckpointMissingFingerprintWarning,
+                    stacklevel=2,
+                )
+            elif self.config is not None:
+                # Build active contracts for comparison
+                active_compat = build_compatibility_contract(self.config)
+                active_model_cfg_hash = compute_model_config_hash(
+                    self.config.model
+                )
+
+                # Compatibility-contract mismatch
+                if (
+                    ckpt_compat_fingerprint is not None
+                    and active_compat is not None
+                    and ckpt_compat_fingerprint != active_compat.fingerprint()
+                ):
+                    from hft_contracts.compatibility import CompatibilityContract
+                    try:
+                        # Phase X.1 v2 sanity-check fix: no from_dict classmethod
+                        # exists; reconstruct via dict expansion (post_init validates).
+                        ckpt_compat = CompatibilityContract(
+                            **(ckpt_compat_dict or {})
+                        )
+                        diff = active_compat.diff(ckpt_compat)
+                        diff_msg = (
+                            f"Sidecar compatibility mismatch at {sidecar_path}.\n"
+                            f"  Differing fields (active vs sidecar): {diff}"
+                        )
+                    except Exception:
+                        diff_msg = (
+                            f"Sidecar compatibility_fingerprint mismatch at "
+                            f"{sidecar_path}: ckpt={ckpt_compat_fingerprint[:16]}, "
+                            f"active={active_compat.fingerprint()[:16]}"
+                        )
+                    if strict_config:
+                        raise CheckpointConfigMismatchError(diff_msg)
+                    else:
+                        warnings.warn(
+                            diff_msg,
+                            CheckpointConfigMismatchWarning,
+                            stacklevel=2,
+                        )
+
+                # Model-config-hash mismatch
+                if (
+                    ckpt_model_cfg_hash is not None
+                    and ckpt_model_cfg_hash != active_model_cfg_hash
+                ):
+                    msg = (
+                        f"Sidecar model_config_hash mismatch at {sidecar_path}: "
+                        f"ckpt={ckpt_model_cfg_hash[:16]}, "
+                        f"active={active_model_cfg_hash[:16]}. "
+                        f"Likely cause: model_type/hidden_dim/num_layers/dropout "
+                        f"or other architectural keys differ."
+                    )
+                    if strict_config:
+                        raise CheckpointConfigMismatchError(msg)
+                    else:
+                        warnings.warn(
+                            msg,
+                            CheckpointConfigMismatchWarning,
+                            stacklevel=2,
+                        )
+
+        # Existing sklearn pickle load (preserved verbatim).
+        if self.model_type == "temporal_ridge":
+            from lobmodels.models.simple import TemporalRidge
+            self.model = TemporalRidge.load(path)
+        elif self.model_type == "temporal_gradboost":
+            from lobmodels.models.simple import TemporalGradBoost
+            self.model = TemporalGradBoost.load(path)
+        else:
+            raise ValueError(
+                f"Cannot load_checkpoint for unknown sklearn model_type "
+                f"'{self.model_type}'; expected 'temporal_ridge' or "
+                f"'temporal_gradboost'."
+            )
+        logger.info(f"Loaded {self.model_type} checkpoint from {path}")

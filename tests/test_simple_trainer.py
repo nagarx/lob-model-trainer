@@ -315,3 +315,299 @@ class TestSimpleModelTrainer:
 
         with pytest.raises(ValueError, match="Only 'test' split"):
             trainer.export_signals("val")
+
+
+# =============================================================================
+# Phase Q.6 — from_config classmethod adapter
+# =============================================================================
+
+
+class TestFromConfig:
+    """Q.6: SimpleModelTrainer.from_config bridges ExperimentConfig
+    to the legacy flat-keyword constructor so create_trainer dispatch
+    can return this class for sklearn models."""
+
+    def _build_synthetic_config(
+        self, simple_data_dir, tmp_path, *, model_type="temporal_ridge",
+        primary_horizon_idx=0, params=None,
+    ):
+        """Construct an ExperimentConfig pointing at the synthetic data dir."""
+        from lobtrainer.config.schema import (
+            ExperimentConfig, DataConfig, ModelConfig, TrainConfig,
+            LabelsConfig, SequenceConfig, NormalizationConfig,
+            ModelType, TaskType, LossType,
+        )
+        if params is None:
+            params = {"alpha": 1.0}
+        data = DataConfig(
+            data_dir=str(simple_data_dir),
+            feature_count=NUM_FEATURES,
+            sequence=SequenceConfig(window_size=SEQ_LEN, stride=1),
+            normalization=NormalizationConfig(strategy="none"),
+            labels=LabelsConfig(
+                primary_horizon_idx=primary_horizon_idx,
+                horizons=[10, 60, 300],
+                source="forward_prices",
+                task="regression",
+            ),
+        )
+        model = ModelConfig(
+            model_type=getattr(ModelType, model_type.upper()),
+            input_size=NUM_FEATURES,
+            params=params,
+        )
+        train = TrainConfig(task_type=TaskType.REGRESSION, loss_type=LossType.HUBER)
+        return ExperimentConfig(
+            name="from_config_test", data=data, model=model, train=train,
+            output_dir=str(tmp_path / "output"),
+        )
+
+    def test_from_config_preserves_data_dir(self, simple_data_dir, tmp_path):
+        config = self._build_synthetic_config(simple_data_dir, tmp_path)
+        trainer = SimpleModelTrainer.from_config(config)
+        assert trainer.data_dir == Path(str(simple_data_dir))
+
+    def test_from_config_unpacks_params_features_key(self, simple_data_dir, tmp_path):
+        """The YAML convention `params.features:` is mapped to the
+        constructor's `feature_config` argument."""
+        config = self._build_synthetic_config(
+            simple_data_dir, tmp_path,
+            params={
+                "alpha": 0.5,
+                "features": {"signal_indices": [40, 42, 45], "rolling_windows": [3, 5]},
+            },
+        )
+        trainer = SimpleModelTrainer.from_config(config)
+        assert trainer.feature_config_dict == {
+            "signal_indices": [40, 42, 45], "rolling_windows": [3, 5]
+        }
+        # alpha remained in model_config (popped features only)
+        assert trainer.model_config == {"alpha": 0.5}
+
+    def test_from_config_alternate_feature_config_key(self, simple_data_dir, tmp_path):
+        """The alternate YAML convention `params.feature_config:` is also accepted."""
+        config = self._build_synthetic_config(
+            simple_data_dir, tmp_path,
+            params={
+                "alpha": 0.5,
+                "feature_config": {"signal_indices": [40, 42]},
+            },
+        )
+        trainer = SimpleModelTrainer.from_config(config)
+        assert trainer.feature_config_dict == {"signal_indices": [40, 42]}
+
+    def test_from_config_rejects_both_features_keys(self, simple_data_dir, tmp_path):
+        """Q.6 post-audit: providing BOTH `features` and `feature_config`
+        in params is an operator error. Pre-fix this silently discarded
+        `feature_config`; now it fail-louds per hft-rules §5."""
+        config = self._build_synthetic_config(
+            simple_data_dir, tmp_path,
+            params={
+                "alpha": 0.5,
+                "features": {"signal_indices": [40, 42]},
+                "feature_config": {"signal_indices": [85, 86]},
+            },
+        )
+        with pytest.raises(ValueError, match=r"BOTH 'features' AND 'feature_config'"):
+            SimpleModelTrainer.from_config(config)
+
+    def test_from_config_resolves_primary_horizon_idx(self, simple_data_dir, tmp_path):
+        config = self._build_synthetic_config(simple_data_dir, tmp_path, primary_horizon_idx=2)
+        trainer = SimpleModelTrainer.from_config(config)
+        assert trainer.horizon_idx == 2
+
+    def test_from_config_stores_config_attribute(self, simple_data_dir, tmp_path):
+        """`self.config` is set for traceability (legacy direct
+        constructor leaves it None)."""
+        config = self._build_synthetic_config(simple_data_dir, tmp_path)
+        trainer = SimpleModelTrainer.from_config(config)
+        assert trainer.config is config
+
+    def test_from_config_temporal_gradboost(self, simple_data_dir, tmp_path):
+        config = self._build_synthetic_config(
+            simple_data_dir, tmp_path, model_type="temporal_gradboost",
+            params={"n_estimators": 50, "max_depth": 4},
+        )
+        trainer = SimpleModelTrainer.from_config(config)
+        assert trainer.model_type == "temporal_gradboost"
+        assert trainer.model_config == {"n_estimators": 50, "max_depth": 4}
+
+
+# =============================================================================
+# Phase Q.6 — save_checkpoint / load_checkpoint Protocol methods
+# =============================================================================
+
+
+class TestCheckpointRoundtrip:
+    """Q.6: save_checkpoint / load_checkpoint satisfy BaseTrainer Protocol."""
+
+    def test_save_checkpoint_default_path(self, simple_data_dir, tmp_path):
+        trainer = SimpleModelTrainer(
+            data_dir=str(simple_data_dir), model_type="temporal_ridge",
+            model_config={"alpha": 1.0}, output_dir=str(tmp_path / "output"),
+        )
+        trainer.setup()
+        trainer.train()
+        path = trainer.save_checkpoint()
+        assert path.exists()
+        assert path.name == "best.pkl"
+
+    def test_save_checkpoint_custom_path(self, simple_data_dir, tmp_path):
+        trainer = SimpleModelTrainer(
+            data_dir=str(simple_data_dir), model_type="temporal_ridge",
+            model_config={"alpha": 1.0}, output_dir=str(tmp_path / "output"),
+        )
+        trainer.setup()
+        trainer.train()
+        custom = tmp_path / "custom" / "model.pkl"
+        path = trainer.save_checkpoint(custom)
+        assert path == custom
+        assert custom.exists()
+
+    def test_save_checkpoint_before_train_raises(self, simple_data_dir, tmp_path):
+        """Cannot save_checkpoint before the model has been fit."""
+        trainer = SimpleModelTrainer(
+            data_dir=str(simple_data_dir), model_type="temporal_ridge",
+            model_config={"alpha": 1.0}, output_dir=str(tmp_path / "output"),
+        )
+        trainer.setup()  # creates self.model but doesn't fit
+        # train() not called; save_checkpoint of an unfit model should still
+        # work (BaseSimpleModel.save handles unfit instances), so we test
+        # the harder no-model case instead by clearing.
+        trainer.model = None
+        with pytest.raises(RuntimeError, match=r"self\.model is None"):
+            trainer.save_checkpoint()
+
+    def test_load_checkpoint_round_trip(self, simple_data_dir, tmp_path):
+        """Round-trip checkpoint via save+load.
+
+        Phase X.1 v2 X.1.M (2026-05-04): xfail decorator RETIRED — the
+        F-1 root cause (lobmodels.config.base.BaseConfig.from_dict naive
+        cls(**d)) was structurally fixed by X.1.B (recursive reconstruction
+        via dataclasses.is_dataclass). Test now passes cleanly.
+        """
+        # Phase 1: train and save.
+        trainer1 = SimpleModelTrainer(
+            data_dir=str(simple_data_dir), model_type="temporal_ridge",
+            model_config={"alpha": 1.0}, output_dir=str(tmp_path / "out1"),
+        )
+        trainer1.setup()
+        trainer1.train()
+        ckpt = trainer1.save_checkpoint()
+
+        # Phase 2: fresh trainer loads the checkpoint and produces same predictions.
+        trainer2 = SimpleModelTrainer(
+            data_dir=str(simple_data_dir), model_type="temporal_ridge",
+            model_config={"alpha": 1.0}, output_dir=str(tmp_path / "out2"),
+        )
+        trainer2.setup()
+        trainer2.load_checkpoint(ckpt)
+
+        # Same X → same predictions across both trainers.
+        pred1 = trainer1.model.predict(trainer1._X_test)
+        pred2 = trainer2.model.predict(trainer2._X_test)
+        np.testing.assert_array_equal(pred1, pred2)
+
+    def test_load_checkpoint_method_exists_and_callable(self, simple_data_dir, tmp_path):
+        """Q.6 Protocol contract: load_checkpoint exists and can be invoked.
+
+        This is the minimum-viable contract — full round-trip is xfailed
+        pending the lob-models BaseConfig.from_dict fix. Verifies that
+        the Phase Q.5 dispatch can call load_checkpoint without
+        AttributeError on the method itself."""
+        trainer = SimpleModelTrainer.__new__(SimpleModelTrainer)
+        trainer.model_type = "temporal_ridge"
+        # Method exists and is callable (will raise on missing file but
+        # not on the method-resolution layer).
+        assert callable(trainer.load_checkpoint), (
+            "load_checkpoint must be a callable method on SimpleModelTrainer"
+        )
+
+    def test_load_checkpoint_unknown_model_type_raises(self, tmp_path):
+        trainer = SimpleModelTrainer.__new__(SimpleModelTrainer)
+        trainer.model_type = "definitely_not_a_real_model"
+        with pytest.raises(ValueError, match=r"Cannot load_checkpoint"):
+            trainer.load_checkpoint(tmp_path / "nope.pkl")
+
+
+# =============================================================================
+# Phase Q.6 — train() augmented return shape
+# =============================================================================
+
+
+class TestTrainReturnShape:
+    """Q.6: train() returns dict with `total_epochs` / `best_val_metric`
+    / `best_epoch` keys matching PyTorch Trainer.train()'s shape so
+    `scripts/train.py` can read both polymorphically."""
+
+    def test_train_returns_total_epochs_sentinel(self, simple_data_dir, tmp_path):
+        trainer = SimpleModelTrainer(
+            data_dir=str(simple_data_dir), model_type="temporal_ridge",
+            model_config={"alpha": 1.0}, output_dir=str(tmp_path / "output"),
+        )
+        trainer.setup()
+        result = trainer.train()
+        assert result["total_epochs"] == 1
+        assert result["best_epoch"] == 0
+        assert "best_val_metric" in result
+        assert isinstance(result["best_val_metric"], float)
+
+    def test_train_returns_val_metrics_under_keys(self, simple_data_dir, tmp_path):
+        trainer = SimpleModelTrainer(
+            data_dir=str(simple_data_dir), model_type="temporal_ridge",
+            model_config={"alpha": 1.0}, output_dir=str(tmp_path / "output"),
+        )
+        trainer.setup()
+        result = trainer.train()
+        # All val_metrics keys must be in the top-level dict (back-compat).
+        for key in ("r2", "ic", "mae"):
+            assert key in result
+
+
+# =============================================================================
+# Phase Q.6 — evaluate(split) Protocol method
+# =============================================================================
+
+
+class TestEvaluateSplit:
+    """Q.6: evaluate accepts a split argument matching Trainer.evaluate."""
+
+    def test_evaluate_test_split(self, simple_data_dir, tmp_path):
+        trainer = SimpleModelTrainer(
+            data_dir=str(simple_data_dir), model_type="temporal_ridge",
+            model_config={"alpha": 1.0}, output_dir=str(tmp_path / "output"),
+        )
+        trainer.setup()
+        trainer.train()
+        metrics = trainer.evaluate("test")
+        assert "r2" in metrics
+
+    def test_evaluate_val_split(self, simple_data_dir, tmp_path):
+        trainer = SimpleModelTrainer(
+            data_dir=str(simple_data_dir), model_type="temporal_ridge",
+            model_config={"alpha": 1.0}, output_dir=str(tmp_path / "output"),
+        )
+        trainer.setup()
+        trainer.train()
+        metrics = trainer.evaluate("val")
+        assert "r2" in metrics
+
+    def test_evaluate_train_split(self, simple_data_dir, tmp_path):
+        trainer = SimpleModelTrainer(
+            data_dir=str(simple_data_dir), model_type="temporal_ridge",
+            model_config={"alpha": 1.0}, output_dir=str(tmp_path / "output"),
+        )
+        trainer.setup()
+        trainer.train()
+        metrics = trainer.evaluate("train")
+        assert "r2" in metrics
+
+    def test_evaluate_unknown_split_raises(self, simple_data_dir, tmp_path):
+        trainer = SimpleModelTrainer(
+            data_dir=str(simple_data_dir), model_type="temporal_ridge",
+            model_config={"alpha": 1.0}, output_dir=str(tmp_path / "output"),
+        )
+        trainer.setup()
+        trainer.train()
+        with pytest.raises(ValueError, match=r"Unknown split"):
+            trainer.evaluate("nonsense")

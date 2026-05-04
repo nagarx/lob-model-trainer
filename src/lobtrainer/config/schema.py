@@ -19,7 +19,7 @@ Usage:
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
-from typing import Optional, List, Tuple, Any, ClassVar, Dict, TYPE_CHECKING
+from typing import Optional, List, Literal, Tuple, Any, ClassVar, Dict, TYPE_CHECKING
 import json
 import math  # Phase A.5.3a.1 (2026-04-24): isfinite() guard against NaN/Inf float inputs.
 import yaml
@@ -605,7 +605,14 @@ class ModelType(str, Enum):
     
     TLOB = "tlob"
     """TLOB (Transformer LOB with dual attention). Berti & Kasneci 2025."""
-    
+
+    MLPLOB = "mlplob"
+    """MLPLOB (MLP-only LOB) — TLOB-shaped without attention. Berti & Kasneci 2025
+    use it as a baseline. Phase X.1 v2 (2026-05-04) closes F-3: prior to v2,
+    lobmodels registered ``mlplob`` but the trainer's ``ModelType`` enum
+    didn't include MLPLOB, making it unreachable via standard YAML config.
+    """
+
     HMHP = "hmhp"
     """Hierarchical Multi-Horizon Predictor (classification)."""
     
@@ -1454,6 +1461,21 @@ class ModelConfig(SafeBaseModel):
     tlob_dataset_type: str = "nvda"
     tlob_use_cvml: bool = False
     tlob_cvml_out_channels: int = 0
+
+    # MLPLOB-specific fields (Phase X.1 v2 — F-3 closure 2026-05-04).
+    # Mirror the TLOB pattern. Defaults match lobmodels.MLPLOBConfig
+    # at lobmodels/config/base.py:967-994.
+    # Phase X.1 v2 post-validation fix (Agent 4 Q10 2026-05-04): added
+    # mlplob_bin_eps + mlplob_bin_init_gamma to fix silent-default bug —
+    # pre-fix, YAML changes to these BiN parameters were silently ignored
+    # because they weren't propagated through _build_params_from_legacy.
+    mlplob_hidden_dim: int = 40
+    mlplob_num_layers: int = 3
+    mlplob_mlp_expansion: float = 4.0
+    mlplob_use_bin: bool = True
+    mlplob_bin_eps: float = 1e-4
+    mlplob_bin_init_gamma: float = 0.5
+    mlplob_dataset_type: Literal["fi2010", "lobster", "nvda"] = "nvda"
     gmadl_a: float = 10.0
     gmadl_b: float = 1.5
 
@@ -1490,6 +1512,17 @@ class ModelConfig(SafeBaseModel):
     issues on heterogeneous value types."""
     hmhp_loss_weights: Optional[Dict[str, float]] = None
     """Optional per-loss-component weights (e.g., ``{"ce": 1.0, "consistency": 0.1}``)."""
+    hmhp_pool_mode: Literal["last", "mean"] = "last"
+    """Phase S (2026-05-04): temporal pooling mode applied by horizon decoders
+    to the shared encoder output before MLP+head processing. Bridges to
+    ``HMHPConfig.pool_mode`` via ``_build_params_from_legacy``.
+
+    Default ``"last"`` preserves HMHP classification behavior (CLAUDE.md
+    validated 59.62%/93.88% findings). HMHP-R YAMLs that need the
+    pre-Phase-S mean-pool default MUST set ``hmhp_pool_mode: "mean"``
+    in YAML — see `configs/bases/models/hmhp_cascade_regression.yaml`
+    for the canonical migration point.
+    """
 
     # --- Enum + container coercers (mode="before" bridges under strict=True) ---
 
@@ -1658,6 +1691,30 @@ class ModelConfig(SafeBaseModel):
                 "gmadl_b": self.gmadl_b,
             }
 
+        elif mt == "mlplob":
+            # Phase X.1 v2 (2026-05-04 — F-3 closure). MLPLOB is TLOB-shaped
+            # without attention. lobmodels.MLPLOBConfig fields mirror MLPlob
+            # arch (hidden_dim, num_layers, mlp_expansion, use_bin, bin_eps,
+            # bin_init_gamma) — no num_heads / use_sinusoidal_pe / use_cvml
+            # / gmadl_* (attention-only).
+            # Phase X.1 v2 post-validation fix (Agent 4 Q10): added bin_eps +
+            # bin_init_gamma propagation to close the silent-default bug.
+            return {
+                "num_features": self.input_size,
+                "num_classes": self.num_classes,
+                "hidden_dim": self.mlplob_hidden_dim,
+                "num_layers": self.mlplob_num_layers,
+                "mlp_expansion": self.mlplob_mlp_expansion,
+                "use_bin": self.mlplob_use_bin,
+                "bin_eps": self.mlplob_bin_eps,
+                "bin_init_gamma": self.mlplob_bin_init_gamma,
+                "dropout": self.dropout,
+                "dataset_type": self.mlplob_dataset_type,
+                "task_type": self.task_type,
+                "regression_loss_type": self.regression_loss_type,
+                "regression_loss_delta": self.regression_loss_delta,
+            }
+
         elif mt in ("hmhp", "hmhp_regression"):
             # Note: num_classes is passed to create_hmhp() as explicit kwarg
             # but create_hmhp_regressor() hardcodes it. We include it here
@@ -1684,6 +1741,10 @@ class ModelConfig(SafeBaseModel):
                 "state_fusion": self.hmhp_state_fusion,
                 "cascade_mode": self.hmhp_cascade_mode,
                 "dropout": self.dropout,
+                # Phase S (2026-05-04): bridge HMHPConfig.pool_mode through
+                # the params dict. Both `create_hmhp` and `create_hmhp_regressor`
+                # accept `pool_mode` via **kwargs → HMHPConfig(...).
+                "pool_mode": self.hmhp_pool_mode,
             }
             if mt == "hmhp":
                 # cascade_connections: list-of-tuples in lob-models HMHPConfig

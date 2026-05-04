@@ -61,28 +61,47 @@ def _validate_day_metadata(metadata: Optional[Dict], date: str) -> None:
     """
     Validate export metadata for a single day at the load boundary.
 
-    Called once per split on the first day's metadata. Checks schema_version,
-    feature count, and normalization boundary contract.
+    Called per-day at split-load time. Checks schema_version, feature count,
+    normalization boundary, label encoding and provenance.
+
+    Phase O Cycle 1 hardening (C-2, 2026-05-04): both the missing-metadata
+    and missing-schema-version branches now fail-loud. Pre-Phase-O legacy
+    exports (`schema_version="2.2"` or no metadata.json) coexisting with the
+    v3.0 baseline silently corrupted training; v3.0 producers always emit
+    schema_version, so the only path to absence is a partial export, NFS lag,
+    or legacy mix — each of which is a hard contract violation per
+    hft-rules §8 ("never silently drop, clamp, or fix data").
 
     Args:
-        metadata: Loaded metadata dict (or None for legacy data).
+        metadata: Loaded metadata dict from ``*_metadata.json``.
         date: Date string for error messages.
 
     Raises:
-        ContractError: If metadata fails validation.
+        ContractError: If metadata is None, lacks ``schema_version``, or
+            fails any branch of ``validate_export_contract``.
     """
     if metadata is None:
-        return
+        raise ContractError(
+            f"Export metadata for {date} is missing or could not be loaded. "
+            f"v3.0 contract requires every day to have a *_metadata.json file. "
+            f"Re-export this day or remove from corpus."
+        )
 
     if "schema_version" not in metadata:
-        logger.warning(
-            "Metadata for %s has no schema_version field. "
-            "Re-export with latest feature extractor to enable contract validation.",
-            date,
+        raise ContractError(
+            f"Export metadata for {date} has no 'schema_version' field. "
+            f"Cannot verify contract compatibility. "
+            f"Re-export with the latest feature extractor (Phase O Cycle 1+)."
         )
-        return
 
-    warnings = validate_export_contract(metadata, strict_completeness=False)
+    # Wrap downstream raises with the date so operators can locate the
+    # offending day in a multi-day corpus (per C-3 ledger requirements).
+    try:
+        warnings = validate_export_contract(metadata, strict_completeness=False)
+    except ContractError as exc:
+        raise ContractError(
+            f"Export contract violation for {date}: {exc}"
+        ) from exc
     for w in warnings:
         logger.warning("Contract warning (%s): %s", date, w)
 
@@ -837,7 +856,6 @@ def load_split_data(
         raise FileNotFoundError(f"No data files found in {split_dir}")
 
     days = []
-    contract_validated = False
     expected_feature_count: Optional[int] = None
 
     for data_file in data_files:
@@ -869,12 +887,18 @@ def load_split_data(
             mmap_mode=mmap_mode,
         )
 
-        if not contract_validated and day_data.metadata is not None:
-            _validate_day_metadata(day_data.metadata, date)
+        # C-3 (Phase O Cycle 1, 2026-05-04): validate every day's metadata,
+        # not just day 1. A corrupted day at position 50 in a 233-day corpus
+        # would otherwise silently load. Combined with C-2's fail-loud
+        # branches, missing metadata.json or missing schema_version on ANY
+        # day raises ContractError naming the offending date.
+        _validate_day_metadata(day_data.metadata, date)
+
+        # day_data.metadata is non-None here (C-2 raised otherwise).
+        if expected_feature_count is None:
             n_feat = day_data.metadata.get("n_features")
             if n_feat is not None:
                 expected_feature_count = int(n_feat)
-            contract_validated = True
 
         if validate and not lazy:
             day_data.validate(expected_feature_count=expected_feature_count)

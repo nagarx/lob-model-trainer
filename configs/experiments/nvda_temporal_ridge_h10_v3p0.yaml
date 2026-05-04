@@ -1,0 +1,68 @@
+# =============================================================================
+# Temporal Ridge Regression on v3p0 baseline — H10, 128-feat XNAS regression
+# =============================================================================
+#
+# Phase O Cycle 1 first-live-experiment (2026-05-04). Variant of
+# `nvda_temporal_ridge_h10.yaml` repointed at the v3p0 baseline export
+# (`nvda_xnas_128feat_regression_fwd_prices_v3p0/`) so the C-1..C-4 + H-1
+# strict-validation chain runs end-to-end with a fast sklearn-based model
+# (no GPU). Verifies trainer + signal-export + backtest after 74+ days
+# without a live run.
+#
+# Reference benchmark (legacy 2.2 data, IC=0.616 / R²=0.324 / DA=0.722).
+# =============================================================================
+
+name: TemporalRidge_NVDA_H10_e5_60s_v3p0
+description: |
+  Temporal Ridge regression on e5_timebased_60s_v3p0 (98-feat, 60s bins,
+  162 train + 35 val + 33 test days). First-live-experiment for the
+  Phase Q Trainer Spine Unification cycle: validates that
+  `python scripts/train.py --config <sklearn-yaml>` succeeds end-to-end
+  via the framework-aware factory dispatch (Q.5) → SimpleModelTrainer
+  (Q.6) → canonical signal_metadata SSoT (Q.7) + atomic write (Q.8).
+
+  Note: the original 2026-05-04 v3p0 cycle pointed at
+  `nvda_xnas_128feat_regression_fwd_prices_v3p0` but that export has
+  only train/ (no val/test) — a producer-side issue tracked in
+  PHASE_P_BACKLOG. This config uses the e5_60s baseline which has
+  full splits and exercises the Phase Q chain end-to-end.
+
+data:
+  data_dir: "../data/exports/e5_timebased_60s_v3p0"
+  feature_count: 98
+  labeling_strategy: regression
+  horizon_idx: 0
+
+  sequence:
+    window_size: 20
+    stride: 1
+
+model:
+  model_type: temporal_ridge
+  input_size: 0  # auto-derived from data.feature_count=98 (T13)
+  params:
+    alpha: 1.0
+    features:
+      signal_indices: [85, 84, 86, 56, 45]
+      top_k_signals: 3
+      # Smaller rolling windows fit within the 20-step sequence.
+      rolling_windows: [3, 5, 10]
+      include_volatility: true
+      include_momentum: true
+
+train:
+  task_type: regression
+  loss_type: huber
+
+output_dir: outputs/experiments/nvda_temporal_ridge_h10_v3p0
+log_level: INFO
+
+tags:
+  - nvda
+  - xnas
+  - temporal-ridge
+  - regression
+  - 128-features
+  - h10
+  - simple-model
+  - v3p0

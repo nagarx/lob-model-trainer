@@ -240,7 +240,8 @@ class TestChainedInheritancePurity:
         )
 
     def test_hmhp_cascade_regression_adds_regression_fields_only(self):
-        """`hmhp_cascade_regression.yaml` adds only model_type override + regression loss."""
+        """`hmhp_cascade_regression.yaml` adds only model_type override + regression loss
+        + Phase S pool_mode override."""
         reg_path = _BASES_ROOT / "models" / "hmhp_cascade_regression.yaml"
         assert reg_path.exists()
         with open(reg_path) as f:
@@ -252,13 +253,23 @@ class TestChainedInheritancePurity:
         assert reg.get("_partial") is True
 
         model_own = reg.get("model", {}) if isinstance(reg.get("model"), dict) else {}
-        expected_own = {"model_type", "hmhp_regression_loss_type"}
+        # Phase S (2026-05-04): `hmhp_pool_mode: mean` was added here as
+        # the canonical migration point for HMHP-R legacy mean-pool
+        # behavior preservation. HMHP classification (which uses bare
+        # directly) defaults to `hmhp_pool_mode: "last"` via the schema.
+        expected_own = {"model_type", "hmhp_regression_loss_type", "hmhp_pool_mode"}
         unexpected = set(model_own.keys()) - expected_own
         assert not unexpected, (
             f"`hmhp_cascade_regression.yaml` sets unexpected fields beyond "
             f"{expected_own}: {unexpected}. Shared HMHP arch fields belong "
             f"in `hmhp_cascade_bare.yaml` (so classification + TB configs "
             f"also inherit them)."
+        )
+        # Lock the Phase S pool_mode value so future drift is caught.
+        assert model_own.get("hmhp_pool_mode") == "mean", (
+            f"Phase S contract: hmhp_cascade_regression.yaml must set "
+            f"hmhp_pool_mode='mean' to preserve legacy HMHP-R behavior. "
+            f"Got: {model_own.get('hmhp_pool_mode')!r}"
         )
 
     def test_tlob_paper_classification_excludes_cvml_fields(self):

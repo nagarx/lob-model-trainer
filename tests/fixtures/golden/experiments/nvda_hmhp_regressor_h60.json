@@ -41,6 +41,7 @@
         "consistency": 0.25
       },
       "hmhp_num_encoder_layers": 2,
+      "hmhp_pool_mode": "mean",
       "hmhp_regression_loss_type": "huber",
       "hmhp_state_dim": 32,
       "hmhp_state_fusion": "gate",

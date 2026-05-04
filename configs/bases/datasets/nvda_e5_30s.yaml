@@ -13,7 +13,10 @@
 _partial: true
 
 data:
-  data_dir: "../data/exports/e5_timebased_30s"
+  # v3p0 baseline (Phase O Cycle 1, 2026-05-04): re-extracted with v0.2.1
+  # binaries; schema_version=3.0; idx 97=0.0 RESERVED. Pre-Phase-O archive
+  # at ../data/exports/e5_timebased_30s/ is read-only; FAILS strict validators.
+  data_dir: "../data/exports/e5_timebased_30s_v3p0"
   feature_count: 98
   sequence:
     window_size: 20

@@ -8,7 +8,12 @@
 _partial: true
 
 data:
-  data_dir: "../data/exports/e5_timebased_60s"
+  # v3p0 baseline (Phase O Cycle 1, 2026-05-04): re-extracted with v0.2.1
+  # binaries; schema_version=3.0; idx 97=0.0 RESERVED; +21% data on 164/233
+  # days from session-Clear handling fix (B.2). Pre-Phase-O archive at
+  # ../data/exports/e5_timebased_60s/ is read-only and FAILS strict
+  # validators (schema_version="2.2") per hft-contracts validation.py:115-120.
+  data_dir: "../data/exports/e5_timebased_60s_v3p0"
   feature_count: 98
   sequence:
     window_size: 20
