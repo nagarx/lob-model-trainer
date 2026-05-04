@@ -121,6 +121,36 @@ class CVTrainer:
         n_splits: "int | object" = _UNSET,
         embargo_days: "int | object" = _UNSET,
     ):
+        # Phase Q.6.5.B (2026-05-04 night): N-5 closure — fail-fast at
+        # construction when the registered framework is non-pytorch.
+        # Pre-fix, k-fold CV against a sklearn model (temporal_ridge,
+        # temporal_gradboost) silently fell through to ``Trainer(fold_config)``
+        # at line 203 and crashed mid-fold at PyTorch model build with an
+        # unactionable error. Per hft-rules §5 fail-fast: detect at
+        # construction so the operator sees a clear remediation path.
+        framework = "pytorch"  # default + safe fallback
+        try:
+            from lobmodels import ModelRegistry  # type: ignore
+            model_name = config.model.name
+            framework = ModelRegistry.get(model_name).framework
+        except (KeyError, ImportError, AttributeError):
+            # Unknown model OR registry not importable OR config.model.name
+            # unresolvable — preserve prior behavior (fall through to
+            # PyTorch path which will surface its own descriptive error).
+            framework = "pytorch"
+
+        if framework != "pytorch":
+            raise ValueError(
+                f"CVTrainer currently supports only pytorch-framework models, "
+                f"but model.name={config.model.name!r} is registered with "
+                f"framework={framework!r}. Sklearn k-fold CV requires extending "
+                f"CVTrainer to dispatch via create_trainer (see plan Q.6.5.B "
+                f"Part 4 / Phase X-future). Workaround: train sklearn models "
+                f"with a single fold via scripts/train.py instead of cross-"
+                f"validation, OR run k separate train.py invocations with "
+                f"different --seed values."
+            )
+
         self.config = config
 
         # Resolve: explicit arg > CVConfig > hard default

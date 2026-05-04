@@ -331,25 +331,89 @@ class SimpleModelTrainer:
                 f"expected one of 'train', 'val', 'test'."
             )
 
-    def export_signals(self, split: str = "test") -> Path:
+    def export_signals(
+        self,
+        split: str = "test",
+        *,
+        output_dir: Optional[Path] = None,
+        calibration: str = "none",
+    ) -> Path:
         """Export predictions in the backtester-compatible format.
 
         Phase Q.7 (2026-05-04): SSoT migration. Previously SimpleModelTrainer
         built an inline 9-field metadata dict; now uses canonical
-        ``build_signal_metadata`` so sklearn signals carry the same Phase II
-        + Phase 4c.4 surfaces as the PyTorch path. Phase Q.8 (2026-05-04):
-        write through ``atomic_write_json`` (tmp + fsync + os.replace) so a
-        SIGKILL mid-write doesn't poison a previously-good signal directory
-        with a partial JSON.
+        ``build_signal_metadata`` so sklearn signals carry the Phase II
+        + Phase 4c.4 surfaces and (post-Q.6.5.A) the Phase II
+        ``compatibility`` block at full parity with the PyTorch path.
+        Phase Q.8 (2026-05-04): write through ``atomic_write_json``
+        (tmp + fsync + os.replace) so a SIGKILL mid-write doesn't poison
+        a previously-good signal directory with a partial JSON.
+
+        Phase Q.6.5.A (2026-05-04 night): wires
+        ``build_compatibility_contract`` (Phase X.1.A SSoT at
+        ``lobtrainer.training.compatibility``) so sklearn
+        signal_metadata.json now carries the Phase II 11-field
+        ``compatibility`` block + ``compatibility_fingerprint`` +
+        ``feature_set_ref`` (Phase 4 4c.4) + ``data_source`` — closes
+        F-18 and unblocks Phase Y ``experiment_provenance_hash``
+        composition for sklearn experiments.
+
+        Phase Q.6.5.B (2026-05-04 night): signature extended with
+        ``output_dir`` + ``calibration`` keyword-only kwargs for parity
+        with ``Trainer.export_signals``. Sklearn currently rejects
+        non-``"none"`` calibration per hft-rules §5 fail-fast —
+        ``variance_match`` is not yet wired for the sklearn pipeline.
+
+        Args:
+            split: Data split. Sklearn currently restricts to ``"test"``
+                only — ``setup()`` does not extract ``_spreads_val`` /
+                ``_prices_val`` (val arrays for X/y ARE loaded but the
+                spread/price columns are discarded at simple_trainer.py:218).
+                Extending to ``"val"`` is a small follow-up.
+            output_dir: Override default location. ``None`` uses
+                ``self.output_dir / "signals" / split``.
+            calibration: ``"none"`` (default) or ``"variance_match"``.
+                Sklearn raises on ``"variance_match"`` until the
+                calibration pipeline is wired (Phase X.6 candidate).
+
+        Returns:
+            Output directory path (``Path``).
+
+        Raises:
+            ValueError: For non-``"test"`` split or non-``"none"``
+                calibration (sklearn-specific limits).
         """
+        # Phase Q.6.5.B: validate calibration BEFORE any work — fail-fast
+        # per hft-rules §5. variance_match for sklearn is a Phase X.6
+        # candidate; document the exact restriction so operators know it's
+        # not silently downgraded.
+        if calibration != "none":
+            raise ValueError(
+                f"SimpleModelTrainer (sklearn path) does not yet support "
+                f"calibration={calibration!r}. Only 'none' is wired today. "
+                f"variance_match is regression-only and pending Phase X.6 "
+                f"sklearn calibration cycle."
+            )
+
         if split == "test":
             X, y, spreads, prices = self._X_test, self._y_test, self._spreads_test, self._prices_test
         else:
-            raise ValueError(f"Only 'test' split export supported, got '{split}'")
+            raise ValueError(
+                f"Only 'test' split export supported by sklearn, got {split!r}. "
+                f"setup() loads val sequences/labels but discards spread/price "
+                f"columns at simple_trainer.py:218 (_, _ unpacking) — extending "
+                f"to 'val' requires extracting them too. Open follow-up task."
+            )
 
         y_pred = self.model.predict(X)
 
-        signal_dir = self.output_dir / "signals" / split
+        # Phase Q.6.5.B: respect explicit output_dir override (Protocol parity).
+        # When None, default to <self.output_dir>/signals/<split>/ matching
+        # pre-Q.6.5.B behavior.
+        if output_dir is None:
+            signal_dir = self.output_dir / "signals" / split
+        else:
+            signal_dir = Path(output_dir)
         signal_dir.mkdir(parents=True, exist_ok=True)
 
         np.save(signal_dir / "predicted_returns.npy", y_pred.astype(np.float64))
@@ -357,10 +421,44 @@ class SimpleModelTrainer:
         np.save(signal_dir / "spreads.npy", spreads)
         np.save(signal_dir / "prices.npy", prices)
 
-        # Lazy-import the SSoT to avoid pulling exporter.py's PyTorch
+        # Lazy-import the SSoTs to avoid pulling exporter.py's PyTorch
         # dependencies into the sklearn path's module-load surface.
         from lobtrainer.export.metadata import build_signal_metadata
         from hft_contracts.atomic_io import atomic_write_json
+        from lobtrainer.training.compatibility import build_compatibility_contract
+
+        # Phase Q.6.5.B (2026-05-04 night): resolve feature_set_ref via
+        # ``lobtrainer.training.compatibility.feature_set_ref_to_dict``
+        # SSoT (HIGH-1 lift from Q.6.5.A audit; closes 3-site duplication
+        # per hft-rules §0 reuse-first). The SSoT defensively rejects
+        # malformed cache values (wrong arity / empty-string components)
+        # so the export does not crash on cache poisoning.
+        from lobtrainer.training.compatibility import feature_set_ref_to_dict
+        fs_ref_dict = (
+            feature_set_ref_to_dict(self.config.data)
+            if self.config is not None
+            else None
+        )
+
+        # Phase Q.6.5.A (2026-05-04 night): closes F-18 — wire
+        # CompatibilityContract via Phase X.1.A SSoT
+        # (build_compatibility_contract). When ``self.config`` is None
+        # (legacy flat-keyword construction), ``compat=None`` preserves
+        # back-compat behavior and ``build_signal_metadata`` omits the
+        # compatibility/fingerprint/data_source/calibration_method keys
+        # (additive emission per metadata.py:154-169). The function
+        # itself returns None when ``hft_contracts`` is unavailable
+        # (compatibility.py:159-163), so the sklearn path gracefully
+        # degrades pre-Phase-II environments.
+        compat = (
+            build_compatibility_contract(
+                self.config,
+                feature_set_ref=fs_ref_dict,
+                calibration_method=None,
+            )
+            if self.config is not None
+            else None
+        )
 
         metadata = build_signal_metadata(
             model_type=self.model_type,
@@ -373,12 +471,16 @@ class SimpleModelTrainer:
             horizon_idx=self.horizon_idx,
             feature_config=self.feat_config.to_dict() if self.feat_config else None,
             metrics={k: round(v, 6) for k, v in self.test_metrics.items()} if self.test_metrics else None,
-            # Phase II compatibility block: deferred to a future cycle that
-            # adds a sklearn-side CompatibilityContract builder. The PyTorch
-            # path's `_build_compatibility_contract` reads PyTorch-specific
-            # config; sklearn would need a parallel implementation.
-            # Top-level `schema_version` + `contract_version` (the H-1
-            # contract pin) are added by build_signal_metadata regardless.
+            # Phase Q.6.5.A (2026-05-04 night): F-18 closure — sklearn
+            # signal_metadata now carries Phase II compatibility block +
+            # Phase 4c.4 feature_set_ref + Phase II data_source.
+            # ``build_signal_metadata`` is additive — when
+            # ``compatibility=None``, these keys are omitted (preserves
+            # legacy flat-keyword construction back-compat).
+            compatibility=compat,
+            feature_set_ref=fs_ref_dict,
+            data_source=compat.data_source if compat is not None else None,
+            calibration_method=None,  # sklearn variance_match not yet wired
         )
         atomic_write_json(signal_dir / "signal_metadata.json", metadata)
 
@@ -471,15 +573,41 @@ class SimpleModelTrainer:
             atomic_write_json(sidecar_path, sidecar)
             logger.info(f"Saved Phase X.1 v2 sidecar to {sidecar_path}")
         else:
-            logger.warning(
+            # Phase Q.6.5.F (2026-05-04 night): N-7 closure — promote silent
+            # warning to DeprecationWarning so the legacy flat-keyword
+            # construction path is loud per hft-rules §5 fail-fast. Operators
+            # using ad-hoc Python (NOT scripts/train.py / hft-ops orchestrator)
+            # who construct ``SimpleModelTrainer(data_dir=..., model_type=...,
+            # ...)`` directly without ``from_config(config)`` lose Phase X.1 v2
+            # sidecar coverage. Migrate to ``SimpleModelTrainer.from_config(config)``
+            # before the legacy constructor's removal date (2027-04-01).
+            import warnings
+            warnings.warn(
                 f"SimpleModelTrainer.save_checkpoint at {path} did not write a "
                 f"sidecar — self.config is None (legacy flat-keyword "
-                f"construction path). Future load_checkpoint cannot validate."
+                f"construction path). Future load_checkpoint cannot validate "
+                f"against the active ExperimentConfig. Migrate to "
+                f"SimpleModelTrainer.from_config(config) for full Phase X.1 v2 "
+                f"sidecar coverage. Legacy flat-keyword constructor removal "
+                f"target: 2027-04-01.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            # Also keep the logger.warning so log-aggregation tooling still
+            # surfaces this in CI logs (Python warnings can be filtered).
+            logger.warning(
+                f"SimpleModelTrainer.save_checkpoint at {path} did not write a "
+                f"Phase X.1 v2 sidecar (legacy flat-keyword construction)."
             )
 
         return path
 
-    def load_checkpoint(self, path: Path, strict_config: bool = False) -> None:
+    def load_checkpoint(
+        self,
+        path: Path,
+        load_optimizer: bool = True,
+        strict_config: bool = False,
+    ) -> None:
         """Restore the sklearn model from a pickle checkpoint.
 
         Phase X.1 v2 (2026-05-04): validates the sidecar at
@@ -492,15 +620,31 @@ class SimpleModelTrainer:
           * Sidecar parses but lacks contract keys (partial-write or
             pre-X.1 v2 schema): warn (Agent 4 sanity-check Q10 fix).
 
+        Phase Q.6.5.B (2026-05-04 night): ``load_optimizer`` kwarg added
+        to satisfy the unified ``BaseTrainer`` Protocol signature. On
+        sklearn (this class), it is a documented no-op — there is no
+        optimizer state to load from the pickle. Without this kwarg, a
+        polymorphic caller passing ``load_optimizer=False`` (the canonical
+        signal-export pattern at ``scripts/export_signals.py``) would
+        TypeError on the sklearn path. Closes N-6 signature drift.
+
         Args:
             path: Pickle file written by ``save_checkpoint`` or
                 legacy ``save``.
+            load_optimizer: PyTorch-only. Documented no-op on sklearn —
+                this class has no optimizer state to load. Accepted for
+                Protocol parity with ``Trainer.load_checkpoint``.
             strict_config: When True, raise on fingerprint mismatch.
 
         Raises:
             ValueError: If ``self.model_type`` is not a known sklearn
                 registry entry.
         """
+        # load_optimizer is a documented no-op on the sklearn path
+        # (no optimizer in the pickle). Reference the kwarg here so the
+        # signature is exercised — silent-discard would surface as an
+        # unused-argument lint warning.
+        del load_optimizer  # explicit no-op: sklearn pickle has no optimizer state
         import warnings
         import json
         from lobtrainer.training.compatibility import (

@@ -381,7 +381,11 @@ class PermutationImportanceCallback(Callback):
         feature_names, feature_indices = self._resolve_feature_metadata(
             trainer.config, n_features=X_eval.shape[-1],
         )
-        feature_set_ref = self._resolve_feature_set_ref(trainer.config)
+        # Phase Q.6.5.B (2026-05-04 night): delegated to SSoT at
+        # lobtrainer.training.compatibility.feature_set_ref_to_dict — was
+        # previously a static method on this class (deleted post-SSoT lift).
+        from lobtrainer.training.compatibility import feature_set_ref_to_dict
+        feature_set_ref = feature_set_ref_to_dict(trainer.config.data)
 
         # ---- Compute + save -------------------------------------------
         artifact = compute_permutation_importance(
@@ -566,32 +570,11 @@ class PermutationImportanceCallback(Callback):
                 names.append(f"feature_{i}")
         return names
 
-    @staticmethod
-    def _resolve_feature_set_ref(config: Any) -> Optional[dict]:
-        """Extract ``{name, content_hash}`` from the trainer's resolver
-        cache, or None for ad-hoc / preset-based experiments.
-
-        Round-3 post-audit Agent-4 C2 CRITICAL fix: the correct cache
-        attribute is ``_feature_set_ref_resolved`` (set at
-        `trainer.py:379-381` as a ``Tuple[str, str]`` of (name, hash)),
-        NOT ``_feature_indices_resolved`` (which is a `List[int]`).
-        The prior code read the indices list and did attribute-access
-        on it, always returning None → every artifact opted out of
-        Stage C.5 feedback-merge silently. Corrected: read the correct
-        tuple attribute + unpack.
-
-        Returning None is an explicit opt-out from Stage C.5 feedback-
-        merge eligibility — emits WARN at artifact construction (see
-        `FeatureImportanceArtifact.__post_init__`).
-        """
-        ref = getattr(config.data, "_feature_set_ref_resolved", None)
-        if ref is None:
-            return None
-        # Expected shape: (name: str, content_hash: str) tuple
-        try:
-            name, content_hash = ref
-        except (TypeError, ValueError):
-            return None
-        if not name or not content_hash:
-            return None
-        return {"name": str(name), "content_hash": str(content_hash)}
+    # Phase Q.6.5.B (2026-05-04 night): the static method
+    # ``_resolve_feature_set_ref`` was consolidated into
+    # ``lobtrainer.training.compatibility.feature_set_ref_to_dict``
+    # SSoT. The single caller above now imports + calls the SSoT directly.
+    # Original behavior preserved verbatim — same defensive tuple-unpack +
+    # empty-string guard. This static method was the historical Round-3
+    # post-audit Agent-4 C2 CRITICAL fix (Stage C.1 Integration Close-Out)
+    # — see git log for context if regression-debugging.

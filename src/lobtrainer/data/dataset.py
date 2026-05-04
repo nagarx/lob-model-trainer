@@ -58,19 +58,33 @@ logger = logging.getLogger(__name__)
 
 
 def _validate_day_metadata(metadata: Optional[Dict], date: str) -> None:
-    """
-    Validate export metadata for a single day at the load boundary.
+    """Validate export metadata for a single day at the load boundary.
 
     Called per-day at split-load time. Checks schema_version, feature count,
     normalization boundary, label encoding and provenance.
 
     Phase O Cycle 1 hardening (C-2, 2026-05-04): both the missing-metadata
-    and missing-schema-version branches now fail-loud. Pre-Phase-O legacy
-    exports (`schema_version="2.2"` or no metadata.json) coexisting with the
-    v3.0 baseline silently corrupted training; v3.0 producers always emit
-    schema_version, so the only path to absence is a partial export, NFS lag,
-    or legacy mix — each of which is a hard contract violation per
-    hft-rules §8 ("never silently drop, clamp, or fix data").
+    and missing-schema-version branches fail-loud. Pre-Phase-O legacy
+    exports (``schema_version="2.2"`` or no metadata.json) coexisting with
+    the v3.0 baseline silently corrupted training; v3.0 producers always
+    emit schema_version, so the only path to absence is a partial export,
+    NFS lag, or legacy mix — each of which is a hard contract violation
+    per hft-rules §8 ("never silently drop, clamp, or fix data").
+
+    Phase X.2.A SSoT migration (2026-05-04): body lifted to
+    ``hft_contracts.validation.validate_day_metadata``. This trainer-private
+    function is now a thin shim that adapts the SSoT's ``list[str]`` warnings
+    return to the trainer's prior log-via-logger.warning behavior. Preserves
+    caller semantics while keeping hft-contracts log-free (Phase 6 6B.3
+    architectural invariant).
+
+    NEW CODE should import the SSoT directly:
+
+        from hft_contracts import validate_day_metadata
+
+    Removal calendar: 2026-10-31 (matches ``_atomic_io`` shim deadline per
+    plan §III.0.5 refinement #11). Migrate trainer-internal callers to the
+    direct SSoT import before then.
 
     Args:
         metadata: Loaded metadata dict from ``*_metadata.json``.
@@ -78,31 +92,12 @@ def _validate_day_metadata(metadata: Optional[Dict], date: str) -> None:
 
     Raises:
         ContractError: If metadata is None, lacks ``schema_version``, or
-            fails any branch of ``validate_export_contract``.
+            fails any branch of ``validate_export_contract``. Date prefix
+            preserved by the SSoT for multi-day-corpus triage.
     """
-    if metadata is None:
-        raise ContractError(
-            f"Export metadata for {date} is missing or could not be loaded. "
-            f"v3.0 contract requires every day to have a *_metadata.json file. "
-            f"Re-export this day or remove from corpus."
-        )
-
-    if "schema_version" not in metadata:
-        raise ContractError(
-            f"Export metadata for {date} has no 'schema_version' field. "
-            f"Cannot verify contract compatibility. "
-            f"Re-export with the latest feature extractor (Phase O Cycle 1+)."
-        )
-
-    # Wrap downstream raises with the date so operators can locate the
-    # offending day in a multi-day corpus (per C-3 ledger requirements).
-    try:
-        warnings = validate_export_contract(metadata, strict_completeness=False)
-    except ContractError as exc:
-        raise ContractError(
-            f"Export contract violation for {date}: {exc}"
-        ) from exc
-    for w in warnings:
+    from hft_contracts.validation import validate_day_metadata as _ssot
+    contract_warnings = _ssot(metadata, date)
+    for w in contract_warnings:
         logger.warning("Contract warning (%s): %s", date, w)
 
 

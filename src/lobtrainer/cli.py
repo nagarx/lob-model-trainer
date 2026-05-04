@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from lobtrainer.config import load_config, save_config, ExperimentConfig
-from lobtrainer.training.trainer import Trainer
+from lobtrainer.training.trainer import Trainer, create_trainer
 from lobtrainer.training.callbacks import (
     EarlyStopping,
     ModelCheckpoint,
@@ -313,9 +313,15 @@ def train_command(args: argparse.Namespace) -> int:
         enable_monitoring=getattr(args, 'monitoring', False),
     )
     logger.info(f"Callbacks enabled: {[type(c).__name__ for c in callbacks]}")
-    
-    # Create trainer
-    trainer = Trainer(config, callbacks=callbacks)
+
+    # Phase Q.6.5.B (2026-05-04 night): N-4 closure — use framework dispatch
+    # via create_trainer instead of direct Trainer() instantiation. Pre-fix
+    # this site silently broke for sklearn-registered models — `lobtrainer train
+    # --config <sklearn-yaml>` would TypeError at TemporalRidgeConfig.__init__.
+    # Now dispatches to SimpleModelTrainer.from_config(config) for sklearn.
+    # Sklearn trainers ignore the callbacks argument with an INFO log per
+    # create_trainer:1307-1314.
+    trainer = create_trainer(config, callbacks=callbacks)
     
     # Resume from checkpoint if specified
     if getattr(args, 'resume', None):
@@ -370,15 +376,22 @@ def train_command(args: argparse.Namespace) -> int:
     trainer.save_checkpoint(final_model_path)
     logger.info(f"Saved final model to: {final_model_path}")
     
-    # Register experiment in the experiment registry
+    # Register experiment in the legacy experiment registry.
+    # Phase Q.6.5.G (2026-05-04 night): N-16 closure — narrow the exception
+    # handler from bare ``except Exception`` (silent-degrade per hft-rules §5)
+    # to explicit ImportError + OSError. ImportError covers the
+    # ExperimentRegistry retirement path (Phase 7.3 candidate per N-10 — the
+    # registry module may eventually be removed). OSError covers filesystem
+    # errors (permissions, full disk). Other exceptions (TypeError,
+    # ValueError, AttributeError) propagate so the operator sees them.
     manifest_name = getattr(args, 'manifest', None)
     try:
         from lobtrainer.experiments.result import ExperimentResult
         from lobtrainer.experiments.registry import ExperimentRegistry
-        
+
         registry_dir = output_dir.parent / '_registry'
         registry = ExperimentRegistry(registry_dir)
-        
+
         exp_result = ExperimentResult.from_trainer(trainer, test_metrics=test_result)
         exp_result.checkpoint_path = str(final_model_path)
         exp_result.output_dir = str(output_dir)
@@ -387,8 +400,21 @@ def train_command(args: argparse.Namespace) -> int:
             exp_result.tags.append(f"manifest:{Path(manifest_name).stem}")
         exp_id = registry.register(exp_result)
         logger.info(f"Registered experiment in registry: {exp_id}")
-    except Exception as e:
-        logger.warning(f"Failed to register experiment (non-fatal): {e}")
+    except ImportError as e:
+        # Legacy ExperimentRegistry module not available (Phase 7.3 retirement
+        # path). Document but don't fail — hft-ops orchestrator carries the
+        # canonical ExperimentRecord ledger that supersedes this registry.
+        logger.warning(
+            f"ExperimentRegistry not importable (Phase 7.3 retirement candidate): {e}"
+        )
+    except OSError as e:
+        # Filesystem error writing to <output_dir>/_registry/ — non-fatal but
+        # operator-actionable. The registry directory may be on a read-only
+        # mount or permissions-restricted location.
+        logger.error(
+            f"Failed to write experiment to legacy registry "
+            f"(filesystem error: {e}). Continuing — hft-ops ledger unaffected."
+        )
 
     # Update hft-ops ledger if manifest provided
     if manifest_name:
@@ -452,8 +478,12 @@ def evaluate_command(args: argparse.Namespace) -> int:
     logger.info(f"Loading config from: {config_path}")
     logger.info(f"Experiment: {config.name}")
     
-    # Create trainer (no callbacks needed for evaluation)
-    trainer = Trainer(config, callbacks=[])
+    # Phase Q.6.5.B (2026-05-04 night): N-4 closure — use framework dispatch
+    # via create_trainer. Same fault line as cli.py:318: pre-fix `lobtrainer
+    # evaluate --config <sklearn-yaml>` was unreachable. Now sklearn dispatches
+    # to SimpleModelTrainer.from_config(config); pytorch retains existing
+    # behavior. Empty callbacks list is dropped silently for sklearn.
+    trainer = create_trainer(config, callbacks=[])
     
     # Load checkpoint (required for evaluation)
     if not args.checkpoint:

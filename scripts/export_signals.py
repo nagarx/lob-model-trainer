@@ -74,9 +74,10 @@ def parse_args():
 def main():
     args = parse_args()
 
+    import json
+
     from lobtrainer.config import ExperimentConfig
-    from lobtrainer.training.trainer import Trainer
-    from lobtrainer.export import SignalExporter
+    from lobtrainer.training import create_trainer
 
     # Load config
     config = ExperimentConfig.from_yaml(args.config)
@@ -92,11 +93,20 @@ def main():
         _new_train = config.train.model_copy(update={"batch_size": args.batch_size})
         config = config.model_copy(update={"train": _new_train})
 
-    # Setup trainer (creates model, normalizer, dataloaders)
-    trainer = Trainer(config, callbacks=[])
+    # Phase Q.6.5.B (2026-05-04 night): F-16 closure — use create_trainer
+    # framework dispatch instead of direct Trainer() instantiation. Pre-fix
+    # this site silently broke for sklearn-registered models (temporal_ridge,
+    # temporal_gradboost) — TemporalRidgeConfig.__init__ would raise on
+    # `features` kwarg passed by params. Now sklearn dispatch returns
+    # SimpleModelTrainer.from_config(config) and the rest of this script
+    # operates polymorphically through the BaseTrainer Protocol.
+    trainer = create_trainer(config, callbacks=[])
     trainer.setup()
 
-    # Load checkpoint
+    # Phase Q.6.5.B (2026-05-04 night): unified load_checkpoint signature.
+    # PyTorch path uses load_optimizer=False to skip optimizer state restore
+    # (signal export is inference-only). Sklearn path documents this kwarg
+    # as a no-op (no optimizer in the pickle). Closes N-6 signature drift.
     trainer.load_checkpoint(args.checkpoint, load_optimizer=False)
     logger.info(f"Loaded checkpoint: {args.checkpoint}")
 
@@ -105,22 +115,47 @@ def main():
     if args.output_dir:
         output_dir = Path(args.output_dir)
 
-    # Export
-    exporter = SignalExporter(trainer, calibration=args.calibrate)
-    result = exporter.export(split=args.split, output_dir=output_dir)
+    # Phase Q.6.5.B (2026-05-04 night): export via BaseTrainer Protocol method.
+    # Both Trainer (PyTorch — delegates to SignalExporter) and
+    # SimpleModelTrainer (sklearn — emits in-memory predictions + Phase X.1.A
+    # CompatibilityContract block via build_signal_metadata) satisfy the
+    # method, so this single polymorphic call works for ALL registered model
+    # types. The previous direct SignalExporter usage was PyTorch-only.
+    signal_dir = trainer.export_signals(
+        args.split,
+        output_dir=output_dir,
+        calibration=args.calibrate,
+    )
 
-    # Summary
+    # Summary — read from signal_metadata.json + directory listing.
+    # Pre-Q.6.5.B used the SignalExporter ExportResult dataclass directly;
+    # post-Q.6.5.B the Protocol method returns just the Path so we reconstruct
+    # the summary by reading the produced metadata. Same UX, polymorphic.
+    metadata_path = signal_dir / "signal_metadata.json"
+    metadata: dict = {}
+    if metadata_path.exists():
+        with open(metadata_path) as f:
+            metadata = json.load(f)
+    files_written = sorted(p.name for p in signal_dir.iterdir() if p.is_file())
+
     print(f"\n{'='*60}")
     print(f"Signal Export Complete")
     print(f"{'='*60}")
     print(f"  Split:       {args.split}")
-    print(f"  Samples:     {result.n_samples:,}")
-    print(f"  Signal type: {result.signal_type}")
-    print(f"  Output:      {result.output_dir}")
-    print(f"  Files:       {', '.join(result.files_written)}")
-    if result.metadata.get("metrics"):
-        m = result.metadata["metrics"]
-        print(f"  Metrics:     R²={m.get('r2', 'N/A'):.4f}, IC={m.get('ic', 'N/A'):.4f}")
+    print(f"  Samples:     {metadata.get('total_samples', 'N/A'):,}" if isinstance(metadata.get('total_samples'), int) else f"  Samples:     N/A")
+    print(f"  Signal type: {metadata.get('signal_type', 'N/A')}")
+    print(f"  Output:      {signal_dir}")
+    print(f"  Files:       {', '.join(files_written)}")
+    if metadata.get("compatibility_fingerprint"):
+        # Phase II + Phase Q.6.5.A surface — confirm the fingerprint is present
+        # so operators see Phase Y composability is intact.
+        print(f"  Compat FP:   {metadata['compatibility_fingerprint'][:16]}...")
+    if metadata.get("metrics"):
+        m = metadata["metrics"]
+        r2 = m.get('r2')
+        ic = m.get('ic')
+        if r2 is not None and ic is not None:
+            print(f"  Metrics:     R²={r2:.4f}, IC={ic:.4f}")
     print(f"{'='*60}")
 
 

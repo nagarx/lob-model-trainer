@@ -131,6 +131,62 @@ def derive_data_source(data_dir: Any) -> str:
     return "mbo_lob"
 
 
+def feature_set_ref_to_dict(data_config: Any) -> Optional[Dict[str, str]]:
+    """Convert ``DataConfig._feature_set_ref_resolved`` cache to the
+    canonical ``signal_metadata.feature_set_ref`` dict shape.
+
+    Phase Q.6.5.B (2026-05-04 night): SSoT lift consolidating 3-site
+    duplication closed during Q.6.5.A audit:
+      - ``lobtrainer.export.exporter._feature_set_ref_dict`` (Phase 4 4c.4
+        original; now a 1-line delegation to this helper).
+      - ``lobtrainer.training.importance.callback.PermutationImportanceCallback._resolve_feature_set_ref``
+        (Stage C.1 fix for Agent-4 C2 CRITICAL; now delegates).
+      - ``lobtrainer.training.simple_trainer.SimpleModelTrainer.export_signals``
+        inline (Q.6.5.A). Now delegates.
+
+    The trainer's resolver populates ``_feature_set_ref_resolved`` as a
+    ``Tuple[str, str]`` of ``(name, content_hash)`` at dataloader
+    construction (``trainer.py:424``). Returns:
+
+    - ``None`` when no FeatureSet was resolved (ad-hoc / preset / no-
+      selection paths).
+    - ``None`` when the cache is malformed (wrong arity / non-iterable) —
+      defensive per hft-rules §8 (never crash on bad cache state).
+    - ``None`` when name OR content_hash is empty string (cache poisoning
+      defense) — fail-fast at producer per hft-rules §5 so downstream
+      consumers' ``CONTENT_HASH_RE`` validation isn't exercised on a
+      silently-malformed dict.
+    - ``{"name": str, "content_hash": str}`` otherwise.
+
+    Cross-subprocess invariant: this field is populated only when
+    ``_create_dataloaders`` has run in the current process; it is NOT
+    serialized across subprocess boundaries (the ``_``-prefix + R3
+    ``to_dict`` filter strip it). The signal-export subprocess re-runs
+    ``_create_dataloaders`` on its copy of the resolved config, which
+    re-populates the cache. See
+    ``test_feature_set_ref_subprocess_invariant.py``.
+
+    Args:
+        data_config: ``DataConfig`` instance (Pydantic v2 SafeBaseModel).
+
+    Returns:
+        ``{"name": str, "content_hash": str}`` dict, or ``None``.
+    """
+    resolved = getattr(data_config, "_feature_set_ref_resolved", None)
+    if resolved is None:
+        return None
+    try:
+        name, content_hash = resolved
+    except (TypeError, ValueError):
+        # Defensive — schema declares Tuple[str,str] but a malformed
+        # cache write should not crash the export.
+        return None
+    if not name or not content_hash:
+        # Cache-poisoning guard — fail-fast at producer.
+        return None
+    return {"name": str(name), "content_hash": str(content_hash)}
+
+
 def build_compatibility_contract(
     config: Any,
     feature_set_ref: Optional[Dict[str, str]] = None,

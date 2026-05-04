@@ -40,28 +40,24 @@ logger = logging.getLogger(__name__)
 
 
 def _feature_set_ref_dict(data_config: Any) -> Optional[Dict[str, str]]:
-    """Extract feature_set_ref dict from DataConfig private cache (Phase 4 Batch 4c.4).
+    """Extract feature_set_ref dict from DataConfig private cache.
 
-    The resolver populates `DataConfig._feature_set_ref_resolved` as a
-    `(name, content_hash)` tuple at dataloader construction (see
-    `Trainer._create_dataloaders`). This helper converts the tuple to the
-    JSON-shape `{"name": ..., "content_hash": ...}` for signal_metadata.json.
-    Returns None when no FeatureSet was resolved (feature_preset /
-    feature_indices / no selection paths).
+    Phase Q.6.5.B (2026-05-04 night): retained as a 1-line delegation to
+    the canonical SSoT at ``lobtrainer.training.compatibility``. Direct
+    callers should migrate to
+    ``compatibility.feature_set_ref_to_dict(data_config)``; this shim
+    preserves any test/code that imports ``_feature_set_ref_dict`` from
+    exporter.py (e.g., ``tests/test_signal_metadata_feature_set_ref.py``).
 
-    Cross-subprocess invariant: this field is populated only when
-    `_create_dataloaders` has run in the current process; it is NOT
-    serialized across subprocess boundaries (the `_`-prefix + R3 `to_dict`
-    filter strip it). The signal-export subprocess re-runs
-    `_create_dataloaders` on its copy of the resolved config, which
-    re-populates the cache. See `test_feature_set_ref_subprocess_invariant.py`.
+    The SSoT is more defensive than the original — it returns None on
+    malformed cache (wrong arity / non-tuple) and on empty-string
+    components, instead of raising ValueError. Tests that constructed
+    ``_feature_set_ref_resolved = ("name", "")`` previously got the
+    malformed dict; post-Q.6.5.B they get None (defensive cache-poisoning
+    rejection per hft-rules §5).
     """
-    resolved = getattr(data_config, "_feature_set_ref_resolved", None)
-    if resolved is None:
-        return None
-    # Tuple form: (name, content_hash). Convert to dict.
-    name, content_hash = resolved
-    return {"name": str(name), "content_hash": str(content_hash)}
+    from lobtrainer.training.compatibility import feature_set_ref_to_dict
+    return feature_set_ref_to_dict(data_config)
 
 
 @dataclass

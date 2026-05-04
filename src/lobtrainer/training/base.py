@@ -40,18 +40,25 @@ class BaseTrainer(Protocol):
     """Common lifecycle hooks for any trainer reachable through
     ``create_trainer``.
 
-    The contract is the four methods that ``scripts/train.py`` calls
-    polymorphically: ``train``, ``evaluate(split)``, ``save_checkpoint``,
-    ``load_checkpoint``. These are sufficient for the entry-point dispatch
-    use case.
+    Phase Q.6.5.B (2026-05-04 night): contract extended with
+    ``export_signals(split, *, output_dir, calibration) -> Path``.
+    Both ``Trainer`` (PyTorch — delegates to ``SignalExporter``) and
+    ``SimpleModelTrainer`` (sklearn — direct in-memory predict +
+    metadata emit via ``build_signal_metadata`` + Phase X.1.A
+    ``build_compatibility_contract`` SSoT) satisfy the new method.
+    This unifies the entry-point dispatch surface so
+    ``scripts/export_signals.py`` and the orchestrator
+    (``hft-ops run``) can use one polymorphic call.
+
+    The contract is the FIVE methods that ``scripts/train.py`` and
+    ``scripts/export_signals.py`` call polymorphically: ``train``,
+    ``evaluate(split)``, ``save_checkpoint``, ``load_checkpoint``,
+    ``export_signals``. Sufficient for the canonical entry-point
+    dispatch use case.
 
     Out of scope for the Protocol (intentionally):
     - ``setup`` — internal lifecycle; ``train`` is responsible for
       ensuring it runs first if needed.
-    - ``export_signals`` — sklearn ``SimpleModelTrainer`` exposes it
-      directly; the PyTorch path uses the separate
-      ``scripts/export_signals.py`` + ``SignalExporter``. Not part
-      of the unified lifecycle today.
 
     Note: ``runtime_checkable`` ``isinstance(obj, BaseTrainer)`` checks
     method-name presence only (per typing.Protocol semantics).
@@ -99,11 +106,77 @@ class BaseTrainer(Protocol):
         """
         ...
 
-    def load_checkpoint(self, path: Path) -> None:
+    def load_checkpoint(
+        self,
+        path: Path,
+        load_optimizer: bool = True,
+    ) -> None:
         """Restore trainer state from a checkpoint file.
+
+        Phase Q.6.5.B (2026-05-04 night): signature unified with
+        ``Trainer.load_checkpoint``. The ``load_optimizer`` kwarg is a
+        no-op on the sklearn path (``SimpleModelTrainer`` has no optimizer
+        to load — explicit no-op rather than TypeError-on-call). Closes
+        N-6 signature drift surfaced by Q.6.5.A audit.
+
+        Args:
+            path: Checkpoint path. PyTorch reads ``.pt`` torch.save dict;
+                sklearn reads ``.pkl`` pickle + ``.config.json`` sidecar.
+            load_optimizer: PyTorch-only — when ``False``, skip the
+                optimizer state load (saves time during inference-only
+                use cases like signal export). Sklearn ignores this
+                kwarg (no optimizer state in the pickle).
 
         Out of scope for Phase Q (deferred to Phase T): restoring
         callback state (early-stopping patience, plateau counters)
         and RNG state across torch / numpy / random.
+        """
+        ...
+
+    def export_signals(
+        self,
+        split: str = "test",
+        *,
+        output_dir: Optional[Path] = None,
+        calibration: str = "none",
+    ) -> Path:
+        """Export predicted signals + ``signal_metadata.json`` to
+        ``<output_dir or config.output_dir>/signals/<split>/``.
+
+        Phase Q.6.5.B (2026-05-04 night): added to the Protocol to close
+        the historical asymmetry where ``SimpleModelTrainer`` exposed
+        ``export_signals`` directly while ``Trainer`` required manually
+        constructing ``SignalExporter``. Now both paths satisfy the
+        same Protocol method.
+
+        PyTorch path delegates to
+        ``lobtrainer.export.exporter.SignalExporter`` which runs
+        inference through ``trainer.get_loader(split)``. Sklearn path
+        emits predictions from in-memory ``self._X_test`` / ``_y_test``
+        / ``_spreads_test`` / ``_prices_test`` populated by ``setup()``.
+
+        Args:
+            split: Data split — ``"val"`` or ``"test"``. Training split
+                is refused (PyTorch path: DataLoader drop_last=True
+                alignment mismatch; sklearn path: train arrays not
+                exposed). Sklearn currently restricts to ``"test"``
+                only — extending to ``"val"`` is a follow-up extension
+                (val arrays loaded but ``_spreads_val`` / ``_prices_val``
+                not yet extracted).
+            output_dir: Override default. ``None`` uses
+                ``<config.output_dir>/signals/<split>/``.
+            calibration: ``"none"`` (default) or ``"variance_match"``
+                (regression-only; classification is no-op + WARN).
+                Sklearn currently rejects non-``"none"`` values per
+                hft-rules §5 fail-fast — variance_match is not yet
+                wired for the sklearn pipeline.
+
+        Returns:
+            Output directory path (``Path``).
+
+        Raises:
+            ValueError: Invalid split or unsupported calibration value.
+            RuntimeError: setup() not called (PyTorch DataLoader
+                missing for the target split).
         """
         ...

@@ -1237,6 +1237,60 @@ class Trainer:
 
         logger.info(f"Loaded checkpoint from {path} (epoch {self.state.current_epoch})")
 
+    def export_signals(
+        self,
+        split: str = "test",
+        *,
+        output_dir: Optional[Path] = None,
+        calibration: str = "none",
+    ) -> Path:
+        """Export predicted signals + ``signal_metadata.json`` for a split.
+
+        Phase Q.6.5.B (2026-05-04 night): satisfies the ``BaseTrainer``
+        Protocol method by delegating to the existing
+        ``lobtrainer.export.exporter.SignalExporter`` wrapper. Closes the
+        Q1 asymmetry (sklearn ``SimpleModelTrainer`` had a direct method;
+        PyTorch ``Trainer`` required the operator to manually instantiate
+        ``SignalExporter`` AND call ``setup()`` + ``load_checkpoint()`` in
+        the right order).
+
+        After this method exists, ``scripts/export_signals.py`` can
+        collapse to a thin ``create_trainer + setup + load_checkpoint +
+        export_signals`` wrapper (Phase Q.6.5.B Part 2 closes F-16 by
+        replacing the direct ``Trainer(config)`` instantiation that broke
+        sklearn dispatch through the canonical script).
+
+        Args:
+            split: Data split — ``"val"`` or ``"test"``. Training split is
+                refused by ``SignalExporter`` (DataLoader uses
+                ``drop_last=True``; alignment mismatch with raw features).
+            output_dir: Override default output directory. ``None`` uses
+                ``<self.config.output_dir>/signals/<split>/``.
+            calibration: Calibration strategy. ``"none"`` (default) emits
+                raw predictions. ``"variance_match"`` rescales to match
+                per-horizon label std (regression-only — emits WARN +
+                no-op when the inference's ``signal_type`` is
+                ``"classification"``, see exporter.py:646-662).
+
+        Returns:
+            Output directory path (``Path``). Use this to drive downstream
+            backtest invocations.
+
+        Raises:
+            ValueError: For invalid split (``"train"``) or unknown
+                calibration strategy. Both come from ``SignalExporter``.
+            RuntimeError: If the trainer's DataLoader for ``split`` is
+                ``None`` (caller did not invoke ``setup()`` first).
+        """
+        # Lazy-import to avoid circular module dependency.
+        # exporter.py imports Trainer for type hints; trainer.py importing
+        # exporter at module-load time would close the cycle.
+        from lobtrainer.export.exporter import SignalExporter
+
+        exporter = SignalExporter(self, calibration=calibration)
+        result = exporter.export(split=split, output_dir=output_dir)
+        return result.output_dir
+
 
 # =============================================================================
 # Factory Function
