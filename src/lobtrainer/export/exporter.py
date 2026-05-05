@@ -26,6 +26,7 @@ from lobtrainer.export.metadata import build_signal_metadata
 # SimpleModelTrainer.save_checkpoint sidecar). NO behavior change here — same body.
 from lobtrainer.training.compatibility import (
     build_compatibility_contract,
+    compute_model_config_hash,
     derive_data_source,
 )
 
@@ -666,6 +667,16 @@ class SignalExporter:
         )
         data_source_tag = derive_data_source(config.data.data_dir)
 
+        # Phase Y deployment (2026-05-05): emit model_config_hash at signal-
+        # metadata root so hft-ops harvester can read it back via the
+        # signal_metadata.json contract (mirrors compatibility_fingerprint).
+        # Closes the cross-repo harvest gap that blocked Phase D
+        # experiment_provenance_hash composition (model_config_hash was
+        # written only to the .pt checkpoint dict pre-Phase-Y; hft-ops never
+        # reads checkpoints). _LOSS_TUNING_KEYS denylist preserves stability
+        # under loss-tuning param changes.
+        model_cfg_hash = compute_model_config_hash(config.model)
+
         return build_signal_metadata(
             model_type=model_type_str,
             model_name=str(model_name),
@@ -695,4 +706,6 @@ class SignalExporter:
             compatibility=compatibility,
             data_source=data_source_tag,
             calibration_method=calibration_method,
+            # Phase Y deployment (2026-05-05): model-axis identity hash
+            model_config_hash=model_cfg_hash,
         )

@@ -72,6 +72,20 @@ def build_signal_metadata(
     # calibrated_returns.npy (replaces silent file-existence precedence).
     data_source: Optional[str] = None,
     calibration_method: Optional[str] = None,
+    # Phase Y deployment (2026-05-05): emit ``model_config_hash`` at signal-
+    # metadata root so hft-ops harvester can read it back via the existing
+    # signal_metadata.json contract (mirrors compatibility_fingerprint pattern).
+    # Pre-Phase-Y, ``model_config_hash`` was written ONLY to the checkpoint
+    # sidecar (``<ckpt>.pt`` dict + ``<ckpt>.pkl.config.json``) which hft-ops
+    # never reads — leaving the 4th of 4 ``experiment_provenance_hash`` source
+    # fields silently None on every record. This emission closes the cross-
+    # repo harvest gap. Producer: caller computes via
+    # ``lobtrainer.training.compatibility.compute_model_config_hash(model_config)``.
+    # Consumer: hft-ops ``_harvest_model_config_hash`` reads + injects into
+    # ``record.training_config["model_config_hash"]`` for the Phase D
+    # ``compute_experiment_provenance_hash`` composer. Per hft-rules §1
+    # "single source of truth" + §0 reuse-first.
+    model_config_hash: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build comprehensive signal metadata JSON.
 
@@ -167,5 +181,16 @@ def build_signal_metadata(
         meta["data_source"] = data_source
     if calibration_method is not None:
         meta["calibration_method"] = calibration_method
+
+    # Phase Y deployment (2026-05-05): top-level ``model_config_hash`` —
+    # parallel signal-side identity to ``compatibility_fingerprint`` (which
+    # captures data-axis architecture: feature_count + window_size + horizons
+    # + label_strategy_hash + ...). model_config_hash captures the model-axis
+    # architecture (model_type + filtered model.params). Together they pin the
+    # full identity of the producer that emitted these signals. hft-ops
+    # ``_harvest_model_config_hash`` reads this key directly. Validated as
+    # 64-lowercase-hex SHA-256 by the consumer's CONTENT_HASH_RE gate.
+    if model_config_hash is not None:
+        meta["model_config_hash"] = model_config_hash
 
     return meta

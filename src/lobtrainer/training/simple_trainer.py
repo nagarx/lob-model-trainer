@@ -457,7 +457,10 @@ class SimpleModelTrainer:
         # dependencies into the sklearn path's module-load surface.
         from lobtrainer.export.metadata import build_signal_metadata
         from hft_contracts.atomic_io import atomic_write_json
-        from lobtrainer.training.compatibility import build_compatibility_contract
+        from lobtrainer.training.compatibility import (
+            build_compatibility_contract,
+            compute_model_config_hash,
+        )
 
         # Phase Q.6.5.B (2026-05-04 night): resolve feature_set_ref via
         # ``lobtrainer.training.compatibility.feature_set_ref_to_dict``
@@ -492,6 +495,19 @@ class SimpleModelTrainer:
             else None
         )
 
+        # Phase Y deployment (2026-05-05): compute model_config_hash for the
+        # signal_metadata.json producer-side emission. Closes the harvest
+        # gap that blocked Phase D experiment_provenance_hash composition
+        # (model_config_hash was written only to the checkpoint sidecar
+        # pre-Phase-Y; hft-ops never reads sidecars). Reuses Phase X.1.A
+        # SSoT compute_model_config_hash which filters _LOSS_TUNING_KEYS
+        # so changing loss-tuning hyperparams doesn't churn the hash.
+        model_cfg_hash = (
+            compute_model_config_hash(self.config.model)
+            if self.config is not None
+            else None
+        )
+
         metadata = build_signal_metadata(
             model_type=self.model_type,
             model_name=self.model.name,
@@ -503,6 +519,7 @@ class SimpleModelTrainer:
             horizon_idx=self.horizon_idx,
             feature_config=self.feat_config.to_dict() if self.feat_config else None,
             metrics={k: round(v, 6) for k, v in self.test_metrics.items()} if self.test_metrics else None,
+            model_config_hash=model_cfg_hash,
             # Phase Q.6.5.A (2026-05-04 night): F-18 closure — sklearn
             # signal_metadata now carries Phase II compatibility block +
             # Phase 4c.4 feature_set_ref + Phase II data_source.
