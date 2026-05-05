@@ -2118,3 +2118,46 @@ This is **EXPECTED behavior** per Phase II + Phase X.1 v2 design (`hft-contracts
 - **70**: **STRONGEST EMPIRICAL FINDING OF THE CYCLE**: TemporalGradBoost on v3p0 produces the BEST OptRet across all 7 stages despite having the LOWEST headline IC (0.2842) of any non-failure stage. **Best OptRet=-0.04% at max_conv_20bps (128 trades, 50.00% win rate — near break-even)** vs Stage 2 TLOB (-1.39%), Stage 1 TemporalRidge (-0.46%), Stage 3 TLOB+CVML (+0.56% but only 561 trades), Stage 6 HMHP-R (-1.06%). This challenges the assumption "higher IC → better P&L". GradBoost's NON-LINEAR capacity captures patterns that translate to better trading P&L in the high-conviction regime, even if cross-sectional correlation (IC) is lower. **Ridge IC=0.329 vs GradBoost IC=0.284 (Δ=-0.045) but Ridge OptRet=-0.46% vs GradBoost OptRet=-0.04% (Δ=+0.42pp BETTER for GradBoost)** — explicit ablation showing IC and trading utility can DIVERGE. CLAUDE.md "Validated Model Results" (event-based 128-feat) showed TemporalGradBoost > TemporalRidge by IC (0.617 > 0.616 — within noise). On v3p0 60s/98-feat, the headline IC ranking inverts (Ridge > GradBoost) but the trading-utility ranking is GradBoost > Ridge. **Hypothesis for follow-up**: GradBoost's discrete tree decisions produce sharper directional predictions at high-conviction quantiles, where Ridge's continuous output is smoother but less actionable.
 
 - **71**: 50.00% win rate at max_conv_20bps for Stage 7 is the highest WR in the post-Phase-O cycle for a NEAR-BREAKEVEN regime. Combined with -0.04% OptRet (cost-gate barely losing), this stage is the closest to profitable trading we've seen on v3p0 across all 7 stages. The 128 trades at the 20bps threshold give statistical body to the result. **Caveat**: this is sample-of-1 evaluation on test split — would need walk-forward + out-of-sample bootstrap before claiming production trading viability. Documented for Phase Y experiment_provenance_hash composition: this experiment's full provenance (data_export_fp + feature_set_content_hash=N/A + compat_fp=`117cb027...` + model_config_hash=`fdb51e3a...`) uniquely identifies a near-breakeven configuration.
+
+### Stage 8: Phase Y Producer-Side End-to-End Validation (TLOB v3p0 export-only re-run, 2026-05-05)
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | (a) Phase Y Stage 1 producer wiring (`build_signal_metadata` accepts `model_config_hash` kwarg + emits at root) WORKS end-to-end on real data via canonical `scripts/export_signals.py`; (b) The `model_config_hash` in `signal_metadata.json` is BIT-EXACT to the value embedded in the Phase X.1 v2 checkpoint sidecar — proves the SSoT `compute_model_config_hash` produces deterministic results across both producer planes (checkpoint + signal-metadata); (c) Phase C.1 horizons truth-pin fires at `Trainer.setup()` per design — the new `compatibility_fingerprint` reflects the export's `*_horizons.json` (regression `[10, 60, 300]`) NOT the pre-Phase-C.1 silent-fallback classification defaults `[10, 20, 50, 100, 200]`; (d) Backtester accepts new metadata (Phase II tamper-detection passes); (e) Reproducibility — same checkpoint + same data ⇒ same metrics. |
+| **Method** | Re-run signal export ONLY (no re-training) on R9's existing checkpoint. Preserved R9's `signals/test/` for forensic comparison via separate `--output-dir`. Used current `nvda_first_pytorch_v3p0.yaml` (post-Phase-C.1 horizons-resolver active). Command: `python scripts/export_signals.py --config configs/experiments/nvda_first_pytorch_v3p0.yaml --checkpoint outputs/experiments/nvda_first_pytorch_v3p0/checkpoints/best.pt --split test --output-dir outputs/experiments/nvda_first_pytorch_v3p0/signals/test_stage8_phase_y`. |
+| **Data** | Same `e5_timebased_60s_v3p0` corpus as Stages 1-7. 8,085 test samples (matches R9 + Stage 7). |
+| **Config** | Same as R9 (TLOB compact: hidden_dim=32, num_layers=2, num_heads=2, BiN, no CVML, Huber δ=12.6). |
+| **Hardware** | MPS for inference; ~5s wall-clock total (export-only, no training). |
+| **Status** | **PHASE Y EMPIRICALLY VALIDATED ✓ + bit-exact metric reproduction ✓ + Phase C.1 truth-pin behavior empirically observed ✓** |
+
+**Producer-side fingerprints (NEW signal_metadata.json):**
+
+| Hash | Stage 8 (NEW post-Phase-Y) | R9 stored (pre-Phase-Y / pre-Phase-C.1) | Checkpoint embedded sidecar | Status |
+|---|---|---|---|---|
+| `compatibility_fingerprint` | `77895268cfdaba4af484ee30e661b7b3c05cd2f882fced2d026529e1a92e77e2` | `67c8ff36949d6809...` | `67c8ff36949d6809...` | ⚠️ **Differs from R9** — Phase C.1 truth-pin produces correct fingerprint with horizons=[10,60,300]; R9's old fingerprint used wrong horizons=[10,20,50,100,200] (classification defaults from silent-fallback at compatibility.py:233 pre-Phase-C.1). Loading R9's checkpoint emits `CheckpointConfigMismatchWarning` documenting the mismatch (warn-only per `strict_config=False` default). This is BY DESIGN — Phase C.1 was specifically designed to surface this drift. |
+| `model_config_hash` | `de47c0ef49abc0ef5d9d69efe1d4003a8b9551f24d5e6574b77f52fc041ecbb4` | (NOT in R9 metadata — pre-Phase-Y) | `de47c0ef49abc0ef5d9d69efe1d4003a8b9551f24d5e6574b77f52fc041ecbb4` | ✅ **BIT-EXACT MATCH to checkpoint sidecar** — proves `compute_model_config_hash` SSoT produces deterministic results across producers (checkpoint plane via Phase X.1 v2 + signal-metadata plane via Phase Y Stage 1). Same model.params filtered by `_LOSS_TUNING_KEYS` denylist → same SHA-256. |
+
+**Test metrics (8,085 samples, regression):**
+
+| Metric | Stage 8 (re-export) | R9 (training-time) | Status |
+|---|---|---|---|
+| test_ic | 0.3747 | 0.3747 | ✅ BIT-EXACT |
+| test_r2 | 0.1379 | 0.1379 | ✅ BIT-EXACT |
+| test_directional_accuracy | 0.6419 | 0.6419 | ✅ BIT-EXACT |
+| test_mae | 17.90 bps | 17.90 bps | ✅ |
+
+**Backtest (Deep ITM 8-threshold sweep):**
+
+| Threshold | Stage 8 OptRet | R9 OptRet (R9 entry in BACKTEST_INDEX) | Status |
+|---|---|---|---|
+| very_high_10bps | **-1.39%** (best) | **-1.39%** (best) | ✅ BIT-EXACT REPRODUCTION |
+
+**Lessons:**
+
+- **72**: **PHASE Y PRODUCER-SIDE EMPIRICALLY VALIDATED**. The model_config_hash emitted in `signal_metadata.json` (Phase Y Stage 1, commit `879a77d`) is BIT-EXACT to the value embedded in the checkpoint sidecar (Phase X.1 v2). Both producers use the same `compute_model_config_hash` SSoT at `lobtrainer.training.compatibility:298` filtering `_LOSS_TUNING_KEYS` — the empirical bit-exact match (`de47c0ef49abc0ef5d9d69efe1d4003a8b9551f24d5e6574b77f52fc041ecbb4` in both places) proves SSoT discipline holds end-to-end on real data. Phase Y composability invariant locked: same model architecture ⇒ same model_config_hash regardless of producer plane.
+
+- **73**: **PHASE C.1 HORIZONS TRUTH-PIN EMPIRICALLY VALIDATED**. Loading R9's pre-Phase-C.1 checkpoint via current `Trainer.setup()` triggers `CheckpointConfigMismatchWarning` showing horizons drift `(10, 60, 300)` (post-truth-pin, correct) vs `(10, 20, 50, 100, 200)` (R9's pre-truth-pin, WRONG — used classification defaults from silent-fallback at compatibility.py:233 that Phase C.1 deleted). The `label_strategy_hash` differs accordingly (`4d382c60...` post vs `7299e11a...` pre). This is the architectural fix Phase C.1 was designed to deliver, NOW EMPIRICALLY OBSERVED in production code path. **Implication for R9-R14**: their stored compatibility_fingerprints reflect WRONG horizons (classification defaults). Cross-experiment composability queries via `hft-ops ledger list --compatibility-fp 67c8ff36...` would silently group records with the wrong-horizons fingerprint. Phase Y deployment correctly produces post-truth-pin fingerprints for all NEW records — historical records require either (a) re-run via Phase Y deployment to refresh fingerprints OR (b) accept they're stale and document the cutover date. See PHASE_P_BACKLOG.md `#PY-6` for the documented finding.
+
+- **74**: Stage 8 reproduces R9 metrics + R9 best OptRet bit-exactly, validating that Phase Y deployment + Phase C.1 truth-pin do NOT alter MODEL behavior — they only correct the IDENTITY/PROVENANCE side of the contract. Same checkpoint, same data, same horizons feeding the model loss function = same metrics. Phase C.1 affects the FINGERPRINT (data-axis identity claim) but not the COMPUTATION (model output values). **This separation is the architectural invariant Phase C.1+Y was designed to preserve**: provenance correctness without computation drift.
+
+- **75**: Stage 8 wall-clock (~5s for export-only on MPS) is the SHORTEST validated empirical probe in the cycle. Pattern documented for future use: "validate Phase Y producer changes by re-running export only on existing checkpoints" — burns ~5s instead of ~5-10min for re-train. Useful for future Phase Y producer-side iteration without re-training compute cost.
