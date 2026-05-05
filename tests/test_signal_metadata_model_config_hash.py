@@ -220,3 +220,51 @@ class TestSignalExporterEmitsModelConfigHash:
             "MUST NOT churn model_config_hash. Phase Y deployment depends on "
             "this stability for clean cross-experiment provenance composition."
         )
+
+    def test_hmhp_use_confirmation_changes_model_config_hash(self):
+        """Phase Z.2 / #PY-5 Phase Y composability lock (2026-05-05).
+
+        ``hmhp_use_confirmation`` is a STRUCTURAL flag (gates whether
+        ``RegressionConfirmationModule`` is constructed in HMHP-R per
+        Phase Z.2 init gate), so it MUST trip ``model_config_hash``. If
+        it didn't, two HMHP-R models with structurally different forward
+        passes (one with ensemble, one with first-horizon fallback) would
+        share an identity hash — silently violating the Phase Y composability
+        invariant.
+
+        Verifies ``hmhp_use_confirmation`` is NOT in ``_LOSS_TUNING_KEYS``
+        denylist → flows into ``model.params`` via schema bridge at
+        schema.py:1779 → compute_model_config_hash differentiates True vs
+        False architectures.
+
+        Closes the agent-flagged "fingerprint coverage" follow-up from the
+        Phase Z pre-commit adversarial validation round.
+        """
+        from lobtrainer.config.schema import ModelConfig
+        from lobtrainer.training.compatibility import compute_model_config_hash
+
+        cfg_with = ModelConfig(
+            model_type="hmhp_regression",
+            input_size=98,
+            hmhp_horizons=[10, 60, 300],
+            hmhp_use_confirmation=True,
+        )
+        cfg_without = ModelConfig(
+            model_type="hmhp_regression",
+            input_size=98,
+            hmhp_horizons=[10, 60, 300],
+            hmhp_use_confirmation=False,
+        )
+
+        h_with = compute_model_config_hash(cfg_with)
+        h_without = compute_model_config_hash(cfg_without)
+
+        assert h_with != h_without, (
+            "Phase Y composability invariant violation: hmhp_use_confirmation "
+            "flips structural arch (with vs without RegressionConfirmation"
+            "Module) but model_config_hash collides. _LOSS_TUNING_KEYS "
+            "denylist at compatibility.py:86-103 must NOT include "
+            "use_confirmation. Cross-experiment ablation queries via "
+            "hft-ops ledger list --provenance-hash would silently group "
+            "structurally-different runs."
+        )

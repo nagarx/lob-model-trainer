@@ -80,7 +80,17 @@ def _load_split(data_dir: Path, split: str, horizon_idx: int = 0, max_days: int 
             m = json.load(f)
         day = m["day"]
         _validate_day_metadata(m, day)
-        seq = np.load(split_dir / f"{day}_sequences.npy", mmap_mode="r")
+        # Phase Z.1 / #PY-1 (2026-05-05): closes Phase D orphan validator
+        # on the sklearn data-load path (parallel to dataset.py:898-906
+        # PyTorch path). Validates idx 97 RESERVED 0.0 in sequences NPY
+        # via mmap_mode='r' O(1) header-only read. strict=False matches
+        # the trainer-side warning convention; Phase X.4 may flip to
+        # strict=True for production-gate fail-loud.
+        seq_path = split_dir / f"{day}_sequences.npy"
+        from hft_contracts.validation import validate_idx_97_reserved
+        for _w in validate_idx_97_reserved(seq_path, strict=False):
+            logger.warning("idx-97 contract warning (%s): %s", day, _w)
+        seq = np.load(seq_path, mmap_mode="r")
         reg = np.load(split_dir / f"{day}_regression_labels.npy")
         all_seqs.append(seq)
         all_labels.append(reg[:, horizon_idx])

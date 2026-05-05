@@ -889,6 +889,24 @@ def load_split_data(
         # day raises ContractError naming the offending date.
         _validate_day_metadata(day_data.metadata, date)
 
+        # Phase Z.1 / #PY-1 (2026-05-05): closes Phase D orphan validator.
+        # Validates idx 97 RESERVED 0.0 in sequences NPY — closes the
+        # metadata-only gap of validate_export_contract. A producer emitting
+        # non-zero idx 97 values would pass metadata validation but silently
+        # corrupt training (post-Phase-O contract: idx 97 = RESERVED 0.0
+        # forever per CLAUDE.md root). Spot-samples first sample only via
+        # mmap_mode='r' (O(1) header read). strict=False matches existing
+        # trainer pattern (logs warnings via logger.warning). Phase X.4
+        # may flip to strict=True for production-gate fail-loud.
+        # Gated on export_format=='aligned' because legacy '_features.npy'
+        # format is 2D (no idx 97) — would emit noisy "expected 3D" warning
+        # otherwise. The validator is pre-Phase-O archive-tolerant; new
+        # exports use 'aligned' format universally.
+        if export_format == 'aligned':
+            from hft_contracts.validation import validate_idx_97_reserved
+            for _w in validate_idx_97_reserved(data_file, strict=False):
+                logger.warning("idx-97 contract warning (%s): %s", date, _w)
+
         # day_data.metadata is non-None here (C-2 raised otherwise).
         if expected_feature_count is None:
             n_feat = day_data.metadata.get("n_features")
