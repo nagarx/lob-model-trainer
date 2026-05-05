@@ -365,17 +365,28 @@ class TestTrainingDiagnosticsNaN:
     """Test NaN detection."""
     
     def test_detects_nan_loss(self):
-        """Should detect NaN loss."""
+        """Should detect NaN loss.
+
+        Phase X.3 Empirical Trust (2026-05-05): exception type changed
+        from ``ValueError`` to ``TrainingDivergedError(RuntimeError)`` for
+        unified contract with the direct guard at ``Trainer._train_epoch``.
+        Both guard sites raise the SAME exception type so user code
+        catching divergence works regardless of which fired first.
+        """
+        from lobtrainer.training.exceptions import TrainingDivergedError
+
         diag = TrainingDiagnostics(alert_on_nan=True)
-        
-        with pytest.raises(ValueError, match="NaN loss"):
+
+        with pytest.raises(TrainingDivergedError):
             diag.on_batch_end(0, {"loss": float('nan')})
-    
+
     def test_detects_inf_loss(self):
         """Should detect Inf loss."""
+        from lobtrainer.training.exceptions import TrainingDivergedError
+
         diag = TrainingDiagnostics(alert_on_nan=True)
-        
-        with pytest.raises(ValueError, match="Inf loss"):
+
+        with pytest.raises(TrainingDivergedError):
             diag.on_batch_end(0, {"loss": float('inf')})
     
     def test_no_alert_when_disabled(self):

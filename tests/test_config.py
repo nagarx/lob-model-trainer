@@ -2104,6 +2104,95 @@ class TestModelConfigPydantic:
         assert m.dropout == 0.2
         assert m.hmhp_horizons == (10, 20, 50, 100, 200)
 
+    # --- Phase E silent-drop closure (2026-05-05) ---------------------------
+    # Pre-Phase-E, three HMHP YAML knobs (cascade_connections, use_confirmation,
+    # optimal_features_by_horizon) were ONLY propagated to ``model.params`` for
+    # ``mt == "hmhp"`` (classification). For ``hmhp_regression`` they silently
+    # dropped — lob-models HMHPRegressor used hardcoded defaults regardless of
+    # YAML. Plus ``use_confirmation=True`` was hardcoded at hmhp_regressor.py:517
+    # (now :526) overriding any YAML even if propagated. Per hft-rules §5/§8.
+    # Phase E hoists the 3 fields out of the mt-gate so both model types honor
+    # YAML; ``use_regression`` (classification-only aux) stays gated.
+    # These tests lock the closure: same YAML inputs MUST yield equal params
+    # contents (modulo regression-specific keys) for both model types.
+
+    @pytest.mark.parametrize("mt", ["hmhp", "hmhp_regression"])
+    def test_phase_e_hmhp_use_confirmation_propagates(self, mt):
+        """hmhp_use_confirmation=False MUST reach params for BOTH hmhp and
+        hmhp_regression (closes pre-Phase-E silent-drop on regression branch)."""
+        from lobtrainer.config.schema import ModelConfig
+        m = ModelConfig(
+            model_type=mt,
+            input_size=98,
+            hmhp_horizons=[10, 60, 300],
+            hmhp_use_confirmation=False,
+        )
+        assert m.params.get("use_confirmation") is False, (
+            f"Phase E silent-drop regression: hmhp_use_confirmation=False not "
+            f"in params for mt={mt}; got params={m.params!r}"
+        )
+
+    @pytest.mark.parametrize("mt", ["hmhp", "hmhp_regression"])
+    def test_phase_e_hmhp_cascade_connections_propagates(self, mt):
+        """hmhp_cascade_connections MUST reach params for BOTH model types."""
+        from lobtrainer.config.schema import ModelConfig
+        connections = [(0, 1), (1, 2)]
+        m = ModelConfig(
+            model_type=mt,
+            input_size=98,
+            hmhp_horizons=[10, 60, 300],
+            hmhp_cascade_connections=connections,
+        )
+        # Params stores list (lob-models HMHPConfig.cascade_connections typed
+        # List[Tuple[int, int]]); inner tuples may be lists post-JSON or post-
+        # Pydantic coercion. Verify length + element pairs.
+        cc = m.params.get("cascade_connections")
+        assert cc is not None, (
+            f"Phase E silent-drop regression: cascade_connections=None in "
+            f"params for mt={mt}"
+        )
+        assert len(cc) == 2
+        assert tuple(cc[0]) == (0, 1)
+        assert tuple(cc[1]) == (1, 2)
+
+    @pytest.mark.parametrize("mt", ["hmhp", "hmhp_regression"])
+    def test_phase_e_hmhp_optimal_features_propagates(self, mt):
+        """hmhp_optimal_features_by_horizon MUST reach params for BOTH types."""
+        from lobtrainer.config.schema import ModelConfig
+        spec = {10: [0, 1, 2], 60: [3, 4, 5]}
+        m = ModelConfig(
+            model_type=mt,
+            input_size=98,
+            hmhp_horizons=[10, 60, 300],
+            hmhp_optimal_features_by_horizon=spec,
+        )
+        assert m.params.get("optimal_features_by_horizon") == spec, (
+            f"Phase E silent-drop regression: optimal_features_by_horizon not "
+            f"in params for mt={mt}; got params={m.params!r}"
+        )
+
+    def test_phase_e_use_regression_stays_classification_only(self):
+        """use_regression is a classification-only aux flag and MUST NOT
+        leak into hmhp_regression params (its consumer doesn't expect it)."""
+        from lobtrainer.config.schema import ModelConfig
+        m_cls = ModelConfig(
+            model_type="hmhp",
+            input_size=98,
+            hmhp_horizons=[10, 60, 300],
+            hmhp_use_regression=True,
+        )
+        m_reg = ModelConfig(
+            model_type="hmhp_regression",
+            input_size=98,
+            hmhp_horizons=[10, 60, 300],
+            hmhp_use_regression=True,  # ignored for regression — explicit lock
+        )
+        assert m_cls.params.get("use_regression") is True
+        assert "use_regression" not in m_reg.params, (
+            "Phase E asymmetric design lock: use_regression must NOT propagate "
+            "to hmhp_regression params (classification-only aux flag)"
+        )
+
 
 # =============================================================================
 # Phase A.5.3f.1 post-audit hardening regression locks (2026-04-24).

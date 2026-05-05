@@ -1,0 +1,68 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/e5_timebased_60s_v3p0",
+      "feature_count": 98,
+      "horizon_idx": 0,
+      "labeling_strategy": "regression",
+      "sequence": {
+        "stride": 1,
+        "window_size": 20
+      }
+    },
+    "description": "Phase Q.6.5 + Phase X.2.A.1+A.2 Stage 7 \u2014 sklearn TemporalGradBoost on\ne5_timebased_60s_v3p0 (98 features, 60s bins, H10 primary, 53 temporal\nfeatures). Second sklearn ablation post-Phase-Q.6.5; validates dispatch\ngeneralization across non-default sklearn models. Reference benchmark\n(event-based 128-feat): IC=0.617, R\u00b2=0.397. On v3p0 60s/98-feat expect\nIC \u2248 0.30-0.40.\n",
+    "log_level": "INFO",
+    "model": {
+      "input_size": 0,
+      "model_type": "temporal_gradboost",
+      "params": {
+        "features": {
+          "include_momentum": true,
+          "include_volatility": true,
+          "rolling_windows": [
+            3,
+            5,
+            10
+          ],
+          "signal_indices": [
+            85,
+            84,
+            86,
+            56,
+            45
+          ],
+          "top_k_signals": 3
+        },
+        "huber_delta": 0.9,
+        "learning_rate": 0.05,
+        "loss_type": "huber",
+        "max_depth": 5,
+        "max_train_samples": 50000,
+        "min_samples_leaf": 50,
+        "n_estimators": 200,
+        "subsample": 0.8
+      }
+    },
+    "name": "First_TemporalGradBoost_V3p0_Validation",
+    "output_dir": "outputs/experiments/nvda_first_temporal_gradboost_v3p0",
+    "tags": [
+      "nvda",
+      "xnas",
+      "temporal-gradboost",
+      "regression",
+      "h10",
+      "60s",
+      "98-features",
+      "simple-model",
+      "v3p0",
+      "sklearn",
+      "phase-q-6-5",
+      "first-temporal-gradboost-v3p0"
+    ],
+    "train": {
+      "loss_type": "huber",
+      "task_type": "regression"
+    }
+  },
+  "status": "ok"
+}

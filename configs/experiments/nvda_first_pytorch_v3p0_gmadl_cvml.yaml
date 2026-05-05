@@ -1,0 +1,66 @@
+# =============================================================================
+# Phase Q.6.5 + Phase X.2.A.1+A.2 Stage 4 — TLOB + GMADL + CVML on v3p0
+# =============================================================================
+# Cycle context: Stage 4 NEGATIVE CONTROL + Phase Y composability denylist
+# test — fourth model trained on the v3p0 baseline corpus, this time with
+# the direction-optimized GMADL loss (Michankov et al. 2024, a=10, b=1.5)
+# layered on the TLOB+CVML architecture from Stage 3. Tests:
+#
+# (a) GMADL loss code path on v3p0 corpus — validates the loss is actually
+#     applied (not silently swapped or skipped); tests `regression_loss_type`
+#     dispatch in the trainer schema bridge.
+#
+# (b) Reproduction of CLAUDE.md "Validated Findings — What NOT to do" entry:
+#     "GMADL loss a=10, b=1.5 (E5) IC=0.007, DA=49.8% (complete failure).
+#      Loss inverts at epoch 16, collapses to mean prediction".
+#     This is the FIRST experiment in the post-Phase-Q.6.5 cycle to
+#     reproduce a documented FAILURE mode (Stages 1-3 reproduced documented
+#     SUCCESSES). Validates the pipeline produces correct failure signatures.
+#
+# (c) Phase Y composability empirical proof — model_config_hash MUST equal
+#     Stage 3's `3ced844386c6f7872ab9dbdb550e0d37dcd7f671fc823a5006ab6ea29224ecf8`
+#     because gmadl_a + gmadl_b ARE in `_LOSS_TUNING_KEYS` denylist
+#     (compatibility.py:88) — different loss but SAME architecture from
+#     Phase X.1 v2 fingerprinting perspective. This is the FIRST empirical
+#     test of denylist invariance under loss-tuning axis mutation.
+#
+# (d) compat_fingerprint MUST equal Stage 3's `67c8ff36949d6809...` because
+#     same data corpus + same encoder layout + same horizons. Phase X.1 v2
+#     CompatibilityContract is data-side architectural; loss type does NOT
+#     enter the contract.
+#
+# Configuration is byte-identical to e5_60s_gmadl_cvml.yaml (golden-fixture
+# locked) modulo the four orphan fields (name, description, output_dir, tags).
+# A separate output_dir is used to PRESERVE the pre-Phase-O CVML+GMADL
+# baseline at `outputs/experiments/e5_60s_gmadl_cvml/` (mtime 2026-03;
+# trained on pre-Phase-O e5_timebased_60s schema 2.2).
+# =============================================================================
+_base:
+  - "../bases/models/tlob_compact_regression.yaml"
+  - "../bases/datasets/nvda_e5_60s.yaml"
+  - "../bases/labels/regression_huber.yaml"
+  - "../bases/train/regression_default.yaml"
+
+name: First_PyTorch_V3p0_Validation_GMADL_CVML
+description: |
+  Phase Q.6.5 + Phase X.2.A.1+A.2 Stage 4 negative-control test —
+  TLOB + GMADL + CVML on e5_timebased_60s_v3p0 (98 features → 49 via CVML,
+  GMADL a=10, b=1.5). Reproduces CLAUDE.md Validated Findings "GMADL
+  complete failure IC=0.007, collapses to mean prediction" + tests
+  Phase X.1 v2 _LOSS_TUNING_KEYS denylist correctness (model_config_hash
+  MUST equal Stage 3's; compat_fingerprint MUST equal Stage 3's).
+output_dir: outputs/experiments/nvda_first_pytorch_v3p0_gmadl_cvml
+log_level: INFO
+tags: [e5, nvda, regression, h10, 60s, gmadl, cvml, v3p0, negative-control, phase-q-6-5, denylist-test]
+
+# Per-child overrides: GMADL loss + CVML feature-mixing front-end
+# (verbatim from e5_60s_gmadl_cvml.yaml lines 24-33; golden-fixture locked)
+model:
+  regression_loss_type: gmadl
+  gmadl_a: 10.0
+  gmadl_b: 1.5
+  tlob_use_cvml: true
+  tlob_cvml_out_channels: 49
+
+train:
+  loss_type: gmadl

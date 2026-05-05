@@ -1,0 +1,86 @@
+# =============================================================================
+# Phase Q.6.5 + Phase X.2.A.1+A.2 Stage 7 — TemporalGradBoost sklearn on v3p0
+# =============================================================================
+# Cycle context: Stage 7 — second sklearn ablation in the post-Phase-O cycle
+# (Stage 1 was TemporalRidge sklearn). Tests:
+#
+# (a) Phase Q.5 dispatch generalization across sklearn models — sklearn
+#     TemporalGradBoost via SimpleModelTrainer.from_config with non-default
+#     params (n_estimators=200, max_depth=5, learning_rate=0.05).
+#
+# (b) Reproduces CLAUDE.md TemporalGradBoost ablation finding (event-based
+#     128-feat: IC=0.617, R²=0.397) on time-based 60s/98-feat v3p0 corpus
+#     — expect IC ≈ 0.30-0.40 (similar to Stage 1 TemporalRidge IC=0.329).
+#
+# (c) Validates Phase Q.6.5 + Phase X.1 v2 + Phase Q.6.5.A SSoT chain
+#     end-to-end for a SECOND sklearn architecture (after Stage 1's Ridge).
+#
+# Configuration adapted from `nvda_temporal_gradboost_h10.yaml` (event-based
+# 128-feat, window=100/stride=10) for time-based 60s/98-feat v3p0 corpus
+# (window=20/stride=1 to match Stage 1 + Stage 2/3/4 config).
+#
+# Inline data block (matches Stage 1 pattern + existing TemporalGradBoost
+# config — sklearn configs have not migrated to multi-base inheritance).
+# =============================================================================
+
+name: First_TemporalGradBoost_V3p0_Validation
+description: |
+  Phase Q.6.5 + Phase X.2.A.1+A.2 Stage 7 — sklearn TemporalGradBoost on
+  e5_timebased_60s_v3p0 (98 features, 60s bins, H10 primary, 53 temporal
+  features). Second sklearn ablation post-Phase-Q.6.5; validates dispatch
+  generalization across non-default sklearn models. Reference benchmark
+  (event-based 128-feat): IC=0.617, R²=0.397. On v3p0 60s/98-feat expect
+  IC ≈ 0.30-0.40.
+
+data:
+  data_dir: "../data/exports/e5_timebased_60s_v3p0"
+  feature_count: 98
+  labeling_strategy: regression
+  horizon_idx: 0   # H10 primary (matches Stages 1-6)
+
+  sequence:
+    window_size: 20   # 60s bins (vs 100 for event-based)
+    stride: 1
+
+model:
+  model_type: temporal_gradboost
+  input_size: 0   # T13 auto-derive from data.feature_count=98
+  # Phase A.5.3i (2026-04-24): extra='forbid' on ModelConfig; nest
+  # gradboost-specific hyperparameters under `params:` (opaque passthrough).
+  params:
+    n_estimators: 200
+    max_depth: 5
+    learning_rate: 0.05
+    subsample: 0.8
+    min_samples_leaf: 50
+    loss_type: huber
+    huber_delta: 0.9
+    max_train_samples: 50000
+    features:
+      signal_indices: [85, 84, 86, 56, 45]   # matches Stage 1 + nvda_temporal_gradboost_h10.yaml
+      top_k_signals: 3
+      # Adapted to 20-step sequence: [3, 5, 10] (was [5, 10, 20] for 100-step)
+      rolling_windows: [3, 5, 10]
+      include_volatility: true
+      include_momentum: true
+
+train:
+  task_type: regression
+  loss_type: huber
+
+output_dir: outputs/experiments/nvda_first_temporal_gradboost_v3p0
+log_level: INFO
+
+tags:
+  - nvda
+  - xnas
+  - temporal-gradboost
+  - regression
+  - h10
+  - 60s
+  - 98-features
+  - simple-model
+  - v3p0
+  - sklearn
+  - phase-q-6-5
+  - first-temporal-gradboost-v3p0

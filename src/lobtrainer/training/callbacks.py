@@ -30,6 +30,7 @@ Usage:
 
 import json
 import logging
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +38,12 @@ from typing import Any, Dict, List, Optional, Union
 import shutil
 
 import torch
+
+# Phase X.3 Empirical Trust (2026-05-05): MonitorMetricUndefined raised by
+# EarlyStopping + ModelCheckpoint when the monitored metric is non-finite,
+# replacing the pre-X.3 silent `nan < best = False` "no improvement" stall.
+# Local import at use-site below to avoid potential circular imports during
+# module load (callbacks is imported very early in trainer init).
 
 logger = logging.getLogger(__name__)
 
@@ -235,13 +242,39 @@ class EarlyStopping(Callback):
         self._state = EarlyStoppingState()
         self._best_weights: Optional[Dict[str, Any]] = None
         
-        # Set comparison function based on mode
+        # Set comparison function based on mode.
+        #
+        # Phase X.3 Empirical Trust (2026-05-05): replace lambda with a
+        # closure that fail-loud-raises ``MonitorMetricUndefined`` on
+        # non-finite ``new``. Pre-X.3 ``lambda new, best: new < best`` with
+        # ``new=NaN`` returned False (NumPy/IEEE NaN comparison semantics) →
+        # silently treated NaN as "no improvement" → patience counter
+        # incremented but never reset → silent stall. Caught by 2026-05-05
+        # multi-agent audit. Default args (`_md`, `_m`) capture by value at
+        # closure creation to lock the behavior to the exact construction-
+        # time min_delta + metric (defensive, avoids late-binding surprises).
+        _metric = self.metric
+
         if mode == 'min':
             self._state.best_value = float('inf')
-            self._is_better = lambda new, best: new < best - min_delta
+
+            def _is_better(new, best, _md=min_delta, _m=_metric):
+                if not math.isfinite(new):
+                    from lobtrainer.training.exceptions import MonitorMetricUndefined
+                    raise MonitorMetricUndefined(metric=_m, value=new)
+                return new < best - _md
+
+            self._is_better = _is_better
         else:
             self._state.best_value = float('-inf')
-            self._is_better = lambda new, best: new > best + min_delta
+
+            def _is_better(new, best, _md=min_delta, _m=_metric):
+                if not math.isfinite(new):
+                    from lobtrainer.training.exceptions import MonitorMetricUndefined
+                    raise MonitorMetricUndefined(metric=_m, value=new)
+                return new > best + _md
+
+            self._is_better = _is_better
     
     def on_train_start(self) -> None:
         """Reset state at start of training.
@@ -392,12 +425,33 @@ class ModelCheckpoint(Callback):
         self.filename_template = filename_template
         
         # State
+        #
+        # Phase X.3 Empirical Trust (2026-05-05): same NaN-loud pattern as
+        # EarlyStopping above. Without this guard, NaN val_loss would be
+        # silently treated as "no improvement" → best.pt never saved on
+        # NaN epochs → silent training stall + degraded checkpoint kept.
+        _metric = self.metric
+
         if mode == 'min':
             self._best_value = float('inf')
-            self._is_better = lambda new, best: new < best
+
+            def _is_better(new, best, _m=_metric):
+                if not math.isfinite(new):
+                    from lobtrainer.training.exceptions import MonitorMetricUndefined
+                    raise MonitorMetricUndefined(metric=_m, value=new)
+                return new < best
+
+            self._is_better = _is_better
         else:
             self._best_value = float('-inf')
-            self._is_better = lambda new, best: new > best
+
+            def _is_better(new, best, _m=_metric):
+                if not math.isfinite(new):
+                    from lobtrainer.training.exceptions import MonitorMetricUndefined
+                    raise MonitorMetricUndefined(metric=_m, value=new)
+                return new > best
+
+            self._is_better = _is_better
         
         self._saved_checkpoints: List[Path] = []
         self._best_checkpoint_path: Optional[Path] = None
@@ -428,11 +482,25 @@ class ModelCheckpoint(Callback):
     
     def on_epoch_end(self, epoch: int, logs: Dict[str, float]) -> None:
         """Save checkpoint if conditions are met."""
-        current_value = logs.get(self.metric, 0.0)
-        
+        # Phase X.3 Empirical Trust (2026-05-05): mirror EarlyStopping's
+        # missing-metric handling at callbacks.py:274-279. Pre-X.3,
+        # ``logs.get(self.metric, 0.0)`` silently returned 0.0 — for
+        # mode='min' this trivially beat ``best_value=inf`` → spurious
+        # "best" checkpoint saved with metric_value=0.0 in filename when
+        # the metric was actually missing from logs (e.g., classification
+        # config not emitting val_loss). Per hft-rules §5/§8.
+        if self.metric not in logs:
+            logger.warning(
+                f"ModelCheckpoint: metric '{self.metric}' not found in logs. "
+                f"Available metrics: {list(logs.keys())}. Skipping checkpoint save."
+            )
+            return
+
+        current_value = logs[self.metric]
+
         should_save = False
-        
-        # Check if this is an improvement
+
+        # Check if this is an improvement (raises MonitorMetricUndefined on NaN)
         is_improvement = self._is_better(current_value, self._best_value)
         if is_improvement:
             self._best_value = current_value
@@ -460,8 +528,15 @@ class ModelCheckpoint(Callback):
         if self.trainer is None:
             logger.warning("ModelCheckpoint: trainer not set, skipping save")
             return
-        
-        metric_value = logs.get(self.metric, 0.0)
+
+        # Phase X.3 Empirical Trust (2026-05-05): direct metric access — by
+        # the time _save_checkpoint is called, the on_epoch_end gate at
+        # callbacks.py:431 has already verified self.metric is in logs.
+        # If it isn't (programming error), fail-loud via KeyError surfaces
+        # the bug immediately. Pre-X.3 used ``logs.get(self.metric, 0.0)``
+        # which silently filename-templated checkpoints with metric=0.0000
+        # (misleading filename when metric was actually missing).
+        metric_value = logs[self.metric]
         
         # Create filename
         filename = self.filename_template.format(

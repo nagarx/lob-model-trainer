@@ -1,0 +1,35 @@
+# =============================================================================
+# First PyTorch v3p0 end-to-end validation — Phase Q.6.5 + Phase X.2.A.1+A.2
+# =============================================================================
+# RECORD: this is the FIRST PyTorch model trained on the v3p0 baseline export
+# (e5_timebased_60s_v3p0) post Phase O Cycle 1 + Phase Q+S+X.1 v2 + Phase Q.6.5
+# + Phase X.2.A.1+A.2. Smoke-validates the entire Trainer + signal_export +
+# backtester chain end-to-end on 230-day v3p0 corpus (162/35/33 train/val/test).
+#
+# Configuration is byte-identical to e5_60s_huber_nocvml.yaml (golden-fixture
+# locked) modulo the four orphan fields (name, description, output_dir, tags).
+# A separate output_dir is used to PRESERVE the pre-Phase-O baseline at
+# `outputs/experiments/e5_60s_huber_nocvml/` (mtime 2026-03-19; trained on
+# pre-Phase-O e5_timebased_60s schema 2.2). The baseline produced
+# val_r2≈0.135 / val_ic≈0.375 / val_da≈0.636 (per training_history.json).
+# This v3p0 run is expected to land within tolerance of those values
+# (±0.05 R², ±0.10 IC, ±0.05 DA) since the v3p0 corpus has +21% more
+# sequences on 164/233 days from B.2 fix and 3 silently-corrupt short
+# half-sessions removed (fail-loud per hft-rules §8) — slightly different
+# corpus statistics, same architecture.
+# =============================================================================
+_base:
+  - "../bases/models/tlob_compact_regression.yaml"
+  - "../bases/datasets/nvda_e5_60s.yaml"
+  - "../bases/labels/regression_huber.yaml"
+  - "../bases/train/regression_default.yaml"
+
+name: First_PyTorch_V3p0_Validation
+description: |
+  Phase Q.6.5 + Phase X.2.A.1+A.2 close-out validation — first PyTorch model
+  trained on v3p0 baseline (e5_timebased_60s_v3p0) end-to-end through the
+  canonical post-Q.6.5 dispatch + Phase X.2.A.2 strict_validate chain.
+  Architecture identical to e5_60s_huber_nocvml.yaml (TLOB compact ~92K params).
+output_dir: outputs/experiments/nvda_first_pytorch_v3p0
+log_level: INFO
+tags: [e5, nvda, regression, h10, 60s, huber, no-cvml, v3p0, first-pytorch-validation, phase-q-6-5]

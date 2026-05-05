@@ -435,23 +435,45 @@ class TrainingDiagnostics(Callback):
         logger.info("TrainingDiagnostics: monitoring enabled")
     
     def on_batch_end(self, batch_idx: int, logs: Dict[str, float]) -> None:
-        """Check batch-level health."""
+        """Check batch-level health.
+
+        Phase X.3 Empirical Trust (2026-05-05): post-hoc audit safety net
+        for non-finite loss. The PRIMARY guard is the direct check at
+        ``Trainer._train_epoch:902`` (BEFORE backward+step). This callback
+        check runs AFTER ``optimizer.step()`` has already applied (possibly
+        NaN-corrupted) gradients to model params, so it cannot prevent
+        downstream corruption — but provides defense-in-depth if the
+        direct guard is bypassed (e.g., user subclasses Trainer with a
+        custom _train_epoch). Raises ``TrainingDivergedError`` with full
+        context (matches the direct-guard error type) instead of the
+        pre-X.3 bare ``ValueError`` with batch-only context.
+        """
         loss = logs.get('loss', logs.get('train_loss'))
-        
-        if loss is not None:
-            # Check for NaN
-            if np.isnan(loss):
-                msg = f"NaN loss detected at batch {batch_idx}!"
-                logger.error(msg)
-                if self.alert_on_nan:
-                    raise ValueError(msg)
-            
-            # Check for Inf
-            if np.isinf(loss):
-                msg = f"Inf loss detected at batch {batch_idx}!"
-                logger.error(msg)
-                if self.alert_on_nan:
-                    raise ValueError(msg)
+
+        if loss is not None and not np.isfinite(loss):
+            msg_kind = "NaN" if np.isnan(loss) else "Inf"
+            logger.error(
+                f"{msg_kind} loss detected at batch {batch_idx} "
+                f"(post-hoc audit — params may already be corrupted; "
+                f"direct guard at Trainer._train_epoch should have caught earlier)."
+            )
+            if self.alert_on_nan:
+                # Lazy import to avoid circular dependency at module load time.
+                from lobtrainer.training.exceptions import TrainingDivergedError
+
+                # Best-effort context resolution: trainer attribute may not
+                # exist on subclasses; fall back to -1 for unknown.
+                trainer = getattr(self, "trainer", None)
+                state = getattr(trainer, "state", None)
+                epoch = getattr(state, "current_epoch", -1) if state else -1
+                global_step = getattr(state, "global_step", -1) if state else -1
+
+                raise TrainingDivergedError(
+                    epoch=epoch,
+                    batch=batch_idx,
+                    loss_value=float(loss),
+                    global_step=global_step,
+                )
     
     def on_epoch_end(self, epoch: int, logs: Dict[str, float]) -> None:
         """Perform comprehensive health check at epoch end."""

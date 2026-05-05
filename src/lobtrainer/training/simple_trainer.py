@@ -210,7 +210,39 @@ class SimpleModelTrainer:
         return instance
 
     def setup(self):
-        """Load data, create model, engineer features."""
+        """Load data, create model, engineer features.
+
+        Phase X.3 Empirical Trust (2026-05-05) — Phase C.1: auto-derive
+        ``data.labels.horizons`` from the export's ``*_horizons.json``
+        files BEFORE data loading, so signal_metadata.compatibility.horizons
+        reflects the actual data (not classification fallback). Mirrors
+        the same hook in ``Trainer.setup()`` for cross-trainer parity.
+        """
+        # Phase C.1 horizons truth-pin (sklearn path)
+        if self.config is not None and not self.config.data.labels.horizons:
+            from lobtrainer.data.horizons_resolver import resolve_horizons_from_export
+
+            try:
+                actual_horizons = resolve_horizons_from_export(
+                    self.config.data.data_dir, split="train"
+                )
+                new_labels = self.config.data.labels.model_copy(
+                    update={"horizons": actual_horizons}
+                )
+                new_data = self.config.data.model_copy(
+                    update={"labels": new_labels}
+                )
+                self.config = self.config.model_copy(
+                    update={"data": new_data}
+                )
+                logger.info(
+                    f"Auto-resolved data.labels.horizons={list(actual_horizons)} "
+                    f"from {self.config.data.data_dir}/train/*_horizons.json "
+                    f"(sklearn path; Phase X.3 / Phase C.1 truth-pinning)."
+                )
+            except FileNotFoundError as exc:
+                logger.debug(f"Horizons auto-resolution skipped (sklearn): {exc}")
+
         logger.info("Loading data...")
         self._seq_train, self._y_train, self._spreads_train, self._prices_train = \
             _load_split(self.data_dir, "train", self.horizon_idx)

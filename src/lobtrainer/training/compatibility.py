@@ -230,9 +230,21 @@ def build_compatibility_contract(
         if feature_set_ref and "content_hash" in feature_set_ref
         else "default"
     )
-    horizons_list = labels_cfg.horizons or getattr(
-        config.model, "hmhp_horizons", None
-    )
+    # Phase X.3 Empirical Trust (2026-05-05 — Phase C.1): drop the silent
+    # fallback to ``model.hmhp_horizons``. Pre-Phase-C.1 this fallback
+    # silently substituted classification default ``[10,20,50,100,200]``
+    # when ``data.labels.horizons`` was empty — producing FALSE
+    # compat_fingerprints for regression corpus (actual [10,60,300] data
+    # was fingerprinted as if it were [10,20,50,100,200] — Phase II
+    # tamper-detection broken because two trainings on different horizon
+    # sets could collide on the same fingerprint).
+    #
+    # Resolution: the trainer's ``Trainer.setup()`` and
+    # ``SimpleModelTrainer.setup()`` now auto-derive horizons from the
+    # export's ``*_horizons.json`` (single source of truth per hft-rules §1).
+    # If horizons are STILL empty here, that's an upstream contract
+    # violation — fail-loud per hft-rules §8.
+    horizons_list = labels_cfg.horizons
     horizons_tuple = tuple(horizons_list) if horizons_list else None
 
     # Label strategy hash captures the full LabelsConfig — strategy + horizons +

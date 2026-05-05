@@ -1,0 +1,41 @@
+# =============================================================================
+# Second PyTorch v3p0 validation — TLOB + CVML on e5_timebased_60s_v3p0
+# =============================================================================
+# Cycle context: Phase Q.6.5 + Phase X.2.A.1+A.2 close-out — second
+# PyTorch model trained on v3p0 corpus, this time with CVML feature-mixing
+# front-end enabled (tlob_use_cvml=true, tlob_cvml_out_channels=49). Tests:
+# (a) CVML implementation correctness on v3p0 (Li et al. ICLR 2025 dilated
+#     causal Conv1D, 5 layers, 98→49 feature compression);
+# (b) reproducibility of CLAUDE.md Validated Findings ("CVML front-end on 98
+#     features (E5) — IC=0.373, no improvement over 0.380 baseline; CVML
+#     doesn't transfer to low-dim/small-sample regime");
+# (c) cross-experiment Phase Y composability — both no-CVML run (commit
+#     21dc240 first-pytorch-v3p0 fingerprint=67c8ff36949d6809...) and CVML
+#     run produce comparable signal_metadata structures.
+#
+# Configuration is byte-identical to e5_60s_huber_cvml.yaml (golden-fixture
+# locked) modulo the four orphan fields (name, description, output_dir, tags).
+# A separate output_dir is used to PRESERVE the pre-Phase-O CVML baseline at
+# `outputs/experiments/e5_60s_huber_cvml/` (mtime 2026-03; trained on
+# pre-Phase-O e5_timebased_60s schema 2.2).
+# =============================================================================
+_base:
+  - "../bases/models/tlob_compact_regression.yaml"
+  - "../bases/datasets/nvda_e5_60s.yaml"
+  - "../bases/labels/regression_huber.yaml"
+  - "../bases/train/regression_default.yaml"
+
+name: First_PyTorch_V3p0_Validation_CVML
+description: |
+  Phase Q.6.5 + Phase X.2.A.1+A.2 second-PyTorch-v3p0 validation —
+  TLOB + CVML on e5_timebased_60s_v3p0 (98 features → 49 via CVML).
+  Reproduces CLAUDE.md Validated Findings IC=0.373 baseline and tests
+  CVML implementation correctness on the v3p0 corpus.
+output_dir: outputs/experiments/nvda_first_pytorch_v3p0_cvml
+log_level: INFO
+tags: [e5, nvda, regression, h10, 60s, huber, cvml, v3p0, second-pytorch-validation, phase-q-6-5]
+
+# Per-child overrides: enable CVML feature-mixing front-end
+model:
+  tlob_use_cvml: true
+  tlob_cvml_out_channels: 49

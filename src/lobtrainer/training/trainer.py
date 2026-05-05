@@ -173,6 +173,38 @@ class Trainer:
                         "import + torch availability."
                     )
 
+        # Phase X.3 Empirical Trust (2026-05-05): auto-register
+        # TrainingDiagnostics(alert_on_nan=True) as a post-hoc audit safety
+        # net for non-finite loss. The PRIMARY guard is the direct check at
+        # _train_epoch:902 (PRE-backward); this callback check runs AFTER
+        # optimizer.step() (post-hoc) but provides defense-in-depth if the
+        # direct guard is bypassed by Trainer subclasses overriding
+        # _train_epoch. Same exception type (TrainingDivergedError) +
+        # uniform error contract across both guard sites — see
+        # lobtrainer.training.exceptions module docstring for the dual-
+        # guard rationale. Same registration pattern as
+        # PermutationImportanceCallback above (duck-typed user-already-has-it
+        # check; narrow except clause).
+        user_has_diagnostics_cb = any(
+            type(cb).__name__ == "TrainingDiagnostics"
+            for cb in callbacks_list
+        )
+        if not user_has_diagnostics_cb:
+            try:
+                from lobtrainer.training.monitoring import TrainingDiagnostics
+                callbacks_list.append(TrainingDiagnostics(alert_on_nan=True))
+            except (ImportError, OSError):
+                # Defensive: monitoring import is normally fine (torch is
+                # already loaded by trainer); fall back to direct guard
+                # only. Narrow except per hft-rules §5 (avoid masking
+                # unexpected errors).
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "TrainingDiagnostics auto-registration failed; "
+                    "training will proceed with the direct loss-finiteness "
+                    "guard at _train_epoch only (no post-hoc audit fallback)."
+                )
+
         self.callbacks = CallbackList(callbacks_list)
         self.callbacks.set_trainer(self)
         
@@ -758,6 +790,50 @@ class Trainer:
         # Set seed for reproducibility
         set_seed(self.config.train.seed)
 
+        # Phase X.3 Empirical Trust (2026-05-05) — Phase C.1: auto-derive
+        # ``data.labels.horizons`` from the export's ``*_horizons.json``
+        # files when the YAML doesn't override. Pre-Phase-C.1, the empty
+        # default fell back to ``model.hmhp_horizons = (10,20,50,100,200)``
+        # in ``compatibility.py:233`` — classification defaults that did
+        # NOT match the regression corpus's actual horizons [10,60,300].
+        # This caused B5 horizon drift in 5 of 6 v3p0 stages' compat_fp.
+        # Per hft-rules §1 ("layout as contract — single source of truth"):
+        # the export IS authoritative; trainer auto-derives if not overridden.
+        if not self.config.data.labels.horizons:
+            from lobtrainer.data.horizons_resolver import resolve_horizons_from_export
+
+            try:
+                actual_horizons = resolve_horizons_from_export(
+                    self.config.data.data_dir, split="train"
+                )
+                # LabelsConfig is frozen; use Pydantic model_copy to
+                # construct a new instance with horizons populated.
+                new_labels = self.config.data.labels.model_copy(
+                    update={"horizons": actual_horizons}
+                )
+                new_data = self.config.data.model_copy(
+                    update={"labels": new_labels}
+                )
+                self.config = self.config.model_copy(
+                    update={"data": new_data}
+                )
+                logger.info(
+                    f"Auto-resolved data.labels.horizons={list(actual_horizons)} "
+                    f"from {self.config.data.data_dir}/train/*_horizons.json "
+                    f"(Phase X.3 / Phase C.1 truth-pinning — was previously "
+                    f"falling back to model.hmhp_horizons classification defaults)."
+                )
+            except FileNotFoundError as exc:
+                # Classification-only exports (no horizons.json) — silent
+                # pass-through; CompatibilityContract construction will
+                # fail-loud at fp time if horizons still empty.
+                logger.debug(
+                    f"Horizons auto-resolution skipped: {exc}. "
+                    f"If running classification, set data.labels.horizons "
+                    f"explicitly OR ensure CompatibilityContract.horizons "
+                    f"is provided by some other path."
+                )
+
         # Create components (lazy properties)
         _ = self.model
         _ = self.optimizer
@@ -899,6 +975,32 @@ class Trainer:
 
             self.optimizer.zero_grad()
             result = self._strategy.process_batch(self.model, batch_data)
+
+            # Phase X.3 Empirical Trust (2026-05-05): fail-loud guard on
+            # non-finite loss BEFORE backward propagates NaN/Inf into model
+            # parameters. PRIMARY defense — direct + pre-backward placement
+            # ensures gradient + param state stays clean. Stage 4 GMADL
+            # near-collapse (pred_std=7.7e-5) was caught only because IC was
+            # visibly near 0; future loss-explosions / sigmoid-saturation /
+            # log-of-zero / exp-overflow scenarios would have produced NaN
+            # parameters + later NaN val_loss + EarlyStopping silent stall
+            # without this guard. Per hft-rules §2 ("zero tolerance for
+            # precision errors") + §8 ("never silently drop, clamp, or 'fix'
+            # data"). Caught by 2026-05-05 multi-agent audit (Cluster V).
+            #
+            # Companion post-hoc audit: TrainingDiagnostics.on_batch_end
+            # raises the SAME exception type (TrainingDivergedError) for
+            # defense-in-depth — see lobtrainer.training.exceptions module
+            # docstring for the dual-guard rationale.
+            if not torch.isfinite(result.loss).all():
+                from lobtrainer.training.exceptions import TrainingDivergedError
+                raise TrainingDivergedError(
+                    epoch=self.state.current_epoch,
+                    batch=batch_idx,
+                    loss_value=float(result.loss.item()),
+                    global_step=self.state.global_step,
+                )
+
             result.loss.backward()
 
             if cfg.gradient_clip_norm is not None:

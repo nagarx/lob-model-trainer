@@ -1,0 +1,62 @@
+# =============================================================================
+# Phase Q.6.5 + Phase X.2.A.1+A.2 Stage 6 — HMHP-R v3p0 Validation
+# =============================================================================
+# Cycle context: Stage 6 — first HMHP-R cascading-decoder regression model
+# trained live on the v3p0 baseline corpus. Tests:
+#
+# (a) HMHP-R architecture pipeline path on v3p0 (architecturally distinct
+#     from TLOB used in Stages 2-4); validates lobmodels HMHPRegressor
+#     dispatch through the trainer schema bridge.
+#
+# (b) Phase S pool_mode wiring — `hmhp_cascade_regression.yaml:30` sets
+#     `hmhp_pool_mode: mean` (Phase S YAML migration preserves legacy
+#     mean-pool inference for HMHP-R; without override would default to
+#     `"last"` matching HMHP classification). FIRST LIVE TRAINING TEST of
+#     Phase S since 2026-05-04 ship.
+#
+# (c) Cascading regression decoders forward + backward pass + per-horizon
+#     loss weighting at H10 (0.50) + H60 (0.25) + H300 (0.15) +
+#     cross-horizon consistency (0.10).
+#
+# (d) ConfirmationModule (cross-horizon agreement signal — produces
+#     agreement_ratio.npy alongside predicted_returns.npy in signal export).
+#
+# (e) Phase X.1 v2 model_config_hash discrimination — HMHP-R has completely
+#     different model_type + hmhp_* fields than TLOB, so model_config_hash
+#     MUST differ from Stages 2/3/4 (`de47c0ef...` / `3ced8443...`).
+#     compat_fingerprint MUST equal R9/R10/R11's `67c8ff36...` because
+#     same data corpus + horizons + normalization.
+# =============================================================================
+_base:
+  - "../bases/models/hmhp_cascade_regression.yaml"
+  - "../bases/datasets/nvda_e5_60s.yaml"
+  - "../bases/labels/regression_huber.yaml"
+  - "../bases/train/regression_default.yaml"
+
+name: First_HMHP_R_V3p0_Validation
+description: |
+  Phase Q.6.5 + Phase X.2.A.1+A.2 Stage 6 — first HMHP-R cascading-decoder
+  regression model trained on e5_timebased_60s_v3p0 (98 features, 60s bins,
+  H10 primary). Tests Phase S pool_mode + cascading decoders +
+  ConfirmationModule end-to-end on v3p0. Architecture: HMHP encoder
+  (TLOB-based, 64 hidden) + cascading regression decoders [H10, H60, H300]
+  + ConfirmationModule. Loss: H10-primary weighted Huber.
+output_dir: outputs/experiments/nvda_first_hmhp_r_v3p0
+log_level: INFO
+tags: [hmhp, hmhp_r, nvda, regression, h10, 60s, huber, v3p0, cascading-decoder, phase-s, phase-q-6-5, first-hmhp-r-v3p0]
+
+# Per-child overrides: HMHP-R requires hmhp_horizons + hmhp_loss_weights
+# (these are NOT in hmhp_cascade_bare.yaml per its docstring lines 9-14;
+# variable across configs — must be set per-experiment)
+model:
+  hmhp_horizons: [10, 60, 300]   # matches v3p0 regression_labels.npy [N, 3]
+  hmhp_loss_weights:             # H10-primary weighting per signal strength
+    H10: 0.50
+    H60: 0.25
+    H300: 0.15
+    consistency: 0.10            # cross-horizon consistency loss
+
+# train override: HMHP-R is more architecturally complex than TLOB
+train:
+  epochs: 20                     # override regression_default's 30
+  early_stopping_patience: 8     # override regression_default's 5

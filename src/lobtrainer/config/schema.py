@@ -1746,19 +1746,44 @@ class ModelConfig(SafeBaseModel):
                 # accept `pool_mode` via **kwargs → HMHPConfig(...).
                 "pool_mode": self.hmhp_pool_mode,
             }
+            # Phase Q.6.5 Stage 6 fix (2026-05-05): propagate loss_weights for
+            # BOTH hmhp + hmhp_regression model types. Pre-fix this propagation
+            # was gated by `if mt == "hmhp"` (classification only) which silently
+            # dropped YAML-supplied loss_weights for hmhp_regression children
+            # (e.g., nvda_hmhp_regression_h10_primary, nvda_first_hmhp_r_v3p0).
+            # Result: HMHPConfig defaults kicked in + auto-adjust at
+            # lob-models/.../config/base.py:2036-2052 generated uniform weights,
+            # NOT the H10-primary weighting requested in YAML. hft-rules §5/§8
+            # silent-drop violation. Move out of mt=="hmhp" branch so both model
+            # types honor the YAML-supplied weights. NOTE: pure config-bridge
+            # change; lob-models HMHPRegressor consumer at hmhp_regressor.py:391-445
+            # already reads `self._config.loss_weights.get(...)` defensively.
+            if self.hmhp_loss_weights is not None:
+                p["loss_weights"] = self.hmhp_loss_weights
+
+            # Phase E (2026-05-05) Cluster II surgical closure: mirror the
+            # Stage 6 ``loss_weights`` fix pattern for additional fields
+            # silently dropped pre-Phase-E for hmhp_regression model_type.
+            # Pre-Phase-E: ``cascade_connections``, ``optimal_features_by_horizon``,
+            # ``use_confirmation`` were inside ``if mt == "hmhp":`` (classification
+            # only) → HMHPConfig defaults kicked in for hmhp_regression instead
+            # of YAML-supplied values. Per hft-rules §5/§8 silent-drop violation.
+            # cascade_connections: list-of-tuples in lob-models HMHPConfig
+            # (not nested list) — honor that typed contract.
+            p["cascade_connections"] = (
+                list(self.hmhp_cascade_connections)
+                if self.hmhp_cascade_connections is not None
+                else None
+            )
+            p["optimal_features_by_horizon"] = self.hmhp_optimal_features_by_horizon
+            p["use_confirmation"] = self.hmhp_use_confirmation
+
             if mt == "hmhp":
-                # cascade_connections: list-of-tuples in lob-models HMHPConfig
-                # (not nested list) — honor that typed contract.
-                p["cascade_connections"] = (
-                    list(self.hmhp_cascade_connections)
-                    if self.hmhp_cascade_connections is not None
-                    else None
-                )
-                p["optimal_features_by_horizon"] = self.hmhp_optimal_features_by_horizon
-                p["use_confirmation"] = self.hmhp_use_confirmation
+                # use_regression: classification-only aux output flag
+                # (HMHP classification can ALSO produce regression aux output).
+                # hmhp_regression model_type is REGRESSION-only so this flag
+                # is irrelevant — keep classification-side only.
                 p["use_regression"] = self.hmhp_use_regression
-                if self.hmhp_loss_weights is not None:
-                    p["loss_weights"] = self.hmhp_loss_weights
             if mt == "hmhp_regression":
                 # create_hmhp_regressor() kwarg is 'loss_type', not 'default_loss_type'
                 p["loss_type"] = self.hmhp_regression_loss_type
