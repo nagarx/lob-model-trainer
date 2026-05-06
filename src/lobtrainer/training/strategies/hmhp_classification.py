@@ -122,9 +122,14 @@ class HMHPClassificationStrategy(TrainingStrategy):
             elif key == "consistency":
                 metrics["consistency_loss"] = value.item()
 
-        # Accuracy from ensemble prediction vs first horizon labels
+        # Accuracy from ensemble prediction vs primary horizon labels.
+        # Phase 1 N4 forensic-bug closure (#PY-10 / #PY-43, 2026-05-06):
+        # Pre-fix used self.horizons[0] hardcoded; ignored
+        # config.data.labels.primary_horizon_idx. Now uses canonical
+        # LabelsConfig.validate_primary_horizon_idx_for SSoT (schema.py:450).
         predictions = output.logits.argmax(dim=1)
-        first_h = self.horizons[0]
+        primary_idx = self.config.data.labels.validate_primary_horizon_idx_for(len(self.horizons))
+        first_h = self.horizons[primary_idx]
         correct = (predictions == labels[first_h]).sum().item()
         metrics["correct_count"] = correct
 
@@ -230,7 +235,10 @@ class HMHPClassificationStrategy(TrainingStrategy):
                 horizon_correct[h] += (h_preds == labels[h]).sum().item()
 
             final_preds = output.logits.argmax(dim=1)
-            first_h = horizons[0]
+            # Phase 1 N4 forensic-bug closure (#PY-10 / #PY-43, 2026-05-06):
+            # See compute_metrics() for closure rationale. Same SSoT pattern.
+            primary_idx = self.config.data.labels.validate_primary_horizon_idx_for(len(horizons))
+            first_h = horizons[primary_idx]
             final_correct += (final_preds == labels[first_h]).sum().item()
 
             agreement_sum += output.agreement.sum().item()
@@ -274,7 +282,10 @@ class HMHPClassificationStrategy(TrainingStrategy):
 
         model.eval()
         horizons = self.horizons
-        first_h = horizons[0]
+        # Phase 1 N4 forensic-bug closure (#PY-10 / #PY-43, 2026-05-06):
+        # See compute_metrics() for closure rationale. Same SSoT pattern.
+        primary_idx = self.config.data.labels.validate_primary_horizon_idx_for(len(horizons))
+        first_h = horizons[primary_idx]
 
         all_predictions = []
         all_labels = []

@@ -154,7 +154,11 @@ class HMHPRegressionStrategy(TrainingStrategy):
         """
         model.eval()
         horizons = self.horizons
-        primary_horizon = horizons[0]
+        # Phase 1 N4 forensic-bug closure (#PY-10 / #PY-43, 2026-05-06):
+        # Pre-fix used horizons[0] hardcoded; ignored config.data.labels.primary_horizon_idx.
+        # Now uses canonical LabelsConfig.validate_primary_horizon_idx_for SSoT (schema.py:450).
+        primary_idx = self.config.data.labels.validate_primary_horizon_idx_for(len(horizons))
+        primary_horizon = horizons[primary_idx]
 
         total_loss = 0.0
         total_samples = 0
@@ -251,7 +255,10 @@ class HMHPRegressionStrategy(TrainingStrategy):
         """
         model.eval()
         horizons = self.horizons
-        primary_horizon = horizons[0]
+        # Phase 1 N4 forensic-bug closure (#PY-10 / #PY-43, 2026-05-06):
+        # See validate() method for closure rationale. Same SSoT pattern.
+        primary_idx = self.config.data.labels.validate_primary_horizon_idx_for(len(horizons))
+        primary_horizon = horizons[primary_idx]
 
         horizon_preds: Dict[int, list] = {h: [] for h in horizons}
         horizon_targets: Dict[int, list] = {h: [] for h in horizons}
