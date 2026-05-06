@@ -50,12 +50,18 @@ def _build_test_config(
     feature_count: int = 98,
     input_size: int | None = None,
     window_size: int = 20,
+    normalization_strategy: str = "none",
 ):
     """Build a minimal ExperimentConfig for hashing tests.
 
     Mirrors the pattern from test_create_trainer_dispatch.py — doesn't
     require real data on disk because the hash functions only read config
     fields, not data.
+
+    Phase 1 N7 (2026-05-06): added ``normalization_strategy`` kwarg so N7
+    tests can construct configs with GLOBAL_ZSCORE / HYBRID strategies that
+    derive a real on-disk stats path. Default ``"none"`` preserves
+    pre-N7 fixture behavior.
     """
     from lobtrainer.config.schema import (
         ExperimentConfig,
@@ -79,7 +85,7 @@ def _build_test_config(
         data_dir=str(tmp_path / "fake_data"),
         feature_count=feature_count,
         sequence=SequenceConfig(window_size=window_size, stride=1),
-        normalization=NormalizationConfig(strategy="none"),
+        normalization=NormalizationConfig(strategy=normalization_strategy),
         labels=LabelsConfig(
             primary_horizon_idx=0,
             horizons=[10, 60, 300],
@@ -589,3 +595,323 @@ class TestExceptionClasses:
         assert CheckpointConfigMismatchWarning is not CheckpointMissingFingerprintWarning
         assert not issubclass(CheckpointConfigMismatchWarning, CheckpointMissingFingerprintWarning)
         assert not issubclass(CheckpointMissingFingerprintWarning, CheckpointConfigMismatchWarning)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 N7 (#PY-10, 2026-05-06) — normalization stats SHA bound to checkpoint
+# ---------------------------------------------------------------------------
+
+
+class TestN7NormalizationStatsBoundToCheckpoint:
+    """Phase 1 N7 forensic-bug closure (#PY-10, 2026-05-06).
+
+    Pre-fix: checkpoint embeds compatibility_fingerprint + model_config_hash
+    (Phase X.1 v2 closed F-13 CONFIG drift) but NOT normalization_stats_sha256.
+    Re-extracting the dataset with different per-day stats produces silently
+    different inference behavior on resume — DORMANT-PRIMED data-stats drift.
+
+    Post-fix: ``Trainer._build_checkpoint_dict`` embeds SHA-256 of the active
+    normalization stats file (via ``hft_contracts.provenance.hash_file`` SSoT
+    per #PY-41 anti-pattern recurrence). ``Trainer.load_checkpoint`` validates
+    against the active config and raises ``CheckpointConfigMismatchError`` in
+    strict mode (or warns ``CheckpointConfigMismatchWarning`` in default mode)
+    on three N7 surfaces: hash mismatch, stats file missing at active path,
+    or strategy divergence (active produces no stats file). Pre-N7 checkpoints
+    (no key) silently skip the check — back-compat preserved.
+
+    SSoT REUSE: ``hft_contracts.provenance.hash_file`` (Phase V.1.5 consolidation).
+    NO new canonical-hash site — locked by reuse contract per hft-rules §0.
+    """
+
+    @pytest.mark.parametrize("strategy_str,expected_filename", [
+        ("global_zscore", "normalization_stats.json"),
+        ("hybrid", "hybrid_normalization_stats.json"),
+        ("none", None),
+    ])
+    def test_derive_normalization_stats_path_per_strategy(
+        self, strategy_str, expected_filename, tmp_path,
+    ):
+        """Helper maps (strategy, data_dir) → file path; None for NONE strategy."""
+        from lobtrainer.training.trainer import _derive_normalization_stats_path
+
+        config = _build_test_config(
+            tmp_path,
+            model_type="logistic",
+            feature_count=20,
+            normalization_strategy=strategy_str,
+        )
+        result = _derive_normalization_stats_path(config)
+        if expected_filename is None:
+            assert result is None
+        else:
+            assert result == Path(config.data.data_dir) / expected_filename
+
+    def test_derive_normalization_stats_path_none_for_no_data_dir(self):
+        """Multi-source mode: data_dir is None → stats path is None."""
+        from types import SimpleNamespace
+        from lobtrainer.training.trainer import _derive_normalization_stats_path
+        from lobtrainer.config.schema import NormalizationStrategy
+
+        # Synthetic config — no need to build full ExperimentConfig
+        config = SimpleNamespace(
+            data=SimpleNamespace(
+                data_dir=None,
+                normalization=SimpleNamespace(strategy=NormalizationStrategy.GLOBAL_ZSCORE),
+            ),
+        )
+        assert _derive_normalization_stats_path(config) is None
+
+    def _build_trainer_for_n7(self, tmp_path, strategy_str="global_zscore", create_stats_file=True):
+        """Build a minimal Trainer with optional fake stats file at the strategy-specific path.
+
+        Returns (trainer, stats_path) where stats_path is the file actually
+        written (or None if strategy doesn't produce a path or create_stats_file=False).
+        """
+        from lobtrainer.training.trainer import (
+            Trainer,
+            TrainingState,
+            _derive_normalization_stats_path,
+        )
+        import torch.nn as nn
+
+        config = _build_test_config(
+            tmp_path,
+            model_type="logistic",
+            feature_count=20,
+            normalization_strategy=strategy_str,
+        )
+        stats_path = _derive_normalization_stats_path(config)
+        if stats_path is not None and create_stats_file:
+            stats_path.parent.mkdir(parents=True, exist_ok=True)
+            stats_path.write_text(
+                '{"means": [0.1, 0.2, 0.3], "stds": [1.1, 1.2, 1.3]}'
+            )
+
+        trainer = Trainer.__new__(Trainer)
+        trainer.config = config
+        trainer.model = nn.Linear(2, 2)
+        trainer._optimizer = None
+        trainer._scheduler = None
+        trainer.state = TrainingState()
+        trainer.device = "cpu"
+        trainer._resumed_from_checkpoint = False
+        return trainer, stats_path
+
+    def test_build_checkpoint_dict_embeds_normalization_stats_sha256(self, tmp_path):
+        """Save side: when stats file exists, checkpoint embeds 64-hex SHA-256
+        matching ``hash_file`` SSoT output."""
+        from hft_contracts.provenance import hash_file
+
+        trainer, stats_path = self._build_trainer_for_n7(tmp_path, "global_zscore")
+        assert stats_path is not None and stats_path.exists()
+
+        ckpt = trainer._build_checkpoint_dict()
+        assert "normalization_stats_sha256" in ckpt, (
+            "Phase 1 N7: _build_checkpoint_dict MUST emit 'normalization_stats_sha256' key"
+        )
+        sha = ckpt["normalization_stats_sha256"]
+        assert sha is not None
+        assert isinstance(sha, str)
+        assert len(sha) == 64, f"SHA-256 hex must be 64 chars; got {len(sha)}"
+        # Independent SSoT verification — direct hash of the file matches embedded value
+        assert sha == hash_file(stats_path, missing_ok=False), (
+            "Embedded SHA must match hft_contracts.provenance.hash_file output (SSoT)"
+        )
+
+    def test_build_checkpoint_dict_norm_sha_none_when_strategy_is_none(self, tmp_path):
+        """Save side: NONE strategy → no stats file produced → embedded sha is None."""
+        trainer, stats_path = self._build_trainer_for_n7(tmp_path, "none")
+        assert stats_path is None  # NONE strategy produces no path
+
+        ckpt = trainer._build_checkpoint_dict()
+        assert "normalization_stats_sha256" in ckpt
+        assert ckpt["normalization_stats_sha256"] is None
+
+    def test_build_checkpoint_dict_norm_sha_none_when_stats_file_absent(self, tmp_path):
+        """Save side: GLOBAL_ZSCORE but stats file not yet computed → embedded sha is None.
+
+        Models the pre-setup() state where the path is derived but no file exists yet.
+        """
+        trainer, stats_path = self._build_trainer_for_n7(
+            tmp_path, "global_zscore", create_stats_file=False,
+        )
+        assert stats_path is not None and not stats_path.exists()
+
+        ckpt = trainer._build_checkpoint_dict()
+        assert ckpt["normalization_stats_sha256"] is None
+
+    def test_load_checkpoint_no_warning_on_norm_sha_match(self, tmp_path):
+        """Load side: matching norm_sha emits NO N7 warning (silent success)."""
+        import warnings
+        import torch
+        from lobtrainer.training.trainer import Trainer, TrainingState
+        import torch.nn as nn
+
+        # Save with stats file content A
+        trainer1, stats_path = self._build_trainer_for_n7(tmp_path, "global_zscore")
+        ckpt_dict = trainer1._build_checkpoint_dict()
+        ckpt_path = tmp_path / "ckpt.pt"
+        torch.save(ckpt_dict, ckpt_path)
+
+        # Load with same config + same stats file — no warning
+        trainer2 = Trainer.__new__(Trainer)
+        trainer2.config = trainer1.config
+        trainer2.model = nn.Linear(2, 2)
+        trainer2._optimizer = None
+        trainer2._scheduler = None
+        trainer2.state = TrainingState()
+        trainer2.device = "cpu"
+        trainer2._resumed_from_checkpoint = False
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", CheckpointConfigMismatchWarning)
+            # Must NOT raise — round-trip identical config is silent-pass
+            trainer2.load_checkpoint(ckpt_path, load_optimizer=False)
+        assert trainer2._resumed_from_checkpoint is True
+
+    def test_load_checkpoint_warns_on_norm_sha_mismatch_default(self, tmp_path):
+        """Load side: default strict_config=False emits CheckpointConfigMismatchWarning
+        when stats file content changes between save and load (data re-extraction)."""
+        import torch
+        from lobtrainer.training.trainer import Trainer, TrainingState
+        import torch.nn as nn
+
+        trainer1, stats_path = self._build_trainer_for_n7(tmp_path, "global_zscore")
+        ckpt_dict = trainer1._build_checkpoint_dict()
+        ckpt_path = tmp_path / "ckpt.pt"
+        torch.save(ckpt_dict, ckpt_path)
+
+        # Mutate stats file (simulate re-extraction with different per-day stats)
+        stats_path.write_text('{"means": [99.0, -99.0, 99.0], "stds": [99.0, 99.0, 99.0]}')
+
+        trainer2 = Trainer.__new__(Trainer)
+        trainer2.config = trainer1.config
+        trainer2.model = nn.Linear(2, 2)
+        trainer2._optimizer = None
+        trainer2._scheduler = None
+        trainer2.state = TrainingState()
+        trainer2.device = "cpu"
+        trainer2._resumed_from_checkpoint = False
+
+        with pytest.warns(
+            CheckpointConfigMismatchWarning, match="Normalization stats SHA mismatch"
+        ):
+            trainer2.load_checkpoint(ckpt_path, load_optimizer=False)
+
+    def test_load_checkpoint_raises_on_norm_sha_mismatch_strict(self, tmp_path):
+        """Load side: strict_config=True raises CheckpointConfigMismatchError on hash mismatch."""
+        import torch
+        from lobtrainer.training.trainer import Trainer, TrainingState
+        import torch.nn as nn
+
+        trainer1, stats_path = self._build_trainer_for_n7(tmp_path, "global_zscore")
+        ckpt_dict = trainer1._build_checkpoint_dict()
+        ckpt_path = tmp_path / "ckpt.pt"
+        torch.save(ckpt_dict, ckpt_path)
+
+        # Mutate stats file
+        stats_path.write_text('{"means": [99.0, -99.0, 99.0], "stds": [99.0, 99.0, 99.0]}')
+
+        trainer2 = Trainer.__new__(Trainer)
+        trainer2.config = trainer1.config
+        trainer2.model = nn.Linear(2, 2)
+        trainer2._optimizer = None
+        trainer2._scheduler = None
+        trainer2.state = TrainingState()
+        trainer2.device = "cpu"
+        trainer2._resumed_from_checkpoint = False
+
+        with pytest.raises(
+            CheckpointConfigMismatchError, match="Normalization stats SHA mismatch"
+        ):
+            trainer2.load_checkpoint(
+                ckpt_path, load_optimizer=False, strict_config=True
+            )
+
+    def test_load_checkpoint_warns_on_missing_active_stats(self, tmp_path):
+        """Load side: when ckpt has SHA but active stats file deleted, warn (or raise in strict)."""
+        import torch
+        from lobtrainer.training.trainer import Trainer, TrainingState
+        import torch.nn as nn
+
+        trainer1, stats_path = self._build_trainer_for_n7(tmp_path, "global_zscore")
+        ckpt_dict = trainer1._build_checkpoint_dict()
+        ckpt_path = tmp_path / "ckpt.pt"
+        torch.save(ckpt_dict, ckpt_path)
+
+        # Delete the stats file (simulate post-train cleanup or wrong data_dir)
+        stats_path.unlink()
+
+        trainer2 = Trainer.__new__(Trainer)
+        trainer2.config = trainer1.config
+        trainer2.model = nn.Linear(2, 2)
+        trainer2._optimizer = None
+        trainer2._scheduler = None
+        trainer2.state = TrainingState()
+        trainer2.device = "cpu"
+        trainer2._resumed_from_checkpoint = False
+
+        with pytest.warns(CheckpointConfigMismatchWarning, match="does not exist"):
+            trainer2.load_checkpoint(ckpt_path, load_optimizer=False)
+
+    def test_load_checkpoint_pre_n7_checkpoint_silently_skips_norm_check(self, tmp_path):
+        """Load side: pre-N7 checkpoint (no normalization_stats_sha256 key) silently skips
+        N7 validation. Back-compat lock preventing N7 from accidentally raising on PRE-N7
+        artifacts (mirrors the X.1 v2 missing-key back-compat pattern at line 1254-1262)."""
+        import warnings as warnings_mod
+        import torch
+        from lobtrainer.training.trainer import Trainer, TrainingState
+        import torch.nn as nn
+
+        # Build trainer + checkpoint dict, then DELETE the N7 key (simulate pre-N7 artifact)
+        trainer1, _ = self._build_trainer_for_n7(tmp_path, "global_zscore")
+        ckpt_dict = trainer1._build_checkpoint_dict()
+        ckpt_dict.pop("normalization_stats_sha256")  # simulate pre-N7
+        ckpt_path = tmp_path / "ckpt_pre_n7.pt"
+        torch.save(ckpt_dict, ckpt_path)
+
+        trainer2 = Trainer.__new__(Trainer)
+        trainer2.config = trainer1.config
+        trainer2.model = nn.Linear(2, 2)
+        trainer2._optimizer = None
+        trainer2._scheduler = None
+        trainer2.state = TrainingState()
+        trainer2.device = "cpu"
+        trainer2._resumed_from_checkpoint = False
+
+        # No N7 warning should be emitted for pre-N7 checkpoint
+        with warnings_mod.catch_warnings():
+            warnings_mod.simplefilter("error", CheckpointConfigMismatchWarning)
+            trainer2.load_checkpoint(ckpt_path, load_optimizer=False)
+        assert trainer2._resumed_from_checkpoint is True
+
+    def test_load_checkpoint_warns_on_strategy_divergence(self, tmp_path):
+        """Load side: ckpt has norm_sha (saved with GLOBAL_ZSCORE) but active config
+        produces no stats path (strategy=NONE). Defense-in-depth gate at
+        trainer.py:1405-1416 catches strategy divergence even though
+        compatibility_fingerprint also already detects it (normalization_strategy
+        is in CompatibilityContract).
+
+        Closes adversarial-review-identified coverage gap at the only uncovered
+        N7 branch (`active_stats_path is None`)."""
+        import torch
+        from lobtrainer.training.trainer import Trainer, TrainingState
+        import torch.nn as nn
+
+        # Save with GLOBAL_ZSCORE + stats file
+        trainer1, stats_path = self._build_trainer_for_n7(tmp_path, "global_zscore")
+        ckpt_dict = trainer1._build_checkpoint_dict()
+        assert ckpt_dict["normalization_stats_sha256"] is not None  # ckpt has SHA
+        ckpt_path = tmp_path / "ckpt.pt"
+        torch.save(ckpt_dict, ckpt_path)
+
+        # Load with strategy=NONE (active config produces no stats path)
+        # NOTE: compatibility_fingerprint will also mismatch (different normalization_strategy);
+        # we expect BOTH warnings (compat first, then N7). Use match= to scope to the N7 one.
+        trainer2, none_stats_path = self._build_trainer_for_n7(
+            tmp_path / "exp_none", "none", create_stats_file=False,
+        )
+        assert none_stats_path is None  # NONE strategy → no path
+
+        with pytest.warns(CheckpointConfigMismatchWarning, match="produces no stats file"):
+            trainer2.load_checkpoint(ckpt_path, load_optimizer=False)

@@ -65,6 +65,47 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# Phase 1 N7 helper — normalization stats path derivation
+# =============================================================================
+
+
+def _derive_normalization_stats_path(config: ExperimentConfig) -> Optional[Path]:
+    """Derive the on-disk path of the normalization stats file from the active config.
+
+    Phase 1 N7 (#PY-10, 2026-05-06): consolidates the strategy → filename
+    mapping that ``Trainer.setup()`` open-codes at trainer.py:619-682
+    (GLOBAL_ZSCORE → ``normalization_stats.json``; HYBRID → ``hybrid_normalization_stats.json``).
+    Returns ``None`` when no stats file is produced — ``NormalizationStrategy.NONE``,
+    multi-source mode (``data_dir`` is None), or future strategies that don't
+    cache stats to disk.
+
+    Used by:
+      * ``_build_checkpoint_dict``: hash the file (if present) into the
+        checkpoint so resume-time validation can detect data-stats drift
+        (sibling to Phase X.1 v2 F-13 closure of CONFIG drift).
+      * ``load_checkpoint``: rebuild the path to validate against the embedded SHA.
+
+    Args:
+        config: Active ``ExperimentConfig`` (NOT the checkpoint's saved config).
+
+    Returns:
+        Path to the strategy-specific stats file (whether or not it exists),
+        or ``None`` when the active strategy doesn't write a stats file.
+    """
+    data_dir = config.data.data_dir
+    if data_dir is None:
+        return None  # multi-source mode (config.data.sources is set instead)
+
+    norm_strategy = config.data.normalization.strategy
+    if norm_strategy == NormalizationStrategy.GLOBAL_ZSCORE:
+        return Path(data_dir) / "normalization_stats.json"
+    elif norm_strategy == NormalizationStrategy.HYBRID:
+        return Path(data_dir) / "hybrid_normalization_stats.json"
+    else:
+        return None  # NormalizationStrategy.NONE or future unsupported strategies
+
+
+# =============================================================================
 # Training State
 # =============================================================================
 
@@ -1125,7 +1166,7 @@ class Trainer:
         IDENTICAL keys. Eliminates the pre-X.1 3-writer divergence (per
         Agent 1 sanity-check Q9 finding).
 
-        Includes 3 NEW Phase X.1 v2 keys:
+        Includes 3 Phase X.1 v2 contract keys:
           * ``compatibility``: full CompatibilityContract dict (data-side
             architecture: feature_count, window_size, horizons,
             primary_horizon_idx, normalization_strategy, label_strategy_hash,
@@ -1135,6 +1176,17 @@ class Trainer:
             CompatibilityContract canonical form.
           * ``model_config_hash``: 64-hex SHA-256 over filtered model.params
             (loss-tuning keys excluded per ``_LOSS_TUNING_KEYS`` denylist).
+
+        Phase 1 N7 (#PY-10, 2026-05-06): adds 4th contract key for the
+        data-stats plane (sibling to Phase X.1 v2's CONFIG-drift closure):
+          * ``normalization_stats_sha256``: 64-hex SHA-256 over the
+            active normalization stats JSON file (or ``None`` when no
+            stats file is produced — NormalizationStrategy.NONE,
+            multi-source mode, or stats not yet computed). Hashed via
+            ``hft_contracts.provenance.hash_file`` SSoT. ``load_checkpoint``
+            validates against the active config to detect data re-extraction
+            silently changing per-day stats; pre-N7 checkpoints lacking
+            this key silently skip the check (back-compat preserved).
 
         Args:
             epoch_override: Used by ModelCheckpoint callback to record per-epoch
@@ -1153,6 +1205,25 @@ class Trainer:
 
         compat = build_compatibility_contract(self.config)
         model_cfg_hash = compute_model_config_hash(self.config.model)
+
+        # Phase 1 N7 (#PY-10, 2026-05-06): hash the active normalization stats
+        # file (if produced by the active strategy) and embed in the checkpoint
+        # so load_checkpoint can detect data-stats drift on resume. SIBLING
+        # closure to Phase X.1 v2 F-13 (CONFIG drift) — N7 closes the data-stats
+        # surface (re-extracting the dataset with different per-day stats
+        # silently changes inference behavior). REUSES
+        # hft_contracts.provenance.hash_file SSoT per #PY-41 (do NOT inline
+        # raw hashlib.sha256 — convention locked by Phase V.1.5 consolidation).
+        from hft_contracts.provenance import hash_file
+        norm_stats_path = _derive_normalization_stats_path(self.config)
+        norm_stats_sha: Optional[str] = None
+        if norm_stats_path is not None and norm_stats_path.exists():
+            norm_stats_sha = hash_file(norm_stats_path, missing_ok=False)
+        # else: graceful — no stats file (NONE strategy, multi-source mode, or
+        # stats file not yet computed). load_checkpoint treats this None as
+        # "no binding to validate" (consistent with the X.1 v2 missing-key
+        # back-compat pattern: pre-N7 checkpoints lack the key entirely; this
+        # silently skips validation rather than raising).
 
         # Phase X.1 v2 post-validation fix (Agent 1 Q1 + Q1b 2026-05-04):
         # - `self.optimizer` is a lazy property (line 237) that CONSTRUCTS an
@@ -1182,6 +1253,12 @@ class Trainer:
             'compatibility': compat.to_canonical_dict() if compat is not None else None,
             'compatibility_fingerprint': compat.fingerprint() if compat is not None else None,
             'model_config_hash': model_cfg_hash,
+            # Phase 1 N7 (#PY-10, 2026-05-06): NEW key — additive, back-compat
+            # preserved. Pre-N7 checkpoints lack this key; load_checkpoint
+            # treats absence as "no binding" (silent skip). Post-N7 checkpoints
+            # carry None when no stats file is produced (NONE strategy etc.)
+            # OR a 64-hex SHA-256 when a stats file exists.
+            'normalization_stats_sha256': norm_stats_sha,
         }
 
     def save_checkpoint(self, path: Union[str, Path]) -> None:
@@ -1320,6 +1397,59 @@ class Trainer:
                 else:
                     warnings.warn(
                         msg, CheckpointConfigMismatchWarning, stacklevel=2,
+                    )
+
+        # Phase 1 N7 (#PY-10, 2026-05-06): validate normalization stats SHA —
+        # closes the data-stats drift hazard. SIBLING to Phase X.1 v2 F-13
+        # closure (CONFIG drift). Pre-N7 checkpoints lack this key → silent
+        # skip (consistent with the X.1 v2 missing-key back-compat pattern;
+        # CheckpointMissingFingerprintWarning above already covers fully
+        # pre-X.1 artifacts). Defense-in-depth: if normalization strategy
+        # changed, compatibility_fingerprint already mismatches at the check
+        # above — N7 here adds DATA-side detection that compat_fingerprint
+        # can't see (same strategy + same config but different file contents).
+        ckpt_norm_sha = checkpoint.get('normalization_stats_sha256')
+        if ckpt_norm_sha is not None:  # post-N7 checkpoint with binding
+            from hft_contracts.provenance import hash_file
+            active_stats_path = _derive_normalization_stats_path(self.config)
+            n7_msg: Optional[str] = None
+            if active_stats_path is None:
+                # Active config produces no stats file but checkpoint expected
+                # one. Strategy divergence — SHOULD already have been caught
+                # by compat_fingerprint above, but guard explicitly here per
+                # defense-in-depth (compat_fingerprint may be None/missing for
+                # pre-X.1-but-post-N7 hypothetical artifacts).
+                n7_msg = (
+                    f"Checkpoint at {path} embeds normalization_stats_sha256="
+                    f"{ckpt_norm_sha[:16]}... but the active config produces no "
+                    f"stats file (strategy={self.config.data.normalization.strategy}). "
+                    f"Likely cause: normalization strategy changed between train and resume."
+                )
+            elif not active_stats_path.exists():
+                n7_msg = (
+                    f"Checkpoint at {path} expects normalization stats file at "
+                    f"{active_stats_path} (sha256={ckpt_norm_sha[:16]}...) but the "
+                    f"file does not exist. Re-extract the dataset (or restore the "
+                    f"missing stats file) before resuming."
+                )
+            else:
+                active_norm_sha = hash_file(active_stats_path, missing_ok=False)
+                if active_norm_sha != ckpt_norm_sha:
+                    n7_msg = (
+                        f"Normalization stats SHA mismatch at {path}.\n"
+                        f"  Checkpoint: {ckpt_norm_sha[:16]}...\n"
+                        f"  Active:     {active_norm_sha[:16]}...\n"
+                        f"  Active stats file: {active_stats_path}\n"
+                        f"  Likely cause: data was re-extracted with different "
+                        f"normalization (per-day stats changed). Either re-train OR "
+                        f"pin the checkpoint's data."
+                    )
+            if n7_msg is not None:
+                if strict_config:
+                    raise CheckpointConfigMismatchError(n7_msg)
+                else:
+                    warnings.warn(
+                        n7_msg, CheckpointConfigMismatchWarning, stacklevel=2,
                     )
 
         # Existing model + optimizer + scheduler load (preserved verbatim).
