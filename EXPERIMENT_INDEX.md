@@ -5,10 +5,11 @@
 **Current best classification:** HMHP 128-feat XNAS (H10 test accuracy 59.62%, directional accuracy 93.88% at high conviction)
 **Current best regression:** TLOB 128-feat Regression H10 (test R²=0.464, IC=0.677, DA=74.9%)
 
-**Consolidated findings:** `reports/CONSOLIDATED_FINDINGS_2026_03.md` -- START HERE. All validated metrics, lessons learned, and next steps.
+**Consolidated findings:** `reports/CONSOLIDATED_FINDINGS_2026_05.md` -- START HERE. All validated metrics, lessons learned, and next steps. (Supersedes `_2026_03.md` which is preserved as historical artifact; do NOT consult `_2026_03.md` for v3p0 / R9-R15 work — it is 27 days stale.)
 
 **Detailed reports:** `reports/` directory
-- `reports/CONSOLIDATED_FINDINGS_2026_03.md` -- Authoritative cross-pipeline reference (all experiments + findings)
+- `reports/CONSOLIDATED_FINDINGS_2026_05.md` -- Authoritative cross-pipeline reference (all experiments + findings, current as of 2026-05-05)
+- `reports/CONSOLIDATED_FINDINGS_2026_03.md` -- HISTORICAL pre-Phase-O findings (preserved for E1-E16 reference)
 - `reports/ABLATION_FINDINGS_2026_03_16.md` -- Simple model ablation ladder (L0-L4) + TWAP backtest
 - `reports/RESEARCH_IMPLEMENTATION_PLAN.md` -- Research-driven implementation plan (10 papers)
 - `reports/regression_series_2026_03_15.md` -- Regression experiment series (3 experiments + baselines + backtests)
