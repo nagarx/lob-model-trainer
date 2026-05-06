@@ -568,22 +568,56 @@ class SignalExporter:
             # out-of-bounds idx (plan v4 bug #2). Single canonical source;
             # stats_idx, metrics slice, AND calibration slice all share
             # validation via the method.
+            #
+            # Phase 1 N6 forensic-bug closure (#PY-10, 2026-05-06):
+            # When ``--calibrate variance_match`` was applied, primary metrics
+            # MUST describe the calibrated array (which is what backtester
+            # loads via signal_dir/calibrated_returns.npy). Pre-fix used raw
+            # pr unconditionally — signal_metadata.json silently reported
+            # raw-prediction characteristics for experiments claiming
+            # calibration_method != None. Now: when calibration_result has
+            # "calibrated" key, primary stats + metrics describe calibrated
+            # array; raw-prediction stats preserved under "raw_prediction_stats"
+            # for back-compat / transparency.
+            if calibration_result is not None and "calibrated" in calibration_result:
+                primary_arr = np.asarray(
+                    calibration_result["calibrated"], dtype=np.float64
+                )
+                raw_arr_for_stats = pr  # preserved for raw_prediction_stats
+            else:
+                primary_arr = pr
+                raw_arr_for_stats = None
+
             labels_cfg_stats = resolve_labels_config(config)
-            if pr.ndim == 1:
+            if primary_arr.ndim == 1:
                 prediction_stats = {
-                    "mean": float(np.mean(pr)),
-                    "std": float(np.std(pr)),
-                    "min": float(np.min(pr)),
-                    "max": float(np.max(pr)),
+                    "mean": float(np.mean(primary_arr)),
+                    "std": float(np.std(primary_arr)),
+                    "min": float(np.min(primary_arr)),
+                    "max": float(np.max(primary_arr)),
                 }
             else:
                 stats_idx = labels_cfg_stats.validate_primary_horizon_idx_for(
-                    n_horizons=pr.shape[-1]
+                    n_horizons=primary_arr.shape[-1]
                 )
                 prediction_stats = {
-                    "mean": float(np.mean(pr[:, stats_idx])),
-                    "std": float(np.std(pr[:, stats_idx])),
+                    "mean": float(np.mean(primary_arr[:, stats_idx])),
+                    "std": float(np.std(primary_arr[:, stats_idx])),
                 }
+
+            # N6 closure: also record raw-prediction stats when calibration applied
+            # so reviewers can compare raw vs calibrated distributions.
+            if raw_arr_for_stats is not None:
+                if raw_arr_for_stats.ndim == 1:
+                    prediction_stats["raw_mean"] = float(np.mean(raw_arr_for_stats))
+                    prediction_stats["raw_std"] = float(np.std(raw_arr_for_stats))
+                else:
+                    prediction_stats["raw_mean"] = float(
+                        np.mean(raw_arr_for_stats[:, stats_idx])
+                    )
+                    prediction_stats["raw_std"] = float(
+                        np.std(raw_arr_for_stats[:, stats_idx])
+                    )
 
             if "regression_labels" in inference:
                 rl = inference["regression_labels"]
@@ -591,12 +625,12 @@ class SignalExporter:
                     from lobtrainer.training.regression_metrics import (
                         compute_all_regression_metrics,
                     )
-                    if pr.ndim == 1:
-                        metrics_dict = compute_all_regression_metrics(rl, pr)
+                    if primary_arr.ndim == 1:
+                        metrics_dict = compute_all_regression_metrics(rl, primary_arr)
                     else:
-                        # stats_idx already validated above for pr.ndim==2 branch.
+                        # stats_idx already validated above for primary_arr.ndim==2 branch.
                         metrics_dict = compute_all_regression_metrics(
-                            rl[:, stats_idx], pr[:, stats_idx]
+                            rl[:, stats_idx], primary_arr[:, stats_idx]
                         )
                 except Exception as e:
                     logger.warning(f"Could not compute regression metrics: {e}")
