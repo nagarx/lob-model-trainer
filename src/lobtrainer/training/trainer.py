@@ -891,8 +891,25 @@ class Trainer:
             # Notify callbacks
             self.callbacks.on_train_start()
 
-            logger.info(f"Starting training for {cfg.epochs} epochs")
-            for epoch in range(cfg.epochs):
+            # Phase 1 N2 forensic-bug closure (#PY-10, 2026-05-06):
+            # When --resume loads a checkpoint, load_checkpoint sets
+            # self.state.current_epoch to the checkpoint's epoch index.
+            # Pre-fix this loop started at 0 unconditionally, wiping resume
+            # progress + causing duplicate per-epoch state writes. Now starts
+            # at the resumed epoch index (default 0 for fresh training).
+            start_epoch = self.state.current_epoch
+            remaining_epochs = cfg.epochs - start_epoch
+            if remaining_epochs <= 0:
+                logger.info(
+                    f"Resume already at or past target ({start_epoch}/{cfg.epochs} "
+                    f"epochs); nothing to do"
+                )
+            else:
+                logger.info(
+                    f"Starting training: epochs {start_epoch}..{cfg.epochs - 1} "
+                    f"({remaining_epochs} remaining of {cfg.epochs} total)"
+                )
+            for epoch in range(start_epoch, cfg.epochs):
                 self.state.current_epoch = epoch
                 self.callbacks.on_epoch_start(epoch)
                 

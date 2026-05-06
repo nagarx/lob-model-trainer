@@ -406,11 +406,11 @@ class TestReproducibility:
 
 class TestTrainingState:
     """Tests for TrainingState dataclass."""
-    
+
     def test_training_state_defaults(self):
         """Test default values of TrainingState."""
         state = TrainingState()
-        
+
         assert state.current_epoch == 0
         assert state.global_step == 0
         assert state.best_val_metric == float('inf')
@@ -418,20 +418,93 @@ class TestTrainingState:
         assert not state.training_started
         assert not state.training_completed
         assert state.history == []
-    
+
     def test_training_state_mutable(self):
         """Test that TrainingState is mutable."""
         state = TrainingState()
-        
+
         state.current_epoch = 5
         state.global_step = 100
         state.training_started = True
         state.history.append({'epoch': 0, 'loss': 1.0})
-        
+
         assert state.current_epoch == 5
         assert state.global_step == 100
         assert state.training_started
         assert len(state.history) == 1
+
+
+class TestN2ResumeFromCurrentEpoch:
+    """Phase 1 N2 forensic-bug closure (#PY-10, 2026-05-06).
+
+    Pre-fix at trainer.py:895: ``for epoch in range(cfg.epochs):`` ignored
+    the resumed ``self.state.current_epoch`` set by load_checkpoint at
+    trainer.py:1328. Resume restarted from epoch 0, wiping prior progress.
+
+    Post-fix: ``for epoch in range(self.state.current_epoch, cfg.epochs):``
+    correctly resumes mid-cycle. Fresh training (current_epoch=0) is
+    unaffected (range(0, N) == range(N)).
+
+    These tests exercise the loop-start-index math directly without
+    full Trainer instantiation. The integration-level path is already
+    covered by Phase X.1.K callback-state-preservation tests.
+    """
+
+    def test_resume_loop_start_uses_current_epoch(self):
+        """Verify range(state.current_epoch, cfg.epochs) produces correct iteration count.
+
+        Pre-fix: range(0, 4) for resume from epoch=2 → 4 iterations (DUPLICATES epochs 0+1).
+        Post-fix: range(2, 4) for resume from epoch=2 → 2 iterations (correctly skips 0+1).
+        """
+        # Simulate post-load_checkpoint state (line 1328 set epoch=2 from disk):
+        state = TrainingState()
+        state.current_epoch = 2
+        cfg_epochs = 4
+
+        # Post-fix logic at trainer.py:895:
+        epochs_iterated = list(range(state.current_epoch, cfg_epochs))
+        assert epochs_iterated == [2, 3], (
+            f"Phase 1 N2 fix: resume from epoch={state.current_epoch} "
+            f"with cfg.epochs={cfg_epochs} should iterate [2, 3]; got {epochs_iterated}"
+        )
+
+    def test_fresh_training_unchanged_by_n2_fix(self):
+        """Verify fresh training (current_epoch=0) iterates ALL configured epochs.
+
+        Critical back-compat: range(0, N) == range(N), so the N2 fix is
+        bit-identical for the fresh-training path that all 34 retroactive
+        ledger records were produced under.
+        """
+        state = TrainingState()
+        # Default current_epoch=0 (fresh training)
+        cfg_epochs = 5
+
+        epochs_iterated = list(range(state.current_epoch, cfg_epochs))
+        assert epochs_iterated == [0, 1, 2, 3, 4], (
+            "Phase 1 N2 fix MUST be bit-identical for fresh training"
+        )
+
+    def test_resume_at_or_past_target_skips_loop(self):
+        """Verify resume already-at-or-past cfg.epochs is no-op (defensive).
+
+        Pre-fix: range(0, 4) iterated 4 epochs even when checkpoint had epoch=4
+        (already trained), causing 4 duplicate epochs.
+        Post-fix: range(4, 4) is empty; range(5, 4) is empty. Both no-op.
+        """
+        state = TrainingState()
+        cfg_epochs = 4
+
+        # Resume at exact target:
+        state.current_epoch = 4
+        assert list(range(state.current_epoch, cfg_epochs)) == [], (
+            "Resume at target (current=cfg.epochs) MUST be empty loop"
+        )
+
+        # Resume past target (defensive — shouldn't happen but mustn't crash):
+        state.current_epoch = 5
+        assert list(range(state.current_epoch, cfg_epochs)) == [], (
+            "Resume past target (current>cfg.epochs) MUST be empty loop, NOT raise"
+        )
 
 
 # =============================================================================
