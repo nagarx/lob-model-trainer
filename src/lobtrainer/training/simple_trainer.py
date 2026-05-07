@@ -458,6 +458,18 @@ class SimpleModelTrainer:
             signal_dir = Path(output_dir)
         signal_dir.mkdir(parents=True, exist_ok=True)
 
+        # #PY-63 (2026-05-07): producer fail-loud per hft-rules §8 — silent
+        # NaN propagation downstream would mask "metric crashed" as "no skill".
+        from hft_contracts.validation import assert_finite_array
+        assert_finite_array(
+            y_pred,
+            name="SimpleModelTrainer.export_signals.predicted_returns",
+            extra_diagnostic=(
+                f"Refusing to save corrupt predicted_returns.npy. "
+                f"Investigate model_type={self.model_type!r} for numerical "
+                f"divergence (loss/learning rate/feature normalization)."
+            ),
+        )
         np.save(signal_dir / "predicted_returns.npy", y_pred.astype(np.float64))
         np.save(signal_dir / "regression_labels.npy", y.astype(np.float64))
         np.save(signal_dir / "spreads.npy", spreads)

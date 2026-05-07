@@ -378,13 +378,22 @@ class LogisticBaseline(BaseModel):
         if X.ndim == 3:
             X = X[:, -1, :]
         
-        # Handle NaN/Inf (replace with 0)
-        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-        
+        # #PY-63 (2026-05-07): fail-loud on non-finite features per §8.
+        # Was silent np.nan_to_num — masked upstream data corruption.
+        from hft_contracts.validation import assert_finite_array
+        assert_finite_array(
+            X,
+            name="LogisticRegression.predict.features",
+            extra_diagnostic=(
+                "Fix upstream feature normalization or data loader "
+                "before calling predict."
+            ),
+        )
+
         # Standardize
         if self._scaler is not None:
             X = self._scaler.transform(X)
-        
+
         return self._model.predict(X)
     
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
@@ -404,13 +413,22 @@ class LogisticBaseline(BaseModel):
         if X.ndim == 3:
             X = X[:, -1, :]
         
-        # Handle NaN/Inf
-        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-        
+        # #PY-63 (2026-05-07): fail-loud on non-finite features per §8.
+        # Symmetric to predict() — see comment there.
+        from hft_contracts.validation import assert_finite_array
+        assert_finite_array(
+            X,
+            name="LogisticRegression.predict_proba.features",
+            extra_diagnostic=(
+                "Fix upstream feature normalization or data loader "
+                "before calling predict_proba."
+            ),
+        )
+
         # Standardize
         if self._scaler is not None:
             X = self._scaler.transform(X)
-        
+
         return self._model.predict_proba(X)
     
     @property

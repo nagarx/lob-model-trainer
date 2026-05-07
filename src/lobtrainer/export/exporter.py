@@ -307,6 +307,18 @@ class SignalExporter:
         predicted_returns = np.concatenate(all_preds).astype(np.float64)
         regression_labels = np.concatenate(all_labels).astype(np.float64)
 
+        # #PY-63 (2026-05-07): producer fail-loud per hft-rules §8.
+        from hft_contracts.validation import assert_finite_array
+        assert_finite_array(
+            predicted_returns,
+            name="SignalExporter._infer_regression.predicted_returns",
+            extra_diagnostic=(
+                "Refusing to emit corrupt inference output. Investigate "
+                "numerical stability (loss divergence, learning rate, "
+                "feature normalization)."
+            ),
+        )
+
         return {
             "signal_type": "regression",
             "n_samples": len(predicted_returns),
@@ -351,6 +363,16 @@ class SignalExporter:
             [np.concatenate(horizon_preds[h]) for h in sorted_horizons]
         ).astype(np.float64)
 
+        # #PY-63 (2026-05-07): producer fail-loud (multi-horizon variant).
+        from hft_contracts.validation import assert_finite_array
+        assert_finite_array(
+            predicted_returns,
+            name="SignalExporter._infer_hmhp_regression.predicted_returns",
+            extra_diagnostic=(
+                "Refusing to emit corrupt multi-horizon inference output."
+            ),
+        )
+
         regression_labels = None
         if all(h in horizon_labels and horizon_labels[h] for h in sorted_horizons):
             regression_labels = np.column_stack(
@@ -366,7 +388,20 @@ class SignalExporter:
         if regression_labels is not None:
             result["regression_labels"] = regression_labels
         if all_agreement:
-            result["agreement_ratio"] = np.concatenate(all_agreement).astype(np.float64)
+            agreement_ratio_arr = np.concatenate(all_agreement).astype(np.float64)
+            # #PY-63 (2026-05-07): agreement_ratio is HMHP-R model output —
+            # producer fail-loud per §8 (cross-horizon decoder confidence;
+            # NaN here would silently degrade ReadabilityHybridStrategy
+            # gate computation downstream).
+            from hft_contracts.validation import assert_finite_array
+            assert_finite_array(
+                agreement_ratio_arr,
+                name="SignalExporter._infer_hmhp_regression.agreement_ratio",
+                extra_diagnostic=(
+                    "Refusing to emit corrupt cross-horizon agreement output."
+                ),
+            )
+            result["agreement_ratio"] = agreement_ratio_arr
 
         return result
 
@@ -428,6 +463,23 @@ class SignalExporter:
 
         # to_dict() omits the ndarray — add it back for file writing
         result = cal_result.to_dict()
+
+        # #PY-63 (2026-05-07): calibration producer fail-loud — variance_match
+        # produces NaN/Inf when pred_std=0 (constant predictions) or label_std=0.
+        # Without this, corrupt calibrated_returns.npy silently overrides
+        # predicted_returns.npy at backtester load per signal_manifest D10
+        # calibration precedence, biasing P&L computation downstream.
+        from hft_contracts.validation import assert_finite_array
+        assert_finite_array(
+            np.asarray(cal_result.calibrated),
+            name="SignalExporter._apply_calibration.calibrated",
+            extra_diagnostic=(
+                "Calibration produced corrupt output (likely "
+                "scale_factor=NaN/Inf from zero-variance inputs). "
+                "Investigate variance_match input data quality."
+            ),
+        )
+
         result["calibrated"] = cal_result.calibrated
         return result
 

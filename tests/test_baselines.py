@@ -265,21 +265,58 @@ class TestLogisticBaseline:
         row_sums = proba.sum(axis=1)
         assert np.allclose(row_sums, 1.0)
     
-    def test_handles_nan(self, sample_labels):
-        """Should handle NaN values in features."""
+    def test_fit_silently_removes_nan_rows(self, sample_labels):
+        """fit() removes invalid rows — pre-#PY-63 behavior preserved.
+
+        fit-time silent-removal is a §8 violation tracked separately
+        for a follow-up F-cycle. #PY-63 only closes producer + predict-
+        time silent NaN handling.
+        """
         features = np.random.randn(100, 98)
         features[0, 0] = np.nan
         features[50, 50] = np.inf
-        
+
         model = LogisticBaseline()
-        # Should not raise during fit (removes invalid samples)
         model.fit(features, sample_labels)
-        
-        # Should not raise during predict (replaces with 0)
-        predictions = model.predict(features)
-        
-        assert predictions.shape == (100,)
+
+        # Confirm fitted: predict on clean features should succeed.
+        clean = np.random.randn(10, 98)
+        predictions = model.predict(clean)
+        assert predictions.shape == (10,)
         assert np.all(np.isfinite(predictions))
+
+    def test_predict_raises_on_nan_per_PY63(self, sample_labels):
+        """#PY-63 (2026-05-07): predict() now fail-loud per hft-rules §8.
+
+        Was: silent np.nan_to_num replacement masked upstream data corruption,
+        biasing IC/DA computation downstream by emitting deterministic zero
+        for whichever rows had bad features.
+        Now: explicit ValueError with NaN/Inf counts so the upstream bug
+        surfaces immediately. Symmetric to producer-side fail-loud (#38, #39).
+        """
+        clean_features = np.random.randn(100, 98)
+        model = LogisticBaseline()
+        model.fit(clean_features, sample_labels)
+
+        contaminated = np.random.randn(50, 98)
+        contaminated[0, 0] = np.nan
+        contaminated[10, 10] = np.inf
+        contaminated[20, 20] = -np.inf
+
+        with pytest.raises(ValueError, match="input invariant violation"):
+            model.predict(contaminated)
+
+    def test_predict_proba_raises_on_nan_per_PY63(self, sample_labels):
+        """#PY-63 (2026-05-07): predict_proba() symmetric to predict()."""
+        clean_features = np.random.randn(100, 98)
+        model = LogisticBaseline()
+        model.fit(clean_features, sample_labels)
+
+        contaminated = np.random.randn(50, 98)
+        contaminated[5, 5] = np.nan
+
+        with pytest.raises(ValueError, match="input invariant violation"):
+            model.predict_proba(contaminated)
     
     def test_feature_importance(self, sample_features, sample_labels):
         """Should compute feature importance."""
