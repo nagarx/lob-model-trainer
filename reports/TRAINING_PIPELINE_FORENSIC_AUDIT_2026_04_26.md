@@ -8,6 +8,43 @@
 
 ---
 
+## CLOSURE STATUS BANNER (UPDATED 2026-05-07 post-#PY-63 cycle)
+
+**THIS DOCUMENT IS A 2026-04-26 SNAPSHOT.** Multiple findings have been closed since via Phase 1 INTEGRITY GATE (POST-COMPACT-5 + POST-COMPACT-6) + ancillary cycles. Section bodies below are PRESERVED VERBATIM as the original audit narrative; closure status is tracked HERE at the top.
+
+| Finding | Status | Closure Commit | Notes |
+|---|---|---|---|
+| **N1** InputContract preflight `_base:` | **CLOSED** | hft-ops `7904112` (Day 0 0d) | Multi-base manifests now resolve correctly; AST torch-free regression test added |
+| **N2** `--resume` epoch ignored on resume | **CLOSED** | lob-model-trainer `576c217` (Phase 1) | `train()` loop respects `state.current_epoch`; original audit "epoch ignored" claim was VERIFIED REAL (not stale as a prior agent suggested) |
+| **N3** EarlyStopping/ModelCheckpoint/MetricsLogger state on resume | **PARTIAL CLOSE** | Phase X.1.K minimum-viable (skip `on_train_start` reset on resume via `_resumed_from_checkpoint` sentinel; LOCAL UNCOMMITTED in Phase X.1 v2 working trees, ancestor of current HEAD) | Full `state_dict()/load_state_dict()` Protocol on Callback ABC + RNG capture deferred to Phase X.2.B |
+| **N4** HMHP-R hardcoded `horizons[0]` | **CLOSED** | lob-model-trainer `ff5eb26` (Phase 1) | + 3 #PY-43 sister sites (cluster) closed in same commit; `primary_horizon_idx` SSoT used at all 5 sites |
+| **N5** HMHP/HMHP-R encoder pool inconsistency | **CLOSED** | lob-models `4cbdc39` (Phase S 2026-05-04) | `pool_mode: Literal["last","mean"]` field + `_apply_pooling` SSoT helper; `hmhp_cascade_regression.yaml` migrated to `pool_mode: "mean"` for HMHP-R back-compat. **F-13 HIGH** structurally closed in Phase X.1 v2 via CompatibilityContract embedding (mismatch detection at load_checkpoint time) |
+| **N6** Calibrated metrics describe RAW predictions | **CLOSED** | lob-model-trainer `bc3c0ee` (Phase 1) | Calibrated metrics now report on the calibrated array; `_apply_calibration` flow re-wired |
+| **N7** Normalization stats not bound to checkpoint | **CLOSED** | lob-model-trainer `0cf9867` (Phase 1, POST-COMPACT-6 night) | Normalization-stats SHA bound to checkpoint; resume-time mismatch raises. Sklearn N7 sidecar binding deferred per #PY-53 architectural rationale |
+| **N8** TLOB final-flatten ordering | **CLOSED** | lob-models `1bea036` (Phase 1) | Berti & Kasneci 2025 reference alignment; pretrained checkpoint loadability restored |
+
+**ADJACENT CLOSURES** (Phase Q + S + Q.6.5 + X.1 v2 + X.2.A.1+A.2 + Phase Y/Z + Stage 8 cycles, 2026-05-04 → 2026-05-05):
+- F-1 `BaseConfig.from_dict` recursive — Phase X.1.B
+- F-3 MLPLOB ModelType enum + ModelConfig fields — Phase X.1.I
+- F-12 pre-Phase-S HMHP-R checkpoint pool drift — Phase S documentation + Phase X.1 v2 detection
+- F-13 HMHP-R programmatic checkpoint silent-pool-mismatch — Phase X.1 v2 (HIGH)
+- F-16 sklearn pipeline broken via canonical scripts — Phase Q.6.5.B
+- F-18 sklearn signal_metadata missing compatibility block — Phase Q.6.5.A (Phase Y prereq)
+- N4 hardcoded horizons[0] sister sites (#PY-43 cluster) — Phase 1 ff5eb26
+
+**OPEN ITEMS** (post 2026-05-07):
+- **N3 full Protocol** + RNG capture/restore — deferred to Phase X.2.B (Boundary Discipline Cycle, designed but not started)
+- **N7 sklearn-side sidecar binding** — deferred per #PY-53 architectural rationale
+- 36 LOW/MEDIUM-impact silent-NaN sites — F-cycle (deferred from #PY-63 closure)
+- 4 NEW lob-models silent-NaN sites discovered Round 1 (2026-05-07): `temporal_ridge.py:79` + `temporal_gradboost.py:105` (silent fit() NaN-row drop), `temporal_ridge.py:84-87` + `temporal_gradboost.py:117-120` (predict() no-raise on NaN). HIGH-adjacent, downstream-mitigated by `simple_trainer.py:464` save-boundary + `regression_metrics → r_squared` validation-boundary; tracked as #PY-64 in PHASE_P_BACKLOG.md
+- F-cycle scope expansion to producer-side Rust crates (MBO-LOB-analyzer + feature-extractor + reconstructor — Round 2 Agent G D7 finding); tracked as #PY-65
+
+**Most recent cycle**: #PY-63 silent-NaN cluster closure (5 commits SHIPPED LOCAL 2026-05-07: hft-contracts `f63eaf6`, lob-model-trainer `69f09bd`, lob-backtester `257c2ac`, hft-metrics `72b1aa5`, hft-ops `45149eb`). See `PHASE_P_BACKLOG.md` §#PY-63 closure marker + `PY63_CYCLE_HANDOFF_2026_05_07.md` for full narrative.
+
+**For current state**, see CLAUDE.md root banner + PHASE_P_BACKLOG.md. **For new findings after this banner's date**, consult the per-cycle handoff docs at monorepo root.
+
+---
+
 ## Document Purpose and Use
 
 This document is the **canonical technical reference** for findings from a 13-agent forensic audit + validation cycle conducted 2026-04-25 through 2026-04-26 on the training pipeline (the heart of the HFT pipeline-v2 monorepo).
