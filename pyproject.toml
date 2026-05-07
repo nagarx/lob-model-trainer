@@ -22,7 +22,13 @@ dependencies = [
     # 2.3.0 (Phase A.5.1). Without this pin, trainer CI against a stale
     # hft-contracts editable install could silently use the pre-migration
     # dataclass-only path and silently rotate fingerprints.
-    "hft-contracts>=2.3.0",
+    # Cycle 2 / Option F (2026-05-07): bumped >=2.3.0 → >=2.5.0 after Cyclelet B
+    # P2.A (v2.4.0 added `TestMetricsCIArtifact`, consumed by
+    # `lobtrainer.analysis.stat_rigor.ci`) + P2.C (v2.5.0 added
+    # `PairwiseCompareArtifact`, consumed by
+    # `lobtrainer.analysis.stat_rigor.pairwise`). Strictly additive bump per
+    # SemVer; no symbols removed.
+    "hft-contracts>=2.5.0",
 
     # Shared metrics library (IC, R², regression metrics with NaN safety)
     "hft-metrics",
