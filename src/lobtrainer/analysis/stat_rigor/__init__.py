@@ -16,10 +16,24 @@ from lobtrainer.analysis.stat_rigor.ci import (
     from_signal_dir,
     compute_test_metrics_ci_for_experiment,
 )
+from lobtrainer.analysis.stat_rigor.pairwise import (
+    PairwiseCompareConfig,
+    compare_k_way,
+    compare_pair,
+    compute_pairwise_compare_for_experiments,
+)
+from lobtrainer.analysis.stat_rigor.pairwise import from_signal_dirs as pairwise_from_signal_dirs
 
 __all__ = [
+    # P2.A bootstrap CI
     "TestMetricsCIConfig",
     "compute_ci",
     "from_signal_dir",
     "compute_test_metrics_ci_for_experiment",
+    # P2.C K-way pairwise compare
+    "PairwiseCompareConfig",
+    "compare_k_way",
+    "compare_pair",
+    "pairwise_from_signal_dirs",
+    "compute_pairwise_compare_for_experiments",
 ]
