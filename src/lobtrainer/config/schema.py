@@ -2449,6 +2449,50 @@ class ExperimentConfig(SafeBaseModel):
                     f"to data.labels.primary_horizon_idx."
                 )
 
+            # Cycle 2.5b (2026-05-07): VALUE-check beyond IDX-check.
+            # After branches 1+2 resolve, _model_idx == _effective_labels_idx,
+            # but if model.hmhp_horizons and data.labels.horizons differ as
+            # LISTS (different values, permutations, or different lengths),
+            # the trainer silently corrupts gradients at non-primary heads.
+            # HMHP cascade has ONE decoder per horizon; HMHP loss is
+            # sum_h(loss_h), so EVERY horizon's value-alignment matters,
+            # not just primary_horizon_idx.
+            #
+            # Skip when EITHER list is empty: data.labels.horizons may be
+            # empty at config-validation time and auto-resolved later from
+            # dataset_manifest at training setup (see trainer.py:850-866 +
+            # simple_trainer.py:240-260). Auto-resolved value will be
+            # validated separately by CompatibilityContract construction.
+            #
+            # Per hft-rules §5 fail-fast + §8 never silently accept corrupt
+            # data. Defense-in-depth atop LabelsConfig dup-check at
+            # schema.py:411-413 + HMHPConfig.dup-check at lob-models
+            # config/base.py:2093+.
+            _model_hzn = (
+                tuple(self.model.hmhp_horizons)
+                if self.model.hmhp_horizons
+                else ()
+            )
+            _labels_hzn = (
+                tuple(self.data.labels.horizons)
+                if self.data.labels.horizons
+                else ()
+            )
+            if _model_hzn and _labels_hzn and _model_hzn != _labels_hzn:
+                raise ValueError(
+                    f"Cross-config horizon-LIST mismatch "
+                    f"(Cycle 2.5b / #PY-54-VALUE): "
+                    f"model.hmhp_horizons={list(_model_hzn)} != "
+                    f"data.labels.horizons={list(_labels_hzn)}. "
+                    f"For HMHP/HMHP-R model_type='{_mt_str}', the cascade "
+                    f"creates ONE decoder per ordinal index; mismatched lists "
+                    f"corrupt gradients at non-primary heads (HMHP loss = "
+                    f"sum_h(loss_h)). Set both fields to the same "
+                    f"sorted-ascending unique list in YAML, or rely on "
+                    f"auto-resolution by leaving data.labels.horizons "
+                    f"empty (populated from dataset_manifest at training time)."
+                )
+
         # T9: deprecation warnings for legacy label fields.
         # Only fire when legacy fields have non-default values.
         import warnings as _warnings

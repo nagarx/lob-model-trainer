@@ -4,6 +4,54 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — Cycle 2.5b (2026-05-07) — Cross-config horizon-LIST mismatch validator
+
+Defense-in-depth atop the existing IDX-only cross-config invariant at
+`schema.py:2407-2450` (Cycle 1b.2). Closes Issue 2 of Cycle 2.5 hardening
+flagged by V1-V6 + V7-V12 6-agent re-validation rounds.
+
+**Why**: Pre-Cycle-2.5b, `ExperimentConfig._validate_all` only verified
+that `model.hmhp_primary_horizon_idx == data.labels.primary_horizon_idx`
+(idx-equality). Two configs with DIFFERENT `model.hmhp_horizons` and
+`data.labels.horizons` lists could pass silently when both indices were
+in range, producing silent gradient corruption in HMHP cascade decoders
+(loss = sum_h(loss_h), so non-primary heads also matter — V12 Agent Y
+finding).
+
+**Changes**:
+- `src/lobtrainer/config/schema.py:2452-2494` — new full-tuple-equality
+  check inside the existing HMHP cross-config block. Skipped when either
+  list is empty (defers to auto-resolve at `trainer.py:850-866` +
+  `simple_trainer.py:240-260`). Inserted INSIDE the existing
+  `if _mt_str in ("hmhp", "hmhp_regression"):` gate — non-HMHP models
+  unaffected.
+- `tests/test_hmhp_primary_horizon_idx_bridge.py` — NEW
+  `TestCrossConfigHorizonListMismatch` class with 12 tests:
+  identical-pass / permutation-at-resolved-idx / permutation-off-idx /
+  different-lengths / completely-different / empty-labels-skip /
+  empty-model-skip / both-empty-skip / tlob-skip / auto-align-then-pass /
+  auto-align-then-permutation-raises / error-message-traceability.
+  Plus new helper `_build_hmhp_config_with_separate_horizons` for
+  independently-controlled horizons across model + labels fields.
+
+**Test counts**: trainer 1701 → 1713 passed (+12 new), 73 skipped,
+1 xfailed. Zero regressions.
+
+**Per hft-rules**: §5 fail-fast (precise + actionable error message),
+§8 never silently accept corrupt data, §0 reuse-first (cross-references
+LabelsConfig dup-check at `schema.py:411-413` + HMHPConfig dup-check
+at `lob-models/.../config/base.py:2093+` as third defensive layer).
+
+**Risk profile**: HIGH-GAP, no current trigger — verified by V12
+hidden-interaction auditor 2026-05-07: all 12 production HMHP fixtures
++ 4 production HMHP YAMLs use `data.labels.horizons` empty (auto-resolve
+path) so the new check skips on existing workloads. Defense-in-depth
+against future YAML edits / programmatic library use.
+
+**Coordinated cycle**: shipped alongside Cycle 2.5a in lob-models
+(HMHPConfig duplicate-rejection validator at `config/base.py:2093+`)
+mirroring the LabelsConfig discipline at `schema.py:411-413`.
+
 ## [0.7.1] — 2026-04-27 — REV 3.1 Phase G G.6.A→G.8 (SchemaVersion 2.2 → 3.0 MAJOR)
 
 REV 3.1 cycle Phase G consumer-side cascade. NO trainer-internal logic

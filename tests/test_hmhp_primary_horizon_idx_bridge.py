@@ -231,6 +231,230 @@ class TestCrossConfigInvariant:
         assert cfg.model.hmhp_primary_horizon_idx == 0
 
 
+def _build_hmhp_config_with_separate_horizons(
+    *,
+    model_type: str = "hmhp",
+    model_horizons=(10, 60, 300),
+    labels_horizons=(10, 60, 300),
+    hmhp_primary_horizon_idx: int = 0,
+    labels_primary_horizon_idx: int = 0,
+):
+    """Helper: HMHP ExperimentConfig with INDEPENDENTLY-controlled horizons
+    on model.hmhp_horizons vs data.labels.horizons.
+
+    Cycle 2.5b (2026-05-07) — used to test the cross-config horizon-LIST
+    mismatch detection. Distinct from ``_build_minimal_hmhp_config`` which
+    sets BOTH horizons fields from the same parameter.
+    """
+    labels_kwargs = {"task": "regression"} if model_type == "hmhp_regression" else {}
+    return ExperimentConfig(
+        name="test_cycle_2_5b",
+        output_dir="/tmp/test",
+        data=DataConfig(
+            data_dir="/tmp/data",
+            feature_count=98,
+            sequence=SequenceConfig(window_size=20, stride=1),
+            labels=LabelsConfig(
+                horizons=list(labels_horizons),
+                primary_horizon_idx=labels_primary_horizon_idx,
+                **labels_kwargs,
+            ),
+        ),
+        model=ModelConfig(
+            model_type=ModelType(model_type),
+            input_size=98,
+            num_classes=3,
+            hmhp_horizons=tuple(model_horizons),
+            hmhp_primary_horizon_idx=hmhp_primary_horizon_idx,
+        ),
+        train=TrainConfig(
+            batch_size=64, epochs=1, learning_rate=1e-4,
+        ),
+    )
+
+
+class TestCrossConfigHorizonListMismatch:
+    """Cycle 2.5b (2026-05-07) — VALUE-check beyond IDX-check.
+
+    Closes Issue 2 from V1-V6 + V7-V12 6-agent re-validation. Pre-Cycle-2.5b,
+    the cross-config validator at schema.py:2407-2450 only verified that
+    ``model.hmhp_primary_horizon_idx == data.labels.primary_horizon_idx`` —
+    catching index-typo bugs but allowing horizon LISTS to silently differ
+    (permutations or different lengths) when both indices are in range.
+
+    HMHP cascade has ONE decoder per horizon (lob-models hmhp.py); HMHP
+    loss is sum_h(loss_h), so EVERY horizon's value-alignment matters,
+    not just primary_horizon_idx. Mismatched lists corrupt gradients at
+    non-primary heads.
+
+    Per hft-rules §5 fail-fast + §8 never silently accept corrupt data.
+    Defense-in-depth atop:
+    - LabelsConfig dup-check (schema.py:411-413)
+    - HMHPConfig dup-check (lob-models config/base.py:2093+)
+    - Cross-config IDX-check (schema.py:2407-2450)
+    """
+
+    def test_identical_lists_pass(self):
+        """Golden case — same list on both fields, identical idx."""
+        cfg = _build_hmhp_config_with_separate_horizons(
+            model_horizons=(10, 60, 300),
+            labels_horizons=(10, 60, 300),
+        )
+        assert tuple(cfg.model.hmhp_horizons) == (10, 60, 300)
+        assert tuple(cfg.data.labels.horizons) == (10, 60, 300)
+
+    def test_permutation_at_resolved_idx_raises(self):
+        """Same elements, different order at primary idx → RAISE.
+
+        model.hmhp_horizons=(10, 60, 300), labels.horizons=(60, 10, 300).
+        idx=0: model means H10, labels means H60. Pre-2.5b passed silently;
+        post-2.5b raises with explicit list-mismatch message.
+        """
+        with pytest.raises(ValueError, match="horizon-LIST mismatch"):
+            _build_hmhp_config_with_separate_horizons(
+                model_horizons=(10, 60, 300),
+                labels_horizons=(60, 10, 300),
+            )
+
+    def test_permutation_off_resolved_idx_still_raises(self):
+        """Permutation at NON-primary idx ALSO raises (full-tuple equality).
+
+        model.hmhp_horizons=(10, 60, 300), labels.horizons=(10, 300, 60).
+        idx=0: BOTH means H10 (primary aligns). But heads 1+2 see permuted
+        labels — silent corruption at non-primary heads. Per Agent Y +
+        Agent Z V12 review: HMHP loss = sum_h(loss_h), so non-primary head
+        misalignment also corrupts gradients. Catches case option (a)
+        (resolved-idx-only) would miss.
+        """
+        with pytest.raises(ValueError, match="horizon-LIST mismatch"):
+            _build_hmhp_config_with_separate_horizons(
+                model_horizons=(10, 60, 300),
+                labels_horizons=(10, 300, 60),
+                hmhp_primary_horizon_idx=0,
+                labels_primary_horizon_idx=0,
+            )
+
+    def test_different_lengths_raise(self):
+        """Different-length lists raise — HMHP cascade decoder count must
+        match label slicing axis."""
+        with pytest.raises(ValueError, match="horizon-LIST mismatch"):
+            _build_hmhp_config_with_separate_horizons(
+                model_horizons=(10, 60),
+                labels_horizons=(10, 60, 300),
+            )
+
+    def test_completely_different_lists_raise(self):
+        """Disjoint horizon sets raise."""
+        with pytest.raises(ValueError, match="horizon-LIST mismatch"):
+            _build_hmhp_config_with_separate_horizons(
+                model_horizons=(10, 60, 300),
+                labels_horizons=(20, 50, 100),
+            )
+
+    def test_empty_labels_horizons_skips_check(self):
+        """Empty labels.horizons SKIPS the value-check — auto-resolution
+        from dataset_manifest at trainer setup time will populate it later
+        (see trainer.py:850-866 + simple_trainer.py:240-260). Validator
+        cannot prejudge what auto-resolution will produce.
+        """
+        # Should NOT raise even though model has horizons + labels is empty.
+        cfg = _build_hmhp_config_with_separate_horizons(
+            model_horizons=(10, 60, 300),
+            labels_horizons=(),
+        )
+        assert tuple(cfg.model.hmhp_horizons) == (10, 60, 300)
+        assert tuple(cfg.data.labels.horizons) == ()
+
+    def test_empty_model_horizons_skips_check(self):
+        """Symmetric-skip: empty model.hmhp_horizons + populated labels.horizons.
+
+        Cycle 2.5b mid-impl gap closure (Agent verdict GAP-1 2026-05-07):
+        defense-in-depth on the symmetric direction. In practice
+        ModelConfig.hmhp_horizons has a non-empty default tuple at
+        schema.py:1407, so this case is improbable — but locking the skip
+        semantics here protects future programmatic constructions that
+        explicitly pass an empty tuple.
+        """
+        cfg = _build_hmhp_config_with_separate_horizons(
+            model_horizons=(),
+            labels_horizons=(10, 60, 300),
+        )
+        assert tuple(cfg.model.hmhp_horizons) == ()
+        assert tuple(cfg.data.labels.horizons) == (10, 60, 300)
+
+    def test_both_empty_horizons_skip_check(self):
+        """Trivial-skip: BOTH empty. Auto-resolution path entirely deferred.
+
+        Cycle 2.5b mid-impl gap closure (Agent verdict GAP-2 2026-05-07):
+        locks the both-empty semantics so future refactors don't
+        accidentally promote this to a fail-fast path (which would
+        regress the auto-resolve workflow at trainer.py:850-866).
+        """
+        cfg = _build_hmhp_config_with_separate_horizons(
+            model_horizons=(),
+            labels_horizons=(),
+        )
+        assert tuple(cfg.model.hmhp_horizons) == ()
+        assert tuple(cfg.data.labels.horizons) == ()
+
+    def test_value_check_skipped_for_tlob_model_type(self):
+        """Non-HMHP model types skip the entire HMHP cross-config block.
+
+        tlob does not use the hmhp_horizons field; mismatch is harmless.
+        """
+        cfg = _build_hmhp_config_with_separate_horizons(
+            model_type="tlob",
+            model_horizons=(10, 60, 300),
+            labels_horizons=(10, 300, 60),  # permuted — but tlob ignores
+        )
+        assert cfg.model.model_type == ModelType.TLOB
+
+    def test_auto_align_then_value_check_runs(self):
+        """Auto-align tier (a) fires when model_idx=0 + labels_idx≠0.
+
+        After auto-align, model.hmhp_primary_horizon_idx is mutated to match
+        labels. The new VALUE-check runs in the SAME if-block so it fires
+        AFTER auto-align resolves indices. With matching lists, it passes.
+        """
+        cfg = _build_hmhp_config_with_separate_horizons(
+            model_horizons=(10, 60, 300),
+            labels_horizons=(10, 60, 300),  # SAME list — equality holds
+            hmhp_primary_horizon_idx=0,  # default
+            labels_primary_horizon_idx=2,  # non-default → triggers auto-align
+        )
+        # Auto-align mutated idx; value-check passed (lists equal)
+        assert cfg.model.hmhp_primary_horizon_idx == 2
+
+    def test_auto_align_with_permuted_horizons_raises(self):
+        """Auto-align fires (idx 0 → 2), then VALUE-check catches permutation.
+
+        Locks the post-auto-align value-check semantics: even after the
+        index-alignment branch runs, mismatched lists still raise. This is
+        the most defensive composition of branches (a)+(c).
+        """
+        with pytest.raises(ValueError, match="horizon-LIST mismatch"):
+            _build_hmhp_config_with_separate_horizons(
+                model_horizons=(10, 60, 300),
+                labels_horizons=(60, 10, 300),  # permuted
+                hmhp_primary_horizon_idx=0,
+                labels_primary_horizon_idx=2,  # triggers auto-align first
+            )
+
+    def test_error_message_cites_cycle_2_5b_and_PY_54(self):
+        """Error message includes 'Cycle 2.5b' AND '#PY-54' tokens for
+        traceability — matches existing #PY-54 invariant message style at
+        line 2438-2450."""
+        with pytest.raises(ValueError) as exc_info:
+            _build_hmhp_config_with_separate_horizons(
+                model_horizons=(10, 60, 300),
+                labels_horizons=(60, 10, 300),
+            )
+        msg = str(exc_info.value)
+        assert "Cycle 2.5b" in msg
+        assert "#PY-54-VALUE" in msg
+        assert "sum_h(loss_h)" in msg
+
+
 class TestModelConfigField:
     """Field declaration + Pydantic validation behavior on ModelConfig."""
 
