@@ -1524,6 +1524,26 @@ class ModelConfig(SafeBaseModel):
     for the canonical migration point.
     """
 
+    hmhp_primary_horizon_idx: int = 0
+    """Cycle 1b.2 / #PY-54 (2026-05-07): bridges to
+    ``HMHPConfig.primary_horizon_idx`` via ``_build_params_from_legacy``.
+    Selects the primary horizon for HMHP/HMHP-R ensemble-loss final-head
+    (UNCONDITIONAL site at lob-models/.../hmhp.py:884) + ``use_confirmation=False``
+    fallback paths (Sites at lob-models/.../hmhp.py:754 + hmhp_regressor.py:364).
+
+    **Cross-config invariant** (enforced at ExperimentConfig._validate_all,
+    per Adversarial Agent 9 §H#1): MUST match
+    ``data.labels.primary_horizon_idx`` (or 0 when labels is ``None``).
+    Mismatch raises ``ValueError`` per hft-rules §5 fail-fast. Silent
+    divergence between trainer label-slicing and model loss-head selection
+    would corrupt gradients (label for horizon X, model optimizes vs Y).
+
+    Default 0 preserves all current production behavior — CLAUDE.md
+    "Validated Findings" R-series experiments all use idx=0. Researchers
+    setting non-default MUST set BOTH ``data.labels.primary_horizon_idx``
+    AND ``model.hmhp_primary_horizon_idx`` consistently.
+    """
+
     # --- Enum + container coercers (mode="before" bridges under strict=True) ---
 
     @field_validator("model_type", mode="before")
@@ -1777,6 +1797,14 @@ class ModelConfig(SafeBaseModel):
             )
             p["optimal_features_by_horizon"] = self.hmhp_optimal_features_by_horizon
             p["use_confirmation"] = self.hmhp_use_confirmation
+
+            # Cycle 1b.2 / #PY-54 (2026-05-07): bridge primary_horizon_idx
+            # to lob-models HMHPConfig (consumed at hmhp.py:884
+            # UNCONDITIONAL ensemble loss site + 2 use_confirmation=False
+            # fallback sites at hmhp.py:754 + hmhp_regressor.py:364).
+            # Cross-config invariant (LabelsConfig.primary_horizon_idx
+            # match) enforced at ExperimentConfig._validate_all level.
+            p["primary_horizon_idx"] = self.hmhp_primary_horizon_idx
 
             if mt == "hmhp":
                 # use_regression: classification-only aux output flag
@@ -2343,6 +2371,82 @@ class ExperimentConfig(SafeBaseModel):
                     f"normalization.exclude_features contains index {idx}, "
                     f"but feature_count is only {self.data.feature_count}. "
                     f"Remove or adjust exclude_features for your dataset."
+                )
+
+        # Cycle 1b.2 / #PY-54 (2026-05-07): cross-config invariant for HMHP.
+        # ``data.labels.primary_horizon_idx`` (canonical source for label
+        # slicing in trainer) MUST match ``model.hmhp_primary_horizon_idx``
+        # (source for HMHP loss-head + ``use_confirmation=False`` fallback
+        # paths in lob-models HMHPConfig). Silent divergence between these
+        # corrupts gradients: label-slicing for horizon X while model
+        # optimizes against horizon Y. Per Adversarial Agent 9 §H#1 +
+        # hft-rules §5 fail-fast.
+        #
+        # Two-tier policy:
+        #
+        # (a) AUTO-ALIGN when model is at default 0 + labels is non-default.
+        #     Pre-Cycle-1b.1 production YAMLs that used non-default labels
+        #     idx had a pre-existing silent drift (hmhp.py:884 hardcoded
+        #     horizons[0] regardless of labels). Cycle 1b.1 closed the
+        #     hardcode; the new field defaults to 0 — preserving back-compat
+        #     for the COMMON case (both at default 0) but creating drift for
+        #     the H60-targeted YAMLs. Auto-align fixes this transparently:
+        #     trainer's LabelsConfig is the source of truth.
+        #
+        # (b) STRICT-RAISE when model is explicitly set AND mismatches labels.
+        #     Researcher who deliberately sets model.hmhp_primary_horizon_idx
+        #     to a non-default value MUST also set labels accordingly. Silent
+        #     divergence in this case is unambiguously a bug.
+        #
+        # Only enforced for HMHP/HMHP-R model types (other models don't
+        # use HMHPConfig.primary_horizon_idx). LabelsConfig.None is treated
+        # as effective 0 (matches LabelsConfig.validate_primary_horizon_idx_for
+        # convention at schema.py:450).
+        _mt = self.model.model_type
+        _mt_str = _mt.value if hasattr(_mt, "value") else str(_mt)
+        if _mt_str in ("hmhp", "hmhp_regression"):
+            _labels_idx = self.data.labels.primary_horizon_idx
+            _effective_labels_idx = 0 if _labels_idx is None else _labels_idx
+            _model_idx = self.model.hmhp_primary_horizon_idx
+
+            if _model_idx == _effective_labels_idx:
+                # Both match (commonly both 0). No action needed.
+                pass
+            elif _model_idx == 0 and _effective_labels_idx != 0:
+                # (a) AUTO-ALIGN: model at default 0, labels non-default.
+                # Mutate self.model via the T13 escape-hatch pattern at
+                # schema.py:2310-2328 (Pydantic v2-sanctioned for in-validator
+                # cross-field self-mutation under frozen=True).
+                _new_params = dict(self.model.params)
+                _new_params["primary_horizon_idx"] = _effective_labels_idx
+                _new_model = self.model.model_copy(update={
+                    "hmhp_primary_horizon_idx": _effective_labels_idx,
+                    "params": _new_params,
+                })
+                object.__setattr__(self, "model", _new_model)
+                _t13_logger.info(
+                    "Cycle 1b.2 auto-align (#PY-54): "
+                    "model.hmhp_primary_horizon_idx 0 → %d "
+                    "(matched data.labels.primary_horizon_idx). "
+                    "Set model.hmhp_primary_horizon_idx explicitly in YAML "
+                    "to suppress this auto-alignment.",
+                    _effective_labels_idx,
+                )
+            else:
+                # (b) STRICT-RAISE: explicit model setting that mismatches
+                # labels. Researcher must reconcile.
+                raise ValueError(
+                    f"Cross-config invariant violation (#PY-54): "
+                    f"model.hmhp_primary_horizon_idx="
+                    f"{_model_idx} (explicit non-default) != "
+                    f"data.labels.primary_horizon_idx="
+                    f"{_labels_idx!r} (effective={_effective_labels_idx}). "
+                    f"For HMHP/HMHP-R model types, label-slicing primary_horizon_idx "
+                    f"and model loss-head primary_horizon_idx MUST match — "
+                    f"silent divergence would corrupt gradients. "
+                    f"Set both fields consistently in YAML, or omit "
+                    f"model.hmhp_primary_horizon_idx to enable auto-alignment "
+                    f"to data.labels.primary_horizon_idx."
                 )
 
         # T9: deprecation warnings for legacy label fields.
