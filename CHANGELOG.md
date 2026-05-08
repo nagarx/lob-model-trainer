@@ -4,6 +4,84 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — HYBRID Phase α-1.2 (2026-05-10) — config-loader symlink-source preservation (#PY-83-cluster)
+
+**Fixed (#PY-83-cluster — α-1.2 follow-up to α-3 / #PY-79)**
+
+- `src/lobtrainer/config/merge.py::resolve_inheritance` — 3 `.resolve()`
+  calls flipped to `.absolute()` (preserves symlink-source lineage):
+  - line 135 (cycle-detection key derivation in `_seen` set)
+  - line 158 (absolute-base path resolution)
+  - line 160 (relative-base path resolution via `config_path.parent / `)
+- `src/lobtrainer/config/schema.py:2687` — `_Path(path).resolve()` →
+  `.absolute()`. This is the upstream entry-point for
+  `resolve_inheritance`; its output propagates into merge.py's cycle-
+  detection AND parent-relative base lookup, so all 4 sites MUST flip
+  together (cycle-detection consistency invariant).
+
+**Rationale**
+
+Per α-3 / #PY-79 lesson (closed in commit `c232cf3`): when the configs/
+or any ancestor is a symlink, `Path.resolve()` derefs the symlink at
+start, which can:
+- Produce inconsistent cycle-detection keys (deref'd vs symlink-source
+  paths disagree on equality)
+- Emit confusing diagnostics that cite deref'd paths the user never
+  authored
+- Diverge from the rest of the lob-models / lob-model-trainer / hft-ops
+  ecosystem now uniformly using `.absolute()` per α-1.1 / α-3 / α-1.2
+
+`Path.absolute()` is purely lexical (no FS access; never derefs);
+mirrors α-3 fix philosophy. Sister to α-1.1 hft-ops `paths.resolve()`
+fix (#PY-83) shipped in hft-ops commit `a00a799`.
+
+**Kept (intentional)**
+
+- `src/lobtrainer/analysis/stat_rigor/ci.py:444` — `signals_dir.resolve()`
+  KEPT by design + intent comment added. This populates
+  `signal_export_output_dir` in the metadata overlay used for
+  compatibility-fingerprint matching; canonicalizing across symlinks
+  IS desirable here (the (a) "needs symlink-DEREF" case from the audit).
+
+**Tests**
+
+- NEW `tests/test_py83_cluster_config_loader_symlink.py` (3 tests in 3
+  classes covering inheritance-through-symlinked-configs / cycle-detection
+  symlink-source preservation / negative regression locking the broken
+  `.resolve()` idiom).
+
+**Test result**: 1720 passed, 73 skipped, 0 failures (was 1713 baseline).
+
+**Discovered by**: 8-agent prep round 2026-05-10 (Agent I FINDING 5
+"Hidden Findings Hunt"); design verified by Explore agent same date.
+
+## [Unreleased] — HYBRID Phase α-3 (2026-05-10) — symlink-safe pipeline-root detection (#PY-79)
+
+**Fixed (#PY-79)**
+
+- `src/lobtrainer/data/feature_set_resolver.py:442`
+  `Path(anchor).resolve()` → `Path(anchor).absolute()`. Pre-α-3,
+  `find_feature_sets_dir` walked up from a deref'd anchor — when
+  `data/` was symlinked to an external mount (e.g.
+  `/Volumes/WD_Black/HFT-data/`), the walk began under the deref
+  target where no `contracts/pipeline_contract.toml` exists in any
+  ancestor, so auto-detection failed with `FeatureSetResolverError`.
+- `src/lobtrainer/training/trainer.py:482-485` — caller-side fix:
+  `Path(cfg_data.data_dir).resolve()` + `Path(cfg_data.feature_sets_dir).resolve()`
+  both flipped to `.absolute()`. Required because caller's prior
+  `.resolve()` would have defeated the in-function `.absolute()` fix
+  (the symlink-source would already be lost before the function ran).
+
+**Tests**
+
+- NEW `tests/test_feature_set_resolver.py::TestFindFeatureSetsDirSymlinkSafe`
+  (3 tests covering positive walk-through-symlinked-data-dir / negative
+  regression locking broken `.resolve()` idiom / edge case anchor-IS-
+  the-symlink).
+
+**Discovered by**: 7-agent prep round 2026-05-10 (Agent C1 ground-truth);
+implemented in commit `c232cf3` per HYBRID Phase α design.
+
 ## [Unreleased] — Cycle 2.5b (2026-05-07) — Cross-config horizon-LIST mismatch validator
 
 Defense-in-depth atop the existing IDX-only cross-config invariant at

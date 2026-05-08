@@ -132,7 +132,17 @@ def resolve_inheritance(
             f"Chain: {_seen}"
         )
 
-    config_str = str(config_path.resolve())
+    # Phase α-1.2 / #PY-83-cluster fix (2026-05-10): use Path.absolute()
+    # not Path.resolve() to preserve symlink-source lineage. Per α-3 /
+    # #PY-79 lesson — when configs/ or a base's parent is a symlink,
+    # .resolve() derefs it, causing the recursion to jump off-tree and
+    # break relative-base resolution at line ~160 below. Cycle-detection
+    # uses string equality on the lineage-preserved path; absolute() is
+    # purely lexical (no FS access) so cycle membership comparison stays
+    # consistent across the recursion. All 3 sites in this module
+    # (lines 135 + 158 + 160) MUST flip together — partial flip would
+    # break the consistency invariant.
+    config_str = str(config_path.absolute())
     if config_str in _seen:
         raise ValueError(
             f"Config inheritance cycle detected: {config_path} "
@@ -154,10 +164,12 @@ def resolve_inheritance(
     merged_base: dict[str, Any] = {}
     for b in base_refs:
         base_path_raw = Path(b)
+        # Phase α-1.2 / #PY-83-cluster: see comment above. Both branches
+        # use .absolute() to match the cycle-detection key derivation.
         base_path = (
-            base_path_raw.resolve()
+            base_path_raw.absolute()
             if base_path_raw.is_absolute()
-            else (config_path.parent / base_path_raw).resolve()
+            else (config_path.parent / base_path_raw).absolute()
         )
         if not base_path.exists():
             raise FileNotFoundError(

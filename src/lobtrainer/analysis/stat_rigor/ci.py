@@ -440,6 +440,15 @@ def from_signal_dir(
         "normalization_stats_sha256": metadata.get("normalization_stats_sha256"),
         # Phase V.1 L1.2: signal_export_output_dir is run-time-captured;
         # fall back to the actual signals_dir if metadata didn't capture it.
+        # Phase α-1.2 / #PY-83-cluster (2026-05-10): .resolve() KEPT here
+        # by design — this populates `signal_export_output_dir` in the
+        # metadata overlay used for compatibility-fingerprint matching.
+        # Canonicalizing across symlinks is desirable so the same on-disk
+        # signal directory hashes identically regardless of which symlink
+        # was used to reach it. This is the (a) "needs symlink-DEREF" case
+        # from the α-1.2 audit (sister to extraction_cache.py canonical
+        # cache-key purpose). DO NOT flip to .absolute() — that would
+        # break canonicality of the metadata overlay.
         "signal_export_output_dir": (
             metadata.get("signal_export_output_dir") or str(signals_dir.resolve())
         ),

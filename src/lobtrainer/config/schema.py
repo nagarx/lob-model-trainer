@@ -2684,7 +2684,15 @@ class ExperimentConfig(SafeBaseModel):
         from pathlib import Path as _Path
         from lobtrainer.config.merge import is_partial_base, resolve_inheritance
 
-        config_path = _Path(path).resolve()
+        # Phase α-1.2 / #PY-83-cluster fix (2026-05-10): use Path.absolute()
+        # not Path.resolve() to preserve symlink-source lineage. This is
+        # the upstream entry-point for resolve_inheritance — its output
+        # propagates into merge.py's cycle-detection (config_str at
+        # merge.py:135) AND its parent is used for relative-base lookup
+        # (config_path.parent / base_path_raw at merge.py:160). All four
+        # sites (this one + 3 in merge.py) MUST be consistent. Per α-3 /
+        # #PY-79 lesson.
+        config_path = _Path(path).absolute()
 
         # Fail-fast on partial bases so the error points at the root cause,
         # not at a dacite missing-required-field error deep in the validator.
