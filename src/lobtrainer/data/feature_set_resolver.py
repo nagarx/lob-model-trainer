@@ -425,8 +425,15 @@ def find_feature_sets_dir(anchor: Path, *, max_parents: int = 8) -> Path:
 
     Args:
         anchor: Absolute or relative path to start walking from. If
-            relative, resolved against CWD first. ``Path(data_dir).resolve()``
-            is the typical caller expression.
+            relative, joined with CWD via ``Path.absolute()`` (NOT
+            ``.resolve()``). ``Path(data_dir).absolute()`` is the typical
+            caller expression. **CRITICAL** (#PY-79, 2026-05-10): this
+            function MUST NOT dereference symlinks before walking. When
+            ``data/`` is symlinked to an external mount (e.g.,
+            ``/Volumes/WD_Black/HFT-data/``), ``.resolve()`` would jump
+            walk-up to the external mount where ``contracts/pipeline_contract.toml``
+            doesn't exist. ``.absolute()`` preserves the symlink-source
+            lineage so walk-up reaches the monorepo root.
         max_parents: Safety cap on how many ``..`` hops to try before
             giving up. Default 8 covers any reasonable monorepo layout.
 
@@ -439,7 +446,13 @@ def find_feature_sets_dir(anchor: Path, *, max_parents: int = 8) -> Path:
             an explicit ``feature_sets_dir`` argument to whatever
             orchestrator is calling this.
     """
-    current = Path(anchor).resolve()
+    # Phase α-3 / #PY-79 (2026-05-10): use absolute() not resolve() —
+    # preserves symlink-source path lineage. When data_dir is a symlink
+    # (e.g., monorepo data/ → /Volumes/WD_Black/HFT-data/), resolve()
+    # would jump to the deref target whose ancestry doesn't contain
+    # the pipeline_contract.toml marker. absolute() walks the lexical
+    # path instead, finding the pipeline root via the symlink-source.
+    current = Path(anchor).absolute()
     visited: list[Path] = []
     for _ in range(max_parents + 1):
         visited.append(current)

@@ -471,18 +471,26 @@ class Trainer:
                 find_feature_sets_dir,
                 resolve_feature_set,
             )
-            # Phase 4 Batch 4c hardening: (1) explicit .resolve() on
+            # Phase 4 Batch 4c hardening: (1) explicit absolutize on
             # data_dir so find_feature_sets_dir's implicit CWD anchoring
             # is never load-bearing; (2) honor user-override via
             # cfg_data.feature_sets_dir; (3) pass expected_contract_version
             # from hft_contracts SSoT so contract-version drift between
             # producer and consumer is caught deterministically rather
             # than depending on source_feature_count as an indirect guard.
+            #
+            # Phase α-3 / #PY-79 (2026-05-10): use .absolute() NOT .resolve()
+            # to absolutize. .resolve() dereferences symlinks; when data/
+            # is symlinked to /Volumes/WD_Black/HFT-data/ (this deployment),
+            # find_feature_sets_dir then walks up from /Volumes/... where
+            # contracts/pipeline_contract.toml doesn't exist in any ancestor.
+            # .absolute() preserves the symlink-source lineage so walk-up
+            # finds the monorepo root via the symlink-source.
             if cfg_data.feature_sets_dir is not None:
-                registry_dir = Path(cfg_data.feature_sets_dir).resolve()
+                registry_dir = Path(cfg_data.feature_sets_dir).absolute()
             else:
                 registry_dir = find_feature_sets_dir(
-                    Path(cfg_data.data_dir).resolve()
+                    Path(cfg_data.data_dir).absolute()
                 )
             from hft_contracts import SCHEMA_VERSION as _CURRENT_CONTRACT_VERSION
             resolved = resolve_feature_set(

@@ -515,6 +515,68 @@ class TestFindFeatureSetsDir:
             find_feature_sets_dir(deep, max_parents=3)
 
 
+class TestFindFeatureSetsDirSymlinkSafe:
+    """Phase α-3 / #PY-79 (2026-05-10) — locks the .absolute() vs .resolve()
+    distinction. Pre-fix, when ``data/`` was symlinked to an external mount
+    (e.g., ``/Volumes/WD_Black/HFT-data/``), ``find_feature_sets_dir(...)``
+    used ``.resolve()`` which dereferenced the symlink AT THE START. Walk-up
+    then began under ``/Volumes/WD_Black/...`` where ``contracts/pipeline_contract.toml``
+    doesn't exist in any ancestor — raised FeatureSetResolverError despite
+    the marker existing in the monorepo via the symlink-source ancestry.
+
+    Post-fix, ``.absolute()`` preserves the symlink-source path lineage so
+    walk-up reaches the monorepo root via the symlink-source.
+    """
+
+    def test_finds_pipeline_root_through_symlinked_data_dir(self, tmp_path):
+        """Regression for #PY-79: data/ symlinked to external mount."""
+        import os as _os
+        pipeline_root = tmp_path / "pipeline"
+        external_storage = tmp_path / "external_data"
+        _make_fake_pipeline_root(pipeline_root)
+        # Build external storage tree (NO contracts/ marker here — the
+        # marker only exists in pipeline_root)
+        (external_storage / "exports" / "nvda_e5_60s").mkdir(parents=True)
+        # Symlink pipeline_root/data → external_storage
+        _os.symlink(external_storage, pipeline_root / "data")
+        # Anchor walks from inside the symlinked branch
+        anchor = pipeline_root / "data" / "exports" / "nvda_e5_60s"
+        assert anchor.exists()
+        # POST-FIX: walk-up via symlink-source path finds the marker.
+        got = find_feature_sets_dir(anchor)
+        assert got == pipeline_root / "contracts" / "feature_sets"
+
+    def test_resolve_idiom_would_have_failed(self, tmp_path):
+        """Negative regression: confirm `.resolve()` (the broken idiom) WOULD
+        have failed the lookup. This locks the subtle .absolute() vs .resolve()
+        distinction so a future contributor doesn't accidentally revert."""
+        import os as _os
+        pipeline_root = tmp_path / "pipeline"
+        external_storage = tmp_path / "external_data"
+        _make_fake_pipeline_root(pipeline_root)
+        (external_storage / "exports" / "nvda_e5_60s").mkdir(parents=True)
+        _os.symlink(external_storage, pipeline_root / "data")
+        anchor = pipeline_root / "data" / "exports" / "nvda_e5_60s"
+        # Simulate the BROKEN idiom by walking from the dereferenced path.
+        # If find_feature_sets_dir is given the resolved path directly, it
+        # walks up from /external_data/... which has no contracts/ marker.
+        with pytest.raises(FeatureSetResolverError, match="Cannot auto-detect"):
+            find_feature_sets_dir(Path(anchor).resolve())  # broken idiom
+
+    def test_anchor_at_symlink_boundary_works(self, tmp_path):
+        """Anchor IS the symlink itself (not a child of it)."""
+        import os as _os
+        pipeline_root = tmp_path / "pipeline"
+        external_storage = tmp_path / "external_data"
+        _make_fake_pipeline_root(pipeline_root)
+        external_storage.mkdir()
+        _os.symlink(external_storage, pipeline_root / "data")
+        anchor = pipeline_root / "data"
+        # Walk-up from the symlink itself reaches pipeline_root.
+        got = find_feature_sets_dir(anchor)
+        assert got == pipeline_root / "contracts" / "feature_sets"
+
+
 # ---------------------------------------------------------------------------
 # Trainer integration contract: resolver populates DataConfig cache
 # ---------------------------------------------------------------------------
