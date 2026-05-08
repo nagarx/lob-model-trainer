@@ -246,26 +246,25 @@ class TestSignalQualityGate:
         result = run_signal_quality_gate(days, min_ic=0.05)
         assert len(result.details) == 5
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="Phase G G.6.A bumped SchemaVersion 2.2 → 3.0 (MAJOR per "
-        "CLAUDE.md root rule). Legacy production exports at "
-        "data/exports/e5_timebased_60s are at schema '2.2' and correctly "
-        "rejected by validate_schema_version. Re-export of these legacy "
-        "exports is gated on Phase G+1 (re-export execution + scripts/ "
-        "trigger infrastructure); test will pass once Phase G+1 ships and "
-        "operator runs the regen. Until then this xfail is the structural "
-        "marker that the legacy data needs re-export at schema 3.0.",
-    )
     def test_real_e5_60s_data(self):
-        """Signal quality gate on real NVDA E5 60s data should pass."""
+        """Signal quality gate on real NVDA E5 60s data should pass.
+
+        Phase O Cycle 1 (2026-05-04) shipped the v3p0 baseline export at
+        ``data/exports/e5_timebased_60s_v3p0`` (schema 3.0) SIDE-BY-SIDE with
+        the pre-Phase-O legacy export (schema 2.2, archived in place). The
+        previous xfail-strict decorator pointed at the legacy path; H3
+        Wave2-C finding 2026-05-08 retires the decorator and switches the
+        fixture to the v3p0 path. v3p0 baselines are 230 days × 98 features
+        with regression labels [10, 60, 300], idx 97 RESERVED 0.0,
+        schema_version 3.0, contract_version 3.0.
+        """
         import warnings
         from lobtrainer.config.schema import LabelsConfig
         from lobtrainer.data.dataset import load_split_data
 
-        data_dir = Path("../data/exports/e5_timebased_60s")
+        data_dir = Path("../data/exports/e5_timebased_60s_v3p0")
         if not data_dir.exists():
-            pytest.skip("Real E5 60s data not available")
+            pytest.skip("Real E5 60s v3p0 data not available")
 
         lc = LabelsConfig(source="forward_prices", task="regression",
                           horizons=[10], primary_horizon_idx=0)
