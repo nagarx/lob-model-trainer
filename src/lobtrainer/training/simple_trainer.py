@@ -253,6 +253,90 @@ class SimpleModelTrainer:
             except FileNotFoundError as exc:
                 logger.debug(f"Horizons auto-resolution skipped (sklearn): {exc}")
 
+        # Phase Y composability / #PY-85 (2026-05-09): resolve FeatureSet to
+        # populate `_feature_set_ref_resolved` cache so signal_metadata.json
+        # carries feature_set_ref. Without this, harvester returns None →
+        # ExperimentRecord.feature_set_ref=null → experiment_provenance_hash
+        # composer skips with warning, defeating Phase Y for sklearn arms.
+        # Smoke-caught 2026-05-09 (γ-1 Cycle 5 1-arm sklearn produced ledger
+        # record without experiment_provenance_hash). Mirrors PyTorch Trainer
+        # logic at trainer.py:460-516.
+        #
+        # NOTE: sklearn path does NOT subset features by index — it loads all
+        # NPY columns + applies temporal engineering on top. This resolution
+        # is purely for Phase Y trust-column propagation. Resolved indices are
+        # stored on _feature_indices_resolved for symmetry with PyTorch but
+        # unused by sklearn data loading.
+        if self.config is not None:
+            cfg_data = self.config.data
+            feature_set_name = getattr(cfg_data, "feature_set", None)
+            # Idempotency guard (mid-impl audit fix HIGH-1): if cache already
+            # populated (e.g., setup() called twice via test fixtures or auto-
+            # setup race in train()), skip re-resolution to avoid redundant
+            # JSON parse + SHA recompute. Mirrors PyTorch where _create_data-
+            # loaders is called once per Trainer lifecycle.
+            already_resolved = (
+                getattr(cfg_data, "_feature_set_ref_resolved", None)
+                is not None
+            )
+            if feature_set_name is not None and not already_resolved:
+                # T12 multi-source guard (mid-impl audit fix LOW-5): match
+                # PyTorch trainer.py:464-469 — feature_set + sources is an
+                # unsupported combination; fail-loud per hft-rules §5.
+                if (
+                    getattr(cfg_data, "sources", None) is not None
+                ):
+                    raise ValueError(
+                        "feature_set is not supported with multi-source mode "
+                        "(data.sources). Use per-source feature_indices on "
+                        "each SourceConfig instead. (T12 + Phase 4 boundary; "
+                        "sklearn parity with trainer.py:464-469)"
+                    )
+                from lobtrainer.data.feature_set_resolver import (
+                    find_feature_sets_dir,
+                    resolve_feature_set,
+                )
+                # Phase α-3 / #PY-79 (2026-05-10): .absolute() preserves
+                # symlink-source for find_feature_sets_dir walk-up (parity
+                # with trainer.py:489-494).
+                if cfg_data.feature_sets_dir is not None:
+                    registry_dir = Path(cfg_data.feature_sets_dir).absolute()
+                else:
+                    registry_dir = find_feature_sets_dir(
+                        Path(cfg_data.data_dir).absolute()
+                    )
+                from hft_contracts import (
+                    SCHEMA_VERSION as _CURRENT_CONTRACT_VERSION,
+                )
+                # Mid-impl audit fix HIGH-2: NO try/except wrapper. Match
+                # PyTorch trainer.py:496-507 fail-loud discipline. Catching
+                # FeatureSetIntegrityError (data corruption) or
+                # FeatureSetContractMismatch (schema_version drift = silent-
+                # wrong-result class) violates hft-rules §5 + §8. Config
+                # errors and data corruption MUST surface — Phase Y
+                # composability is downstream of correctness.
+                resolved = resolve_feature_set(
+                    name=feature_set_name,
+                    registry_dir=registry_dir,
+                    expected_source_feature_count=cfg_data.feature_count,
+                    expected_contract_version=_CURRENT_CONTRACT_VERSION,
+                )
+                cfg_data._feature_indices_resolved = list(
+                    resolved.feature_indices
+                )
+                cfg_data._feature_set_ref_resolved = (
+                    resolved.name,
+                    resolved.content_hash,
+                )
+                logger.info(
+                    f"FeatureSet resolved (sklearn): '{resolved.name}' → "
+                    f"{len(resolved.feature_indices)} indices "
+                    f"(content_hash={resolved.content_hash[:16]}...). "
+                    f"Sklearn does NOT subset features by index; "
+                    f"resolution is for Phase Y "
+                    f"experiment_provenance_hash composability."
+                )
+
         logger.info("Loading data...")
         self._seq_train, self._y_train, self._spreads_train, self._prices_train = \
             _load_split(self.data_dir, "train", self.horizon_idx)
