@@ -676,17 +676,22 @@ class ModelCheckpoint(Callback):
             if hasattr(self.trainer, 'config') and self.trainer.config is not None:
                 checkpoint['config'] = self.trainer.config.to_dict()
 
-        # Save
-        torch.save(checkpoint, filepath)
+        # #PY-73 atomic write — ModelCheckpoint writes per-epoch + best.pt
+        # in the hot loop. Pre-migration: bare torch.save + shutil.copy
+        # both non-atomic; SIGKILL mid-write corrupts the LARGE (100MB-1GB)
+        # checkpoint file. Migrated 2026-05-11 (hft-contracts v2.7.0).
+        from hft_contracts.atomic_io import atomic_copy, atomic_write_torch
+        atomic_write_torch(filepath, checkpoint)
         self._saved_checkpoints.append(filepath)
-        
+
         logger.info(f"ModelCheckpoint: saved {filepath}")
-        
+
         # Update best checkpoint path
         if is_best:
-            # Also save as 'best.pt'
+            # Also save as 'best.pt' (atomic copy — eliminates partial-write
+            # window of bare shutil.copy on SIGKILL mid-duplication).
             best_path = self.save_dir / 'best.pt'
-            shutil.copy(filepath, best_path)
+            atomic_copy(filepath, best_path)
             self._best_checkpoint_path = best_path
             logger.info(f"ModelCheckpoint: updated best.pt ({self.metric}={metric_value:.6f})")
         

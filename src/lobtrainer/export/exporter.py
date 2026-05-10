@@ -493,40 +493,45 @@ class SignalExporter:
         """Write .npy signal files to output directory."""
         files = []
 
+        # #PY-73 atomic writes — SIGKILL mid-write would leave partial .npy
+        # files that downstream backtester silently consumes. Migrated
+        # 2026-05-11 (hft-contracts v2.7.0).
+        from hft_contracts.atomic_io import atomic_write_npy
+
         # Always write prices and spreads
-        np.save(output_dir / "prices.npy", raw.prices)
+        atomic_write_npy(output_dir / "prices.npy", raw.prices)
         files.append("prices.npy")
-        np.save(output_dir / "spreads.npy", raw.spreads)
+        atomic_write_npy(output_dir / "spreads.npy", raw.spreads)
         files.append("spreads.npy")
 
         # Classification outputs
         if "predictions" in inference:
-            np.save(output_dir / "predictions.npy", inference["predictions"])
+            atomic_write_npy(output_dir / "predictions.npy", inference["predictions"])
             files.append("predictions.npy")
         if "labels" in inference:
-            np.save(output_dir / "labels.npy", inference["labels"])
+            atomic_write_npy(output_dir / "labels.npy", inference["labels"])
             files.append("labels.npy")
 
         # Regression outputs
         if "predicted_returns" in inference:
-            np.save(output_dir / "predicted_returns.npy", inference["predicted_returns"])
+            atomic_write_npy(output_dir / "predicted_returns.npy", inference["predicted_returns"])
             files.append("predicted_returns.npy")
         if "regression_labels" in inference:
-            np.save(output_dir / "regression_labels.npy", inference["regression_labels"])
+            atomic_write_npy(output_dir / "regression_labels.npy", inference["regression_labels"])
             files.append("regression_labels.npy")
 
         # HMHP-specific
         if "agreement_ratio" in inference:
-            np.save(output_dir / "agreement_ratio.npy", inference["agreement_ratio"])
+            atomic_write_npy(output_dir / "agreement_ratio.npy", inference["agreement_ratio"])
             files.append("agreement_ratio.npy")
         if "confirmation_score" in inference:
-            np.save(output_dir / "confirmation_score.npy", inference["confirmation_score"])
+            atomic_write_npy(output_dir / "confirmation_score.npy", inference["confirmation_score"])
             files.append("confirmation_score.npy")
 
         # Calibrated returns
         if calibration_result is not None and "calibrated" in calibration_result:
             cal_arr = np.array(calibration_result["calibrated"], dtype=np.float64)
-            np.save(output_dir / "calibrated_returns.npy", cal_arr)
+            atomic_write_npy(output_dir / "calibrated_returns.npy", cal_arr)
             files.append("calibrated_returns.npy")
 
         return files

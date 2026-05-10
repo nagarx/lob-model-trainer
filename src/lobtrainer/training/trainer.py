@@ -1381,7 +1381,11 @@ class Trainer:
         if self._scheduler is not None:
             checkpoint['scheduler_state_dict'] = self._scheduler.state_dict()
 
-        torch.save(checkpoint, path)
+        # #PY-73 atomic write — SIGKILL mid-write would corrupt best.pt
+        # (which the trainer reads on resume). Migrated 2026-05-11
+        # (hft-contracts v2.7.0).
+        from hft_contracts.atomic_io import atomic_write_torch
+        atomic_write_torch(path, checkpoint)
         logger.info(f"Saved checkpoint to {path}")
     
     def load_checkpoint(

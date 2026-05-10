@@ -28,7 +28,16 @@ dependencies = [
     # `PairwiseCompareArtifact`, consumed by
     # `lobtrainer.analysis.stat_rigor.pairwise`). Strictly additive bump per
     # SemVer; no symbols removed.
-    "hft-contracts>=2.5.0",
+    # #PY-73 atomic-write SSoT (2026-05-11): bumped >=2.5.0 → >=2.7.0 after
+    # hft-contracts v2.7.0 added atomic_write_torch + atomic_write_npy +
+    # atomic_copy + atomic_write_binary + atomic_write_pickle to
+    # `hft_contracts.atomic_io`. Trainer consumes:
+    # - trainer.py:1384 (Trainer.save_checkpoint → atomic_write_torch)
+    # - callbacks.py:680 (ModelCheckpoint._save_checkpoint → atomic_write_torch)
+    # - callbacks.py:689 (ModelCheckpoint best.pt copy → atomic_copy)
+    # - simple_trainer.py:761-764 (4 sklearn signal saves → atomic_write_npy)
+    # - exporter.py:497-529 (9 pytorch signal saves → atomic_write_npy)
+    "hft-contracts>=2.7.0",
 
     # Shared metrics library (IC, R², regression metrics with NaN safety)
     "hft-metrics",

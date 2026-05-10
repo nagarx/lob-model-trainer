@@ -758,10 +758,14 @@ class SimpleModelTrainer:
                 f"divergence (loss/learning rate/feature normalization)."
             ),
         )
-        np.save(signal_dir / "predicted_returns.npy", y_pred.astype(np.float64))
-        np.save(signal_dir / "regression_labels.npy", y.astype(np.float64))
-        np.save(signal_dir / "spreads.npy", spreads)
-        np.save(signal_dir / "prices.npy", prices)
+        # #PY-73 atomic writes — SIGKILL mid-write would leave partial .npy
+        # files that downstream backtester silently consumes. Migrated
+        # 2026-05-11 (hft-contracts v2.7.0).
+        from hft_contracts.atomic_io import atomic_write_npy
+        atomic_write_npy(signal_dir / "predicted_returns.npy", y_pred.astype(np.float64))
+        atomic_write_npy(signal_dir / "regression_labels.npy", y.astype(np.float64))
+        atomic_write_npy(signal_dir / "spreads.npy", spreads)
+        atomic_write_npy(signal_dir / "prices.npy", prices)
 
         # Lazy-import the SSoTs to avoid pulling exporter.py's PyTorch
         # dependencies into the sklearn path's module-load surface.
