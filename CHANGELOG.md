@@ -4,6 +4,100 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — Phase Y / γ-1 LITE / #PY-88 Phase 2 (2026-05-10 evening) — sklearn `LabelsConfig.return_type` axis closure + bundled top-level `return_type` emission
+
+**Fixed (#PY-88 — sklearn label dispatch honors `return_type`)**
+
+Pre-#PY-88, `simple_trainer._load_split` read cached `*_regression_labels.npy`
+regardless of `LabelsConfig.return_type`. γ-1 LITE empirical gate 2026-05-09
+night confirmed 6 sklearn arms produced **bit-exact identical metrics**
+across the `point_return / smoothed_return` axis values exercised by
+`hft-ops/experiments/sweeps/cycle5_multi_arm.yaml` (the bug applies
+symmetrically to all 4 values in `_VALID_RETURN_TYPES = {smoothed_return,
+point_return, mean_return, peak_return}` per `config/schema.py:325-327`)
+— proving the data-path was bypassing the configured return_type.
+
+This release closes the cosmetic-axis bug at the architectural source by
+mirroring the PyTorch path's 3-way dispatch on `LabelsConfig.source` ∈
+`{"auto", "precomputed", "forward_prices"}` (per `_VALID_SOURCES` enum at
+`config/schema.py:322-324`):
+
+- `src/lobtrainer/training/simple_trainer.py` — extended `_load_split` with
+  `labels_config: Optional[LabelsConfig] = None` keyword-only kwarg + NEW
+  helper `_resolve_labels_for_day` (~140 LOC) implementing 3-way dispatch:
+  - **Branch 1** (`labels_config is None` OR `source == "precomputed"`):
+    legacy cached `*_regression_labels.npy` path. Preserves pre-#PY-88
+    sklearn behavior + back-compat for flat-keyword `SimpleModelTrainer(...)`
+    construction (no `from_config`).
+  - **Branch 2** (`source == "forward_prices"`): ALWAYS recompute via
+    `LabelFactory.multi_horizon(forward_prices, horizons, k, return_type)`.
+    Mid-impl HIGH-1 fix added explicit `ValueError` BEFORE
+    `from_metadata` call when metadata lacks `forward_prices.exported=True`
+    — mirrors PyTorch path's `dataset.py:657-661` exactly for cross-trainer
+    UX symmetry (pre-fix sklearn raised `KeyError`, breaking parity).
+  - **Branch 3** (`source == "auto"`): recompute IF metadata declares
+    `forward_prices.exported=True` AND fp.npy exists; else fall back to
+    cached labels (legacy v2.2 export back-compat).
+- `setup()` lines 498-526 — passes `labels_config=self.config.data.labels`
+  to all 3 `_load_split` calls; legacy flat-keyword path passes None.
+- `k = ForwardPriceContract.smoothing_window_offset` ALWAYS from per-day
+  metadata (Bug-B2 invariant; mirrors PyTorch `dataset.py:421-422`).
+
+**Added (Step 3 — top-level `return_type` cosmetic emission)**
+
+- `src/lobtrainer/export/metadata.py::build_signal_metadata` — new optional
+  `return_type: Optional[str] = None` kwarg. When provided, emits at
+  `signal_metadata.json` top level for human-visible operator queries.
+  The `compatibility_fingerprint` already encodes this opaquely via
+  `compute_label_strategy_hash`'s `model_dump()` payload — top-level
+  string field aids backtester / ledger / dashboard filtering by
+  return_type axis without parsing the nested compatibility block.
+- `src/lobtrainer/training/simple_trainer.py::export_signals` (sklearn
+  path) + `src/lobtrainer/export/exporter.py::SignalExporter._build_metadata`
+  (PyTorch path) — both pass `return_type=labels_config.return_type`.
+
+**Tests added (27 new tests)**
+
+- `tests/test_simple_trainer.py:simple_data_dir` — fixture upgraded with
+  `*_forward_prices.npy` shape `(N, 306)` float64 (pseudo-random walk) +
+  metadata `forward_prices: {exported, smoothing_window_offset, max_horizon,
+  n_columns}` block + `horizons` list. Locks the `ForwardPriceContract`
+  invariant `n_columns == k + max_H + 1 = 306` (k=5, max_H=300).
+- `tests/test_simple_trainer_signal_metadata_compat.py:synthetic_data_dir`
+  + inline `basic_synthetic_60s` fixture in `TestSklearnDataSourceTagging
+  ::test_basic_prefix_data_dir_yields_off_exchange_tag` — same upgrade.
+- **NEW** `tests/test_simple_trainer_return_type.py` (27 tests across 5
+  classes): `TestSourceDispatch` (5 tests covering Branches 1/2/3) +
+  `TestReturnTypeDispatch` (cosmetic-axis bug fix proof + parametric
+  parity over 4 return_types × 3 horizons = 12 cases) +
+  `TestHorizonsTruthPin` (LabelsConfig.horizons override) +
+  `TestFailLoudGuards` (mid-impl MED-2 closure: 4 fail-loud guard tests
+  for missing fp.npy / missing block / block exported=false / unknown
+  source) + `TestSignalMetadataReturnTypeEmission` (parametric over 4
+  return_types verifying top-level field emission).
+
+**Test counts**: **1747 passed + 73 skipped** (was 1720 + 73 — net +27).
+
+**Cross-cycle bundle context**
+
+This release is Commit 3 of 3 in the Phase Y / γ-1 LITE close-out bundle:
+
+1. **hft-contracts `89ca163`** (PUSHED 2026-05-10) — `INDEX_SCHEMA_VERSION`
+   1.5.0→1.6.0 + `model_config_hash` top-level mirror in
+   `ExperimentRecord.index_entry()` projection (#PY-94 reframed closure).
+2. **hft-ops `097e83c`** (PUSHED 2026-05-10) — `--model-config-hash` CLI
+   filter on `ledger list` + `ExperimentLedger.filter` kwarg.
+3. **THIS lob-model-trainer commit** (#PY-88 sklearn return_type closure +
+   Step 3 top-level emission) + bundled hft-ops Agent C ledger gaps
+   closure (#PY-95 + #PY-96 + #PY-97 — see hft-ops/CHANGELOG.md).
+
+**Empirical validation gate** (Step 6 γ-1 LITE re-run, ~75-120 min compute):
+12-arm sweep verifies 6 sklearn arms produce 6 DISTINCT compatibility_fingerprint
+values (vs 2 pre-fix) + per-arm test_ic differing across return_type axis (vs
+bit-exact identical pre-fix). Closes #PY-88 with empirical proof.
+
+---
+
 ## [Unreleased] — HYBRID Phase α-1.2 (2026-05-10) — config-loader symlink-source preservation (#PY-83-cluster)
 
 **Fixed (#PY-83-cluster — α-1.2 follow-up to α-3 / #PY-79)**

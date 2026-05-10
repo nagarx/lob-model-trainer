@@ -86,6 +86,18 @@ def build_signal_metadata(
     # ``compute_experiment_provenance_hash`` composer. Per hft-rules §1
     # "single source of truth" + §0 reuse-first.
     model_config_hash: Optional[str] = None,
+    # Phase Y / γ-1 LITE / #PY-88 (2026-05-10): top-level ``return_type``
+    # human-visible field — ``LabelsConfig.return_type`` value (one of
+    # ``smoothed_return | point_return | mean_return | peak_return`` per
+    # ``LabelFactory._RETURN_FUNCTIONS``). The ``compatibility_fingerprint``
+    # already encodes this via ``compute_label_strategy_hash``'s
+    # ``model_dump()`` payload (opaque SHA-256), but a top-level string
+    # field aids backtester / ledger / dashboard queries that filter by
+    # return_type axis without parsing the nested ``compatibility`` block.
+    # Additive; pre-#PY-88 consumers ignore. Validated as a known
+    # return_type by the producer's ``LabelsConfig._VALID_RETURN_TYPES``
+    # ClassVar.
+    return_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build comprehensive signal metadata JSON.
 
@@ -192,5 +204,10 @@ def build_signal_metadata(
     # 64-lowercase-hex SHA-256 by the consumer's CONTENT_HASH_RE gate.
     if model_config_hash is not None:
         meta["model_config_hash"] = model_config_hash
+
+    # Phase Y / γ-1 LITE / #PY-88 (2026-05-10): top-level human-visible
+    # ``return_type`` field — see kwarg docstring above.
+    if return_type is not None:
+        meta["return_type"] = return_type
 
     return meta

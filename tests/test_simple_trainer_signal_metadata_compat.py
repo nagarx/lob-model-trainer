@@ -63,8 +63,24 @@ def synthetic_data_dir(tmp_path):
     with schema_version=3.0 + horizons=[10,60,300] so that
     ``_validate_day_metadata`` (now Phase X.2.A.2 SSoT shim → hft_contracts)
     accepts the metadata.
+
+    Phase Y / γ-1 LITE / #PY-88 (2026-05-10): fixture upgraded with
+    `*_forward_prices.npy` + `forward_prices` metadata block + `horizons`
+    list so `LabelsConfig(source="forward_prices")` (the canonical
+    convention used by `_build_synthetic_config` below) triggers the
+    `_resolve_labels_for_day` dispatch via LabelFactory.multi_horizon
+    rather than the legacy cached-NPY path. Pseudo-random walk around
+    130.0 USD with step-std 0.01 ≈ 8 bps/step — non-degenerate at all 4
+    LabelFactory return_type variants. Shape `(N, k+max_H+1) = 306`
+    locks the `ForwardPriceContract.from_metadata` invariant.
     """
     rng = np.random.default_rng(42)
+
+    # Phase Y / γ-1 LITE / #PY-88 forward_prices fixture constants —
+    # mirror test_simple_trainer.py::simple_data_dir:
+    K = 5  # smoothing_window_offset (ForwardPriceContract invariant)
+    MAX_H = max(HORIZONS)  # = 300
+    N_FP_COLS = K + MAX_H + 1  # 306
 
     for split in ["train", "val", "test"]:
         split_dir = tmp_path / split
@@ -75,13 +91,25 @@ def synthetic_data_dir(tmp_path):
             sequences[:, -1, 40] = 130.0 + rng.standard_normal(n).astype(np.float32) * 0.5
             sequences[:, -1, 42] = 2.5 + rng.standard_normal(n).astype(np.float32) * 0.1
             reg_labels = rng.standard_normal((n, NUM_HORIZONS)).astype(np.float64)
+            forward_prices = (
+                130.0
+                + np.cumsum(rng.standard_normal((n, N_FP_COLS)) * 0.01, axis=1)
+            ).astype(np.float64)
             np.save(split_dir / f"{day}_sequences.npy", sequences)
             np.save(split_dir / f"{day}_regression_labels.npy", reg_labels)
+            np.save(split_dir / f"{day}_forward_prices.npy", forward_prices)
             metadata = {
                 "day": day,
                 "n_sequences": n,
                 "n_features": NUM_FEATURES,
                 "schema_version": "3.0",  # Phase G G.6.A bump
+                "horizons": HORIZONS,
+                "forward_prices": {
+                    "exported": True,
+                    "smoothing_window_offset": K,
+                    "max_horizon": MAX_H,
+                    "n_columns": N_FP_COLS,
+                },
             }
             with open(split_dir / f"{day}_metadata.json", "w") as f:
                 json.dump(metadata, f)
@@ -610,11 +638,22 @@ class TestSklearnDataSourceTagging:
 
     def test_basic_prefix_data_dir_yields_off_exchange_tag(self, tmp_path):
         """Off-exchange convention: directory basename starts with 'basic_'.
-        derive_data_source(...) returns 'off_exchange'."""
+        derive_data_source(...) returns 'off_exchange'.
+
+        Phase Y / γ-1 LITE / #PY-88 (2026-05-10): inline fixture upgraded
+        with forward_prices.npy + metadata.forward_prices block + horizons,
+        mirroring the synthetic_data_dir module fixture so
+        `LabelsConfig(source="forward_prices")` from `_build_synthetic_config`
+        triggers the `_resolve_labels_for_day` Branch-2 dispatch.
+        """
         # Build a fixture with basic_-prefixed parent dir
         rng = np.random.default_rng(42)
         basic_root = tmp_path / "basic_synthetic_60s"
         basic_root.mkdir()
+        # Phase Y / γ-1 LITE / #PY-88 forward_prices fixture constants:
+        K = 5
+        MAX_H = max(HORIZONS)
+        N_FP_COLS = K + MAX_H + 1  # 306
         for split in ["train", "val", "test"]:
             split_dir = basic_root / split
             split_dir.mkdir()
@@ -624,13 +663,25 @@ class TestSklearnDataSourceTagging:
                 sequences[:, -1, 40] = 130.0 + rng.standard_normal(n).astype(np.float32) * 0.5
                 sequences[:, -1, 42] = 2.5 + rng.standard_normal(n).astype(np.float32) * 0.1
                 reg_labels = rng.standard_normal((n, NUM_HORIZONS)).astype(np.float64)
+                forward_prices = (
+                    130.0
+                    + np.cumsum(rng.standard_normal((n, N_FP_COLS)) * 0.01, axis=1)
+                ).astype(np.float64)
                 np.save(split_dir / f"{day}_sequences.npy", sequences)
                 np.save(split_dir / f"{day}_regression_labels.npy", reg_labels)
+                np.save(split_dir / f"{day}_forward_prices.npy", forward_prices)
                 metadata = {
                     "day": day,
                     "n_sequences": n,
                     "n_features": NUM_FEATURES,
                     "schema_version": "3.0",
+                    "horizons": HORIZONS,
+                    "forward_prices": {
+                        "exported": True,
+                        "smoothing_window_offset": K,
+                        "max_horizon": MAX_H,
+                        "n_columns": N_FP_COLS,
+                    },
                 }
                 with open(split_dir / f"{day}_metadata.json", "w") as f:
                     json.dump(metadata, f)

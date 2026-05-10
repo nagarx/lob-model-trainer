@@ -30,6 +30,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from lobtrainer.config import ExperimentConfig
+    from lobtrainer.config.schema import LabelsConfig
 
 # Phase IV (2026-04-20): canonical SSoT is ``hft_metrics.temporal``. The legacy
 # ``lobmodels.features.temporal`` path is a re-export shim that emits a
@@ -61,13 +62,45 @@ except ImportError:
 from hft_contracts import SCHEMA_VERSION as _CONTRACT_SCHEMA_VERSION
 
 
-def _load_split(data_dir: Path, split: str, horizon_idx: int = 0, max_days: int = None):
+def _load_split(
+    data_dir: Path,
+    split: str,
+    horizon_idx: int = 0,
+    max_days: int = None,
+    *,
+    labels_config: Optional["LabelsConfig"] = None,
+):
     """Load sequences and regression labels for one split.
 
     Validates each day's metadata against the pipeline contract before
     loading any numpy arrays (fail-fast at the boundary per hft-rules §8).
     A schema_version mismatch (e.g., loading pre-Phase-O v2.2 exports against
     the current v3.0 contract) raises ContractError up to the caller.
+
+    Phase Y / γ-1 LITE / #PY-88 (2026-05-10): when ``labels_config`` is
+    provided AND its ``source`` resolves to forward_prices (explicit
+    ``"forward_prices"`` OR ``"auto"`` with
+    ``metadata.forward_prices.exported``), labels are RECOMPUTED via
+    ``LabelFactory.multi_horizon(forward_prices, horizons, k,
+    labels_config.return_type)`` mirroring the PyTorch path at
+    ``dataset.py:387-510``. This honors ``LabelsConfig.return_type``
+    (``point_return`` / ``smoothed_return`` / ``mean_return`` /
+    ``peak_return``) which was COSMETIC for sklearn pre-#PY-88 (γ-1
+    LITE empirical confirmation 2026-05-09 night: 6 sklearn arms
+    produced bit-exact identical metrics across the return_type axis
+    because this code path read cached ``*_regression_labels.npy``
+    regardless of return_type).
+
+    Back-compat: when ``labels_config is None`` (legacy flat-keyword
+    construction without ``from_config``) OR ``labels_config.source ==
+    "precomputed"`` (explicit cache opt-in matching
+    ``LabelsConfig._VALID_SOURCES``), the cached
+    ``*_regression_labels.npy`` path is preserved.
+
+    ``k`` (smoothing_window_offset) is ALWAYS read from
+    ``ForwardPriceContract.smoothing_window_offset`` (per-day metadata),
+    NEVER from user config — same Bug-B2 invariant the PyTorch path
+    enforces at ``dataset.py:421-422``.
     """
     split_dir = data_dir / split
     meta_files = sorted(split_dir.glob("*_metadata.json"))
@@ -91,7 +124,17 @@ def _load_split(data_dir: Path, split: str, horizon_idx: int = 0, max_days: int 
         for _w in validate_idx_97_reserved(seq_path, strict=False):
             logger.warning("idx-97 contract warning (%s): %s", day, _w)
         seq = np.load(seq_path, mmap_mode="r")
-        reg = np.load(split_dir / f"{day}_regression_labels.npy")
+
+        # Phase Y / γ-1 LITE / #PY-88 (2026-05-10): source-dispatched
+        # label derivation. Mirrors PyTorch dataset.py:650-693 3-way
+        # dispatch (auto / forward_prices / labels).
+        reg = _resolve_labels_for_day(
+            split_dir=split_dir,
+            day=day,
+            metadata=m,
+            labels_config=labels_config,
+        )
+
         all_seqs.append(seq)
         all_labels.append(reg[:, horizon_idx])
         all_spreads.append(seq[:, -1, SPREAD_BPS_IDX].astype(np.float64))
@@ -103,6 +146,147 @@ def _load_split(data_dir: Path, split: str, horizon_idx: int = 0, max_days: int 
         np.concatenate(all_spreads, axis=0),
         np.concatenate(all_prices, axis=0),
     )
+
+
+def _resolve_labels_for_day(
+    *,
+    split_dir: Path,
+    day: str,
+    metadata: Dict[str, Any],
+    labels_config: Optional["LabelsConfig"],
+) -> np.ndarray:
+    """Resolve regression labels for a single day, dispatching on
+    ``LabelsConfig.source``.
+
+    Phase Y / γ-1 LITE / #PY-88 (2026-05-10) helper extracted so the
+    dispatch logic is visible at the per-day grain (mirrors PyTorch
+    ``dataset.py:650-693``). Three branches mapping to
+    ``LabelsConfig._VALID_SOURCES = {"auto", "precomputed", "forward_prices"}``:
+
+    1. ``labels_config is None`` OR ``source == "precomputed"`` →
+       legacy cached ``*_regression_labels.npy`` path. Preserves
+       pre-#PY-88 sklearn behavior for back-compat with flat-keyword
+       construction (no ``from_config``).
+    2. ``source == "forward_prices"`` → ALWAYS recompute via
+       ``LabelFactory.multi_horizon`` (raises if forward_prices.npy
+       missing or metadata lacks horizons).
+    3. ``source == "auto"`` → recompute IF metadata declares
+       ``forward_prices.exported = true`` AND the file exists; else
+       fall back to cached labels.
+
+    ``k`` ALWAYS from ``ForwardPriceContract.smoothing_window_offset``
+    (Bug-B2 invariant). Returns ``[N, n_horizons]`` float64 bps.
+
+    Raises:
+        ContractError: metadata missing horizons + source=forward_prices.
+        ValueError: LabelFactory produces non-finite values, or
+            ``source`` is unknown.
+        FileNotFoundError: forward_prices required but file missing.
+    """
+    fp_path = split_dir / f"{day}_forward_prices.npy"
+    cached_path = split_dir / f"{day}_regression_labels.npy"
+
+    # Branch 1: legacy / explicit cache opt-in. Matches PyTorch path's
+    # `else` branch in dataset.py:650-693 which handles "precomputed"
+    # uniformly with auto-without-fp via the cached labels code path.
+    if labels_config is None or labels_config.source == "precomputed":
+        return np.load(cached_path)
+
+    # Branches 2 + 3: determine if we use forward_prices.
+    if labels_config.source == "forward_prices":
+        # Phase Y / γ-1 LITE / #PY-88 mid-impl HIGH-1 (2026-05-10):
+        # explicit fail-loud BEFORE attempting LabelFactory dispatch
+        # mirrors PyTorch path's `dataset.py:657-661` ValueError exactly.
+        # Pre-fix: would raise KeyError from ForwardPriceContract.from_metadata
+        # when metadata lacks `forward_prices` block — same fail-loud
+        # behavior but breaks cross-trainer UX symmetry (sklearn KeyError vs
+        # PyTorch ValueError on identical misconfig).
+        fp_meta = metadata.get("forward_prices", {})
+        if not (isinstance(fp_meta, dict) and fp_meta.get("exported", False)):
+            raise ValueError(
+                f"#PY-88 sklearn label dispatch for {day}: "
+                f"LabelsConfig.source='forward_prices' but metadata does NOT "
+                f"declare forward_prices.exported=True. Either re-export the "
+                f"corpus with forward_prices enabled OR set "
+                f"LabelsConfig.source='precomputed' to use cached labels. "
+                f"(Mirrors PyTorch path at dataset.py:657-661 for "
+                f"cross-trainer UX symmetry.)"
+            )
+        use_fp = True  # mandatory; will raise on missing file
+    elif labels_config.source == "auto":
+        fp_meta = metadata.get("forward_prices", {})
+        meta_declares_fp = (
+            isinstance(fp_meta, dict) and fp_meta.get("exported", False)
+        )
+        use_fp = meta_declares_fp and fp_path.exists()
+    else:
+        # Defensive — unreachable when LabelsConfig validates source at
+        # construction (Pydantic _VALID_SOURCES enum). Locked by
+        # tests/test_simple_trainer_return_type.py::TestFailLoudGuards.
+        raise ValueError(
+            f"#PY-88 sklearn label dispatch: unknown LabelsConfig.source "
+            f"{labels_config.source!r} for {day}. Expected 'auto', "
+            f"'forward_prices', or 'precomputed' (per "
+            f"LabelsConfig._VALID_SOURCES)."
+        )
+
+    if not use_fp:
+        # auto-fallback to cached labels when metadata doesn't declare
+        # forward_prices (legacy v2.2 exports or partial v3p0).
+        return np.load(cached_path)
+
+    # Mirrors dataset.py:_compute_labels_from_forward_prices.
+    from hft_contracts import ForwardPriceContract, LabelFactory
+    from hft_contracts.validation import ContractError
+
+    # Memory-bound load: forward_prices.npy may be ~10x larger than
+    # cached labels (300+ horizon columns vs 3-5). mmap keeps RAM bounded
+    # across 230-day train concatenation.
+    fp = np.load(fp_path, mmap_mode="r")
+    contract = ForwardPriceContract.from_metadata(metadata)
+    k = contract.smoothing_window_offset
+
+    # Resolve horizons: user override > metadata.horizons > metadata.labeling.horizons.
+    if labels_config.horizons:
+        horizons = list(labels_config.horizons)
+    else:
+        horizons = list(metadata.get("horizons") or [])
+        if not horizons:
+            labeling = metadata.get("labeling", {})
+            if isinstance(labeling, dict):
+                horizons = list(labeling.get("horizons") or [])
+        if not horizons:
+            label_section = metadata.get("label_config", {})
+            if isinstance(label_section, dict):
+                horizons = list(label_section.get("horizons") or [])
+
+    if not horizons:
+        raise ContractError(
+            f"#PY-88 sklearn label dispatch for {day}: metadata is "
+            f"missing horizons (checked: metadata['horizons'], "
+            f"metadata['labeling']['horizons'], "
+            f"metadata['label_config']['horizons']). Cannot dispatch "
+            f"LabelFactory.multi_horizon."
+        )
+
+    # np.asarray converts the mmap view to a writable ndarray expected
+    # by LabelFactory; no copy occurs unless LabelFactory mutates.
+    reg = LabelFactory.multi_horizon(
+        np.asarray(fp), horizons, k, labels_config.return_type
+    )
+
+    # Defense-in-depth — Pre-T9 validation in LabelFactory.multi_horizon
+    # should catch this, but explicit check here mirrors PyTorch path
+    # at dataset.py:466-475.
+    if not np.isfinite(reg).all():
+        raise ValueError(
+            f"#PY-88 LabelFactory.multi_horizon produced non-finite "
+            f"values for {day}: horizons={horizons}, k={k}, "
+            f"return_type={labels_config.return_type!r}. Verify "
+            f"forward_prices contains no NaN/Inf."
+        )
+
+    return reg
 
 
 def _compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
@@ -338,12 +522,32 @@ class SimpleModelTrainer:
                 )
 
         logger.info("Loading data...")
+        # Phase Y / γ-1 LITE / #PY-88 (2026-05-10): pass labels_config to
+        # activate source-dispatched label derivation. When config is
+        # populated (from_config path) AND source resolves to forward_prices,
+        # _load_split recomputes labels via LabelFactory.multi_horizon
+        # honoring LabelsConfig.return_type. When config is None (legacy
+        # flat-keyword construction) OR source="precomputed" (per
+        # LabelsConfig._VALID_SOURCES), legacy cached
+        # *_regression_labels.npy path preserved for back-compat.
+        labels_config_for_dispatch = (
+            self.config.data.labels if self.config else None
+        )
         self._seq_train, self._y_train, self._spreads_train, self._prices_train = \
-            _load_split(self.data_dir, "train", self.horizon_idx)
+            _load_split(
+                self.data_dir, "train", self.horizon_idx,
+                labels_config=labels_config_for_dispatch,
+            )
         self._seq_val, self._y_val, _, _ = \
-            _load_split(self.data_dir, "val", self.horizon_idx)
+            _load_split(
+                self.data_dir, "val", self.horizon_idx,
+                labels_config=labels_config_for_dispatch,
+            )
         self._seq_test, self._y_test, self._spreads_test, self._prices_test = \
-            _load_split(self.data_dir, "test", self.horizon_idx)
+            _load_split(
+                self.data_dir, "test", self.horizon_idx,
+                labels_config=labels_config_for_dispatch,
+            )
 
         logger.info(f"Train: {len(self._y_train):,}, Val: {len(self._y_val):,}, Test: {len(self._y_test):,}")
 
@@ -614,6 +818,23 @@ class SimpleModelTrainer:
             else None
         )
 
+        # Phase Y / γ-1 LITE / #PY-88 (2026-05-10): top-level human-visible
+        # ``return_type`` field. Read from ``LabelsConfig.return_type`` when
+        # ``self.config`` is non-None; legacy flat-keyword construction
+        # passes None (additive emission — pre-#PY-88 consumers ignore).
+        # The compat fingerprint already encodes return_type via
+        # ``compute_label_strategy_hash`` opaque SHA — the top-level field
+        # adds operator-readable surface for ledger queries.
+        rt_string = (
+            self.config.data.labels.return_type
+            if (
+                self.config is not None
+                and getattr(self.config.data, "labels", None) is not None
+                and getattr(self.config.data.labels, "return_type", None) is not None
+            )
+            else None
+        )
+
         metadata = build_signal_metadata(
             model_type=self.model_type,
             model_name=self.model.name,
@@ -636,6 +857,7 @@ class SimpleModelTrainer:
             feature_set_ref=fs_ref_dict,
             data_source=compat.data_source if compat is not None else None,
             calibration_method=None,  # sklearn variance_match not yet wired
+            return_type=rt_string,
         )
         atomic_write_json(signal_dir / "signal_metadata.json", metadata)
 

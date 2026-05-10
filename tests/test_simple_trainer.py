@@ -52,13 +52,30 @@ def simple_data_dir(tmp_path):
     """Create synthetic .npy data in the format _load_split expects.
 
     Directory structure:
-        {tmp_path}/train/{day}_sequences.npy    [N, T, F] float32
-        {tmp_path}/train/{day}_regression_labels.npy  [N, H] float64
-        {tmp_path}/train/{day}_metadata.json    {"day": "2025-01-01", ...}
+        {tmp_path}/train/{day}_sequences.npy        [N, T, F] float32
+        {tmp_path}/train/{day}_regression_labels.npy [N, H] float64
+        {tmp_path}/train/{day}_forward_prices.npy   [N, k+max_H+1=306] float64
+        {tmp_path}/train/{day}_metadata.json        {"day", "horizons",
+                                                     "forward_prices": {...}, ...}
         {tmp_path}/val/...
         {tmp_path}/test/...
+
+    Phase Y / γ-1 LITE / #PY-88 (2026-05-10): fixture upgraded with
+    `*_forward_prices.npy` + `forward_prices` metadata block + `horizons`
+    list so `_resolve_labels_for_day` Branch 2 (source="forward_prices")
+    + Branch 3 (source="auto") work end-to-end. Pseudo-random walk
+    around 130.0 USD ensures non-degenerate labels for all 4 LabelFactory
+    return_type variants. Shape `(N, k+max_H+1) = 306` locks the
+    `ForwardPriceContract.from_metadata` invariant
+    (n_columns == smoothing_window_offset + max_horizon + 1).
     """
     rng = np.random.default_rng(42)
+
+    # Phase Y / γ-1 LITE / #PY-88 forward_prices fixture constants:
+    # k=5 matches v3p0 production exports; max_H=300 matches HORIZONS[2].
+    K = 5  # smoothing_window_offset (ForwardPriceContract invariant)
+    MAX_H = max(HORIZONS)  # = 300 — locks horizon-3 column index < N_FP_COLS
+    N_FP_COLS = K + MAX_H + 1  # 306 — ForwardPriceContract.__post_init__ check
 
     for split in ["train", "val", "test"]:
         split_dir = tmp_path / split
@@ -75,14 +92,38 @@ def simple_data_dir(tmp_path):
 
             reg_labels = rng.standard_normal((n, NUM_HORIZONS)).astype(np.float64)
 
+            # Pseudo-random walk: base=130.0 USD, step-std=0.01 USD ≈ 8 bps
+            # per timestep. cumsum produces non-degenerate returns at all
+            # horizons. Max walk at H=300: sqrt(300)*0.01 ≈ 0.17 USD ≈ 130
+            # bps — well within reasonable test bounds and bounded under
+            # the LabelFactory.multi_horizon post-finite-check.
+            forward_prices = (
+                130.0
+                + np.cumsum(rng.standard_normal((n, N_FP_COLS)) * 0.01, axis=1)
+            ).astype(np.float64)
+
             np.save(split_dir / f"{day}_sequences.npy", sequences)
             np.save(split_dir / f"{day}_regression_labels.npy", reg_labels)
+            np.save(split_dir / f"{day}_forward_prices.npy", forward_prices)
 
             metadata = {
                 "day": day,
                 "n_sequences": n,
                 "n_features": NUM_FEATURES,
                 "schema_version": "3.0",  # G.6.A bump
+                # Phase Y / γ-1 LITE / #PY-88: top-level horizons consumed
+                # by `_resolve_labels_for_day` Branch 2/3 + by
+                # `ForwardPriceContract.from_metadata`.
+                "horizons": HORIZONS,
+                # Phase Y / γ-1 LITE / #PY-88: declares forward_prices
+                # availability for "auto" source dispatch + locks the
+                # k/max_H/n_columns invariant for "forward_prices" source.
+                "forward_prices": {
+                    "exported": True,
+                    "smoothing_window_offset": K,
+                    "max_horizon": MAX_H,
+                    "n_columns": N_FP_COLS,
+                },
             }
             with open(split_dir / f"{day}_metadata.json", "w") as f:
                 json.dump(metadata, f)

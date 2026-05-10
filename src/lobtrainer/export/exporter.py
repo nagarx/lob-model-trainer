@@ -763,6 +763,16 @@ class SignalExporter:
         # under loss-tuning param changes.
         model_cfg_hash = compute_model_config_hash(config.model)
 
+        # Phase Y / γ-1 LITE / #PY-88 (2026-05-10): top-level human-visible
+        # ``return_type`` symmetric with sklearn path's
+        # ``simple_trainer.export_signals`` emission. The fingerprint
+        # already encodes return_type opaquely; this adds a string-readable
+        # surface for ledger / backtester / dashboard queries that filter
+        # by return_type axis.
+        rt_string = getattr(
+            getattr(config.data, "labels", None), "return_type", None
+        )
+
         return build_signal_metadata(
             model_type=model_type_str,
             model_name=str(model_name),
@@ -794,4 +804,6 @@ class SignalExporter:
             calibration_method=calibration_method,
             # Phase Y deployment (2026-05-05): model-axis identity hash
             model_config_hash=model_cfg_hash,
+            # Phase Y / γ-1 LITE / #PY-88 (2026-05-10): top-level return_type
+            return_type=rt_string,
         )
