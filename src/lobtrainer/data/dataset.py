@@ -1534,10 +1534,15 @@ def create_dataloaders(
     horizon_idx: Optional[int] = 0,
     return_labels_as_dict: bool = False,
     labeling_strategy: Optional[str] = None,
+    seed: int = 42,
 ) -> Dict[str, torch.utils.data.DataLoader]:
     """
     Create DataLoaders for train/val/test splits.
-    
+
+    NOTE: This is a legacy public API for ad-hoc users. New training code should
+    use ``Trainer._create_dataloaders`` (the canonical production path with
+    full feature-set resolution + normalization + multi-source support).
+
     Args:
         data_dir: Root data directory
         batch_size: Batch size
@@ -1552,24 +1557,33 @@ def create_dataloaders(
                                {horizon_value: labels [B]} dict. Required for HMHP.
         labeling_strategy: Labeling strategy ('tlob', 'opportunity', 'triple_barrier').
                           If None, auto-detects from metadata.
-    
+        seed: Phase DESIGN-1 NEW-DET-1 + V2 SB-3 (2026-05-10) — base seed for
+              DataLoader determinism. Both ``worker_init_fn`` (per-worker
+              offset-seed) AND ``generator`` (shuffle order) are wired so
+              ad-hoc callers get bit-exact reproducible batch ordering.
+              Default 42 mirrors ``set_seed`` default. Pass an explicit seed
+              for sweeps or experiments. Reference:
+              https://pytorch.org/docs/stable/notes/randomness.html#dataloader
+
     Returns:
         Dict with 'train', 'val', 'test' DataLoaders
     """
     from torch.utils.data import DataLoader
-    
+
+    from lobtrainer.utils.reproducibility import create_worker_init_fn
+
     loaders = {}
-    
+
     # Use custom collate function for HMHP dict labels
     collate_fn = _hmhp_collate_fn if return_labels_as_dict else None
-    
+
     for split in ["train", "val", "test"]:
         try:
             days = load_split_data(data_dir, split, validate=True)
         except FileNotFoundError:
             logger.info(f"Split '{split}' not found, skipping")
             continue
-        
+
         # Choose dataset type
         if use_sequences:
             try:
@@ -1600,7 +1614,11 @@ def create_dataloaders(
                 horizon_idx=horizon_idx,
                 labeling_strategy=labeling_strategy,
             )
-        
+
+        # Phase DESIGN-1 NEW-DET-1 + V2 SB-3 (2026-05-10): wire BOTH
+        # worker_init_fn and generator. Same pattern as Trainer at
+        # trainer.py:843-853. Without both, num_workers>0 is silently
+        # non-deterministic.
         loaders[split] = DataLoader(
             dataset,
             batch_size=batch_size,
@@ -1609,8 +1627,10 @@ def create_dataloaders(
             pin_memory=pin_memory,
             drop_last=(split == "train"),
             collate_fn=collate_fn,
+            worker_init_fn=create_worker_init_fn(seed),
+            generator=torch.Generator().manual_seed(seed),
         )
-    
+
     return loaders
 
 

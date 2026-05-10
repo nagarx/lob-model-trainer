@@ -902,6 +902,35 @@ class SimpleModelTrainer:
         ``<output_dir>/checkpoints/best.pkl`` matching the legacy
         ``save()`` location.
 
+        Phase DESIGN-1 A.3 REDESIGN (2026-05-10) — sklearn RNG-independence:
+        Unlike the PyTorch path (``Trainer._build_checkpoint_dict`` at
+        ``trainer.py:1318`` embeds ``rng_state`` via ``get_seed_state()``
+        for cross-process determinism + Option-C deferred restore), this
+        method does NOT capture global python/numpy/torch RNG state.
+        The sklearn models in the registry are RNG-free at predict-time
+        (verified by ground-truth ``Agent X`` 2026-05-10 + locked by
+        ``test_simple_trainer.py::TestSklearnRngIndependence`` regression
+        test):
+
+          - ``TemporalRidge`` (``lob-models/src/lobmodels/models/simple/temporal_ridge.py:102``)
+            constructs ``Ridge(alpha=...)`` — closed-form solver
+            ``(X^T X + αI)^{-1} X^T y`` with NO ``random_state`` argument.
+
+          - ``TemporalGradBoost`` (``lob-models/src/lobmodels/models/simple/temporal_gradboost.py:116``)
+            hardcodes ``random_state=42`` in the constructor and uses
+            ``np.random.RandomState(42)`` (line 137) for fit-time
+            subsampling — both HERMETIC, ignoring global RNG state.
+
+          - Both ``predict()`` paths are deterministic given the fitted
+            model (linear coefficient evaluation / tree traversal).
+
+        Capturing global RNG state in the sidecar would buy ZERO
+        determinism today. If a future sklearn-path model becomes
+        RNG-dependent at predict-time (e.g., XGBoost-on-CPU with
+        dropout, joblib parallel ensembles with non-fixed seeds), the
+        regression test will FAIL — forcing re-evaluation of this
+        decision per #PY-93 cycle.
+
         Args:
             path: Override default location. Parent directory is
                 created if missing.
@@ -930,6 +959,15 @@ class SimpleModelTrainer:
         # contract — same primitives, same fingerprint format.
         # Sidecar has its own schema_version='1.0' so future schema bumps
         # can migrate older sidecars.
+        #
+        # Phase DESIGN-1 A.3 REDESIGN (2026-05-10): sklearn RNG-independence.
+        # Sidecar deliberately omits ``rng_state_python`` + ``rng_state_numpy``
+        # keys (which the PyTorch path embeds at trainer.py:1318). See the
+        # ``save_checkpoint`` docstring above for the ground-truth analysis:
+        # TemporalRidge is closed-form (Ridge alpha solve), TemporalGradBoost
+        # has random_state=42 hardcoded + hermetic local RandomState — both
+        # are RNG-free at predict-time. Capturing global RNG would buy ZERO
+        # determinism. Locked by test_simple_trainer.py::TestSklearnRngIndependence.
         if self.config is not None:
             from hft_contracts.atomic_io import atomic_write_json
             from lobtrainer.training.compatibility import (
@@ -946,6 +984,7 @@ class SimpleModelTrainer:
                     self.config.model
                 ),
                 "config": self.config.to_dict(),
+                # NOTE: rng_state intentionally absent per Phase DESIGN-1 A.3 REDESIGN.
             }
             atomic_write_json(sidecar_path, sidecar)
             logger.info(f"Saved Phase X.1 v2 sidecar to {sidecar_path}")

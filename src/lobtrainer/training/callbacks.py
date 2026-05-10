@@ -106,18 +106,62 @@ class Callback(ABC):
     def on_validation_end(self, epoch: int, logs: Dict[str, float]) -> None:
         """
         Called after validation is complete.
-        
+
         Args:
             epoch: Current epoch number
             logs: Dict with validation metrics
         """
         pass
-    
+
+    def state_dict(self) -> Dict[str, Any]:
+        """Return JSON-serializable callback state for checkpoint embedding.
+
+        Phase DESIGN-1 G-1 (2026-05-10): sister-site to RNG state in
+        checkpoint dict. Default returns empty dict — stateless callbacks
+        (e.g., ProgressCallback) need not override. Subclasses with
+        resume-relevant state (EarlyStopping wait_count + best_value,
+        ModelCheckpoint _best_value, MetricLogger _history) override to
+        return a JSON-serializable dict that ``load_state_dict`` consumes
+        on resume.
+
+        REUSES ``hft_contracts.atomic_io.atomic_write_json`` discipline:
+        returned dict MUST be canonical-JSON compatible (no tuples, no
+        ndarray, no Tensor). For numpy/torch state, convert via
+        ``.tolist()`` or skip entirely.
+
+        Returns:
+            Dict with arbitrary serializable callback state. Default
+            ``{}`` (empty) — back-compat with pre-G-1 callbacks; on
+            resume, ``load_state_dict({})`` is a no-op.
+        """
+        return {}
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """Restore callback state from checkpoint.
+
+        Phase DESIGN-1 G-1 (2026-05-10): inverse of ``state_dict``.
+        Default no-op — stateless callbacks need not override. Pre-G-1
+        checkpoints lack ``callback_state`` key, in which case the
+        Trainer skips this call entirely (back-compat preserved).
+
+        Subclasses MUST tolerate an empty / partial dict: when the
+        checkpoint was produced by a different version of this callback,
+        unknown keys should be ignored and missing keys should fall
+        back to current state. Per hft-rules §8 — never silently drop,
+        but tolerate forward-compat omissions.
+
+        Args:
+            state: Dict produced by a prior ``state_dict()`` call.
+                MUST tolerate empty dict (pre-G-1 checkpoint resumed
+                via post-G-1 trainer with state_dict-aware callback).
+        """
+        pass
+
     @property
     def should_stop(self) -> bool:
         """
         Whether training should stop.
-        
+
         Override this property to implement early stopping logic.
         The trainer checks this after each epoch.
         """
@@ -344,13 +388,77 @@ class EarlyStopping(Callback):
                 )
     
     def on_train_end(self) -> None:
-        """Restore best weights if applicable."""
+        """Restore best weights if applicable.
+
+        Phase DESIGN-1 G-1 mid-impl post-fix (2026-05-10) — CRITIQUE 3
+        closure: cross-process resume excludes ``_best_weights`` from
+        ``state_dict()`` by design (100MB-1GB bloat avoidance per Agent
+        Z). On post-resume train_end, ``_best_weights`` is ``None`` →
+        the existing branch silently does nothing → returned model =
+        last-epoch weights instead of operator-expected best-epoch
+        weights. Per hft-rules §8 ("never silently drop") + §11 ("docs
+        must reflect behavior"), surface the silent-degrade with a
+        WARNING when ``restore_best_weights=True`` was configured by
+        the operator but cannot be honored due to G-1's design choice.
+        """
+        if (
+            self.restore_best_weights
+            and self._best_weights is None
+            and self.trainer is not None
+            and getattr(self.trainer, "_resumed_from_checkpoint", False)
+        ):
+            logger.warning(
+                "EarlyStopping: restore_best_weights=True was configured but "
+                "_best_weights is None on a resumed run. Phase DESIGN-1 G-1 "
+                "deliberately excludes _best_weights from the checkpoint "
+                "callback_state dict (avoids 100MB-1GB bloat). Returned "
+                "model = LAST-epoch weights, NOT best-epoch weights. To "
+                "preserve best-weights restoration across resume, save the "
+                "best checkpoint via ModelCheckpoint(save_best_only=True) "
+                "and load THAT checkpoint instead of the last-epoch one."
+            )
+            return
         if self.restore_best_weights and self._best_weights is not None and self.trainer is not None:
             logger.info(
                 f"EarlyStopping: restoring best weights from epoch {self._state.best_epoch}"
             )
             self.trainer.model.load_state_dict(self._best_weights)
-    
+
+    def state_dict(self) -> Dict[str, Any]:
+        """Phase DESIGN-1 G-1 (2026-05-10): serialize patience tracking.
+
+        Returns 4 fields covering wait/best/stopped semantics. Deliberately
+        EXCLUDES ``_best_weights`` (model state_dict snapshot — typically
+        100 MB to 1 GB for TLOB/HMHP) to avoid checkpoint bloat. The
+        ``_best_weights`` snapshot can be reconstructed from the
+        checkpoint's own ``model_state_dict`` at resume time IF the
+        operator wants ``restore_best_weights=True`` post-resume. This
+        decision documented as a known limitation per Agent Z.
+        """
+        return {
+            "best_value": float(self._state.best_value),
+            "best_epoch": int(self._state.best_epoch),
+            "wait_count": int(self._state.wait_count),
+            "stopped": bool(self._state.stopped),
+        }
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """Phase DESIGN-1 G-1 (2026-05-10): restore patience tracking.
+
+        Tolerates empty / partial dict (forward-compat). Missing keys
+        keep their current __init__ defaults.
+        """
+        if not state:
+            return
+        if "best_value" in state:
+            self._state.best_value = float(state["best_value"])
+        if "best_epoch" in state:
+            self._state.best_epoch = int(state["best_epoch"])
+        if "wait_count" in state:
+            self._state.wait_count = int(state["wait_count"])
+        if "stopped" in state:
+            self._state.stopped = bool(state["stopped"])
+
     @property
     def should_stop(self) -> bool:
         return self._state.stopped
@@ -608,6 +716,35 @@ class ModelCheckpoint(Callback):
         """Path to the best checkpoint."""
         return self._best_checkpoint_path
 
+    def state_dict(self) -> Dict[str, Any]:
+        """Phase DESIGN-1 G-1 (2026-05-10): serialize best-tracking state.
+
+        Returns ``_best_value`` (float) + ``_best_checkpoint_path`` (str
+        or None for JSON serializability — Path → str). Deliberately
+        EXCLUDES ``_saved_checkpoints`` list (recreated naturally as new
+        checkpoints save during the resumed run).
+        """
+        return {
+            "best_value": float(self._best_value),
+            "best_checkpoint_path": (
+                str(self._best_checkpoint_path)
+                if self._best_checkpoint_path is not None
+                else None
+            ),
+        }
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """Phase DESIGN-1 G-1 (2026-05-10): restore best-tracking state."""
+        if not state:
+            return
+        if "best_value" in state:
+            self._best_value = float(state["best_value"])
+        if "best_checkpoint_path" in state:
+            ckpt_path = state["best_checkpoint_path"]
+            self._best_checkpoint_path = (
+                Path(ckpt_path) if ckpt_path is not None else None
+            )
+
 
 # =============================================================================
 # Logging Callbacks
@@ -688,6 +825,25 @@ class MetricLogger(Callback):
     def history(self) -> List[Dict[str, Any]]:
         """Training history as list of dicts."""
         return self._history
+
+    def state_dict(self) -> Dict[str, Any]:
+        """Phase DESIGN-1 G-1 (2026-05-10): serialize epoch-history list.
+
+        Useful for cross-process resume of plotting / monitoring tools
+        that want to render full training curves spanning the resume
+        boundary. ``_history`` is List[Dict] with JSON-native value types
+        (epoch int + metric floats) so direct round-trip is safe.
+        """
+        return {
+            "history": list(self._history),
+        }
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """Phase DESIGN-1 G-1 (2026-05-10): restore epoch-history list."""
+        if not state:
+            return
+        if "history" in state:
+            self._history = list(state["history"])
 
 
 class ProgressCallback(Callback):

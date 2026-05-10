@@ -283,12 +283,24 @@ class CVTrainer:
         fresh BaseModel instance without aliasing (no need for
         ``copy.deepcopy``).
         """
+        # Phase DESIGN-1 A.4 (2026-05-10): fail-loud BEFORE the model_copy
+        # materializes if the fold-seed sum overflows numpy's 2**32 ceiling.
+        # Operator might pass a huge ``train.seed`` value (e.g., from a sweep
+        # manifest using a hash-derived seed) where ``seed + fold_idx`` wraps
+        # silently. Without this check, downstream ``set_seed(fold_seed)``
+        # would either raise (post Phase A.1 validation) OR silently truncate
+        # via numpy's ``seed % 2**32`` legacy semantics depending on the
+        # call site. Validate at the construction boundary per hft-rules §5.
+        from lobtrainer.utils.reproducibility import validate_seed
+        fold_seed = self.config.train.seed + fold_idx
+        validate_seed(fold_seed)
+
         return self.config.model_copy(update={
             "output_dir": str(
                 Path(self.config.output_dir) / f"cv_fold_{fold_idx}"
             ),
             "train": self.config.train.model_copy(
-                update={"seed": self.config.train.seed + fold_idx}
+                update={"seed": fold_seed}
             ),
             "name": f"{self.config.name}_fold{fold_idx}",
         })

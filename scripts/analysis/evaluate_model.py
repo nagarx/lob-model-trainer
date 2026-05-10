@@ -70,7 +70,12 @@ def parse_args():
 
 def load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
     """Load model and config from checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    # Phase DESIGN-1 A.4 (2026-05-10): use canonical _safe_torch_load helper
+    # (pins weights_only=False for numpy-globals safety per Phase A.2 rng_state).
+    # Pre-A.4 used `torch.load(...)` with default weights_only=True (PyTorch
+    # >=2.6) which rejects rng_state numpy globals at deserialize time.
+    from lobtrainer.utils.reproducibility import _safe_torch_load
+    checkpoint = _safe_torch_load(checkpoint_path, map_location=device)
     
     # Get config
     config_dict = checkpoint.get('config')

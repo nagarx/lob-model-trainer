@@ -378,6 +378,124 @@ class TestCheckpointDictEndToEnd:
         assert loaded['compatibility'] is not None
 
 
+class TestRngStateInvariance:
+    """Phase DESIGN-1 Phase E Site 1 (2026-05-10) — lock the structural
+    invariant that ``rng_state`` and ``callback_state`` CANNOT enter
+    ``compatibility_fingerprint``.
+
+    Background: Phase A.2 added ``rng_state`` to checkpoint dict at
+    ``trainer.py:1353`` and Phase G-1 added ``callback_state`` at
+    ``trainer.py:1365``. The fingerprint is computed at ``trainer.py:1338``
+    via ``compat.fingerprint()`` — BEFORE either is added. Computation
+    order makes leakage structurally impossible TODAY.
+
+    But: a future refactor that moves fingerprint computation past line 1353
+    (e.g., adding "extended fingerprint" feature, signed checkpoints,
+    content-addressed storage) would silently leak ``rng_state`` /
+    ``callback_state`` into the fingerprint canonical-form. R-series ledger
+    entries become uncomparable. Phase-3-§3.3b-class conflation regression.
+
+    This class catches that future refactor at TYPE level by asserting that
+    ``CompatibilityContract`` has NO ``rng_state`` / ``callback_state``
+    fields — so ``compat.fingerprint()`` cannot include them by construction.
+
+    Per Wave 2.2 critique 2026-05-10: ship 1 test (compat_fingerprint side).
+    DROP redundant ``model_config_hash`` test — ``compute_model_config_hash``
+    reads ``model.config.params`` filtered by ``_LOSS_TUNING_KEYS`` denylist,
+    NEVER touches ``rng_state``; no plausible leakage path exists.
+    """
+
+    def test_compatibility_fingerprint_independent_of_rng_state(self):
+        """Structural lock: ``rng_state`` + ``callback_state`` NOT in
+        ``CompatibilityContract`` dataclass fields.
+
+        Three-way verification (single test for cohesion):
+          1. STRUCTURAL: ``CompatibilityContract`` has no ``rng_state`` /
+             ``callback_state`` fields → ``compat.fingerprint()`` cannot
+             include them by construction.
+          2. IDEMPOTENCY: ``compat.fingerprint()`` is deterministic
+             (locks the canonical-form ordering invariant).
+          3. SHAPE: fingerprint is 64-hex SHA-256.
+
+        Companion runtime-path lock at G-4
+        ``test_two_runs_same_seed_produce_tensor_equal_checkpoint`` —
+        if structural lock here passes but runtime side-check there fails,
+        a NON-rng-state non-determinism source has entered fingerprint inputs.
+        """
+        import dataclasses
+        from hft_contracts.compatibility import CompatibilityContract
+
+        # 1. STRUCTURAL — verify rng_state + callback_state NOT in dataclass fields
+        field_names = {
+            f.name for f in dataclasses.fields(CompatibilityContract)
+        }
+        assert "rng_state" not in field_names, (
+            "rng_state leaked into CompatibilityContract dataclass fields — "
+            "compat.fingerprint() would now include it, silently breaking "
+            "R-series ledger comparability across checkpoints with different "
+            "rng_state. Phase-3-§3.3b-class conflation regression. "
+            f"Current fields: {sorted(field_names)}"
+        )
+        assert "callback_state" not in field_names, (
+            "callback_state leaked into CompatibilityContract dataclass fields — "
+            "G-1 callback state must remain OBSERVATION not TREATMENT in the "
+            "fingerprint canonical-form. "
+            f"Current fields: {sorted(field_names)}"
+        )
+
+        # 2. IDEMPOTENCY — fingerprint is deterministic
+        compat = CompatibilityContract(
+            contract_version="3.0",
+            schema_version="3.0",
+            feature_count=98,
+            window_size=20,
+            feature_layout=(
+                "ask_prices_10_ask_sizes_10_bid_prices_10_bid_sizes_10"
+            ),
+            data_source="MBO",
+            label_strategy_hash="a" * 64,
+            calibration_method=None,
+            primary_horizon_idx=0,
+            horizons=(10, 60, 300),
+            normalization_strategy="hybrid",
+        )
+        fp_first = compat.fingerprint()
+        fp_second = compat.fingerprint()
+        assert fp_first == fp_second, (
+            "CompatibilityContract.fingerprint() is non-deterministic across "
+            "calls — non-canonical input ordering or hidden state."
+        )
+
+        # 3. SHAPE — fingerprint is 64-hex SHA-256
+        import re
+        assert re.match(r"^[0-9a-f]{64}$", fp_first), (
+            f"fingerprint not 64-char lowercase hex: {fp_first!r}"
+        )
+
+        # 4. BEHAVIORAL bonus — different documented field → different fingerprint
+        # (locks that the fingerprint isn't a constant)
+        compat_alt = CompatibilityContract(
+            contract_version="3.0",
+            schema_version="3.0",
+            feature_count=99,  # ← differs
+            window_size=20,
+            feature_layout=(
+                "ask_prices_10_ask_sizes_10_bid_prices_10_bid_sizes_10"
+            ),
+            data_source="MBO",
+            label_strategy_hash="a" * 64,
+            calibration_method=None,
+            primary_horizon_idx=0,
+            horizons=(10, 60, 300),
+            normalization_strategy="hybrid",
+        )
+        assert compat_alt.fingerprint() != fp_first, (
+            "Different feature_count produced identical fingerprint — "
+            "CompatibilityContract.fingerprint() is not actually reading "
+            "field values."
+        )
+
+
 class TestSignatureLock:
     """Phase X.1 v2 post-validation (Agent 3 Q14e + Agent 1 Q1) — lock the
     public API surface so future drift is caught at test time.

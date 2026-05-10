@@ -59,7 +59,13 @@ from lobtrainer.training.callbacks import (
 from lobtrainer.training.metrics import ClassificationMetrics
 from lobtrainer.training.simple_trainer import SimpleModelTrainer
 from lobtrainer.training.strategy import TrainingStrategy, create_strategy
-from lobtrainer.utils.reproducibility import set_seed
+from lobtrainer.utils.reproducibility import (
+    RngStatePolicy,
+    create_worker_init_fn,
+    get_seed_state,
+    set_seed,
+    set_seed_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +281,15 @@ class Trainer:
         self._val_loader: Optional[DataLoader] = None
         self._test_loader: Optional[DataLoader] = None
         self._strategy: Optional[TrainingStrategy] = None
+
+        # Phase DESIGN-1 A.2 (2026-05-10): Option-C ordering pattern.
+        # ``load_checkpoint`` writes ``_pending_rng_state`` here; ``setup()``
+        # consumes it AFTER ``set_seed`` (so the restored state OVERWRITES
+        # the seed-derived state, not the other way around). Workers spawn
+        # lazily on DataLoader iter — AFTER setup() — so they inherit the
+        # post-restore RNG state. Closes V2 critical #4 ordering hazard.
+        self._pending_rng_state: Optional[Dict[str, Any]] = None
+        self._rng_policy: RngStatePolicy = RngStatePolicy.GRACEFUL
         
         # Setup output directory
         self.output_dir = Path(config.output_dir)
@@ -817,6 +832,14 @@ class Trainer:
             # Use custom collate function for HMHP dict labels
             collate_fn = _hmhp_collate_fn if return_labels_as_dict else None
             
+            # Phase DESIGN-1 NEW-DET-1 + V2 SB-3 (2026-05-10): DataLoader
+            # determinism requires BOTH ``worker_init_fn`` (per-worker
+            # offset-seed for python.random + numpy + torch in each worker
+            # process) AND ``generator`` (controls the shuffle order in the
+            # main process — without it, shuffle uses ``torch.default_generator``
+            # which has been mutated by prior calls). Without both, training
+            # is silently non-deterministic at ``num_workers > 0``.
+            # Reference: https://pytorch.org/docs/stable/notes/randomness.html#dataloader
             loaders[split] = DataLoader(
                 dataset,
                 batch_size=batch_size,
@@ -825,6 +848,8 @@ class Trainer:
                 pin_memory=pin_memory,
                 drop_last=(split == "train"),
                 collate_fn=collate_fn,
+                worker_init_fn=create_worker_init_fn(self.config.train.seed),
+                generator=torch.Generator().manual_seed(self.config.train.seed),
             )
         
         return loaders
@@ -838,6 +863,22 @@ class Trainer:
         """
         # Set seed for reproducibility
         set_seed(self.config.train.seed)
+
+        # Phase DESIGN-1 A.2 (2026-05-10): Option-C ordering — consume any
+        # ``_pending_rng_state`` set by ``load_checkpoint`` AFTER ``set_seed``
+        # (so the restored state OVERWRITES the seed-derived state). DataLoader
+        # workers spawn lazily on iter (well after this point) so they inherit
+        # the post-restore RNG state. Closes V2 critical #4 ordering hazard.
+        if self._pending_rng_state is not None:
+            set_seed_state(
+                self._pending_rng_state,
+                policy=self._rng_policy,
+                fallback_seed=self.config.train.seed,
+            )
+            logger.info(
+                f"Restored rng_state from checkpoint (policy={self._rng_policy.value})."
+            )
+            self._pending_rng_state = None  # Consumed once
 
         # Phase X.3 Empirical Trust (2026-05-05) — Phase C.1: auto-derive
         # ``data.labels.horizons`` from the export's ``*_horizons.json``
@@ -1233,6 +1274,41 @@ class Trainer:
         # back-compat pattern: pre-N7 checkpoints lack the key entirely; this
         # silently skips validation rather than raising).
 
+        # Phase DESIGN-1 G-1 (2026-05-10): callback state capture — sister-site
+        # to rng_state. Class-name keying with explicit collision detection
+        # per Agent X recommendation: two callbacks of the same class
+        # (e.g., two EarlyStopping monitoring different metrics) cannot be
+        # disambiguated on resume — fail-loud per hft-rules §5 instead of
+        # silently overwriting. If you genuinely need two of the same class,
+        # subclass with a distinct __name__.
+        #
+        # Defensive ``getattr``: test-bypass paths (e.g.,
+        # ``Trainer.__new__(Trainer)`` shortcut to test internal helpers
+        # without going through full ``__init__``) may not set
+        # ``self.callbacks``. In that case, callback_state is empty —
+        # equivalent to a Trainer constructed with no callbacks.
+        callback_state: Dict[str, Dict[str, Any]] = {}
+        callbacks_list_obj = getattr(self, "callbacks", None)
+        if callbacks_list_obj is not None and callbacks_list_obj.callbacks:
+            seen_class_names: Dict[str, int] = {}
+            for cb in callbacks_list_obj.callbacks:
+                cb_name = type(cb).__name__
+                seen_class_names[cb_name] = seen_class_names.get(cb_name, 0) + 1
+            duplicates = [n for n, c in seen_class_names.items() if c > 1]
+            if duplicates:
+                raise ValueError(
+                    f"Duplicate callback class name(s) {duplicates!r} — "
+                    f"checkpoint resume cannot disambiguate via class-name "
+                    f"keying. Subclass with a distinct class name (e.g., "
+                    f"`class EarlyStoppingValLoss(EarlyStopping):`) or remove "
+                    f"the duplicate. Phase DESIGN-1 G-1 (2026-05-10)."
+                )
+            for cb in callbacks_list_obj.callbacks:
+                # Per-callback state_dict is a Dict[str, Any] of JSON-serializable
+                # values (per Callback.state_dict default contract). Pre-G-1
+                # callback subclasses returning {} are no-ops on resume.
+                callback_state[type(cb).__name__] = cb.state_dict()
+
         # Phase X.1 v2 post-validation fix (Agent 1 Q1 + Q1b 2026-05-04):
         # - `self.optimizer` is a lazy property (line 237) that CONSTRUCTS an
         #   optimizer on demand. Using it in `is not None` would always trigger
@@ -1267,6 +1343,26 @@ class Trainer:
             # carry None when no stats file is produced (NONE strategy etc.)
             # OR a 64-hex SHA-256 when a stats file exists.
             'normalization_stats_sha256': norm_stats_sha,
+            # Phase DESIGN-1 A.2 (2026-05-10): NEW-W3-1 closure — RNG state
+            # capture for byte-exact resume. Pre-A.2 checkpoints lack this
+            # key; load_checkpoint emits CheckpointMissingRngStateWarning
+            # and reseeds from config.train.seed (graceful degradation).
+            # IMPORTANT: rng_state lives at the checkpoint dict ROOT — it
+            # is NEVER part of compatibility_fingerprint or model_config_hash
+            # inputs (verified by Wave 4 hft-architect agent §1).
+            'rng_state': get_seed_state(),
+            # Phase DESIGN-1 G-1 (2026-05-10): callback_state — sister to
+            # rng_state. Cross-process resume preserves EarlyStopping wait_count,
+            # ModelCheckpoint best_value, MetricLogger history. Without this,
+            # X.1.K skip-reset only helped same-process resume (in-memory
+            # state preserved through on_train_start) — cross-process resume
+            # restored model_state_dict but NOT callback state (init defaults).
+            # Class-name keyed with collision detection above. Stateless
+            # callbacks (Callback.state_dict default = {}) appear with empty
+            # dict values — back-compat with pre-G-1 callbacks preserved.
+            # NEVER part of compatibility_fingerprint or model_config_hash
+            # (mirrors rng_state — observation, not treatment).
+            'callback_state': callback_state,
         }
 
     def save_checkpoint(self, path: Union[str, Path]) -> None:
@@ -1293,6 +1389,8 @@ class Trainer:
         path: Union[str, Path],
         load_optimizer: bool = True,
         strict_config: bool = False,
+        *,
+        rng_policy: RngStatePolicy = RngStatePolicy.GRACEFUL,
     ) -> None:
         """
         Load model from checkpoint.
@@ -1327,7 +1425,21 @@ class Trainer:
             CheckpointMissingFingerprintWarning,
         )
 
-        checkpoint = torch.load(path, map_location=self.device)
+        # Phase DESIGN-1 A.2 (2026-05-10) NEW-W3-6-2 closure: pin
+        # ``weights_only=False`` explicitly. PyTorch ≥2.6 default flipped to
+        # ``weights_only=True`` which rejects numpy/Python objects in the
+        # checkpoint pickle. Our checkpoints contain optimizer state +
+        # rng_state (numpy arrays) + compatibility dict + scheduler state +
+        # state dict — pickle is required, NOT just weights. The
+        # ``False`` value mirrors the explicit form used at
+        # ``scripts/analysis/evaluate_model.py:73`` and the rest of the
+        # production read path. The full ``_safe_torch_load`` helper
+        # (Phase A.4) can adopt this site as the canonical example later.
+        # Phase DESIGN-1 A.4 (2026-05-10): use canonical _safe_torch_load helper
+        # (consolidates the weights_only=False pin from A.2 NEW-W3-6-2 closure).
+        # Reuse-first per hft-rules §0 — 4 call sites past the DRY threshold.
+        from lobtrainer.utils.reproducibility import _safe_torch_load
+        checkpoint = _safe_torch_load(path, map_location=self.device)
 
         # Phase X.1 v2: 3-way contract validation BEFORE model_state_dict load.
         # Reads checkpoint['compatibility_fingerprint'] + ['model_config_hash'].
@@ -1491,6 +1603,85 @@ class Trainer:
         # can preserve state across the load_checkpoint → train() boundary.
         # The flag is reset back to False at the end of train() (consumed once).
         self._resumed_from_checkpoint = True
+
+        # Phase DESIGN-1 A.2 (2026-05-10): Option-C ordering pattern. Defer
+        # rng_state restoration to ``setup()`` so it happens AFTER
+        # ``set_seed(self.config.train.seed)`` (which would otherwise overwrite
+        # the restored state). DataLoader workers spawn lazily on iter — AFTER
+        # ``setup()`` constructs them — so they inherit the post-restore RNG
+        # state. Closes V2 critical #4 ordering hazard.
+        self._pending_rng_state = checkpoint.get('rng_state')
+        self._rng_policy = rng_policy
+
+        if self._pending_rng_state is None:
+            from lobtrainer.utils.reproducibility import (
+                CheckpointMissingRngStateWarning,
+            )
+            warnings.warn(
+                f"Checkpoint at {path} lacks 'rng_state' (pre-Phase-DESIGN-1 "
+                f"artifact). Resume will reseed from config.train.seed via "
+                f"setup() — RNG state will NOT be byte-exact restored.",
+                CheckpointMissingRngStateWarning,
+                stacklevel=2,
+            )
+
+        # Phase DESIGN-1 G-1 (2026-05-10): callback state immediate-apply.
+        # Unlike rng_state (Option-C deferred via _pending_rng_state because
+        # ``set_seed`` in setup() would overwrite restored state), callback
+        # state can be applied immediately at load_checkpoint time because:
+        #   (a) callbacks already exist (constructed at Trainer.__init__).
+        #   (b) X.1.K skip-reset sentinel (``_resumed_from_checkpoint=True``,
+        #       set just below) prevents on_train_start from clobbering the
+        #       just-restored state when train() runs.
+        # Pre-G-1 checkpoints lack 'callback_state' — emit one-time warning
+        # noting that callbacks resume with init defaults (X.1.K skip-reset
+        # already handles SAME-process resume; only CROSS-process loses).
+        #
+        # Defensive ``getattr``: same rationale as _build_checkpoint_dict —
+        # test-bypass paths may not set ``self.callbacks``.
+        callback_state = checkpoint.get('callback_state')
+        callbacks_list_obj = getattr(self, "callbacks", None)
+        if callback_state is None:
+            warnings.warn(
+                f"Checkpoint at {path} lacks 'callback_state' (pre-G-1 "
+                f"artifact). Cross-process resume will use init defaults "
+                f"for EarlyStopping/ModelCheckpoint/MetricLogger state. "
+                f"Same-process resume still works via X.1.K skip-reset.",
+                UserWarning,
+                stacklevel=2,
+            )
+        elif callbacks_list_obj is not None:
+            for cb in callbacks_list_obj.callbacks:
+                cb_name = type(cb).__name__
+                if cb_name in callback_state:
+                    cb.load_state_dict(callback_state[cb_name])
+
+            # Phase DESIGN-1 G-1 mid-impl post-fix (2026-05-10) — CRITIQUE 2
+            # closure: surface unmatched checkpoint keys to the operator.
+            # Silent-loss class: if the checkpoint was written with class
+            # name X (e.g., "EarlyStopping") but the active trainer has a
+            # subclass Y (e.g., "EarlyStoppingValLoss") OR the callback was
+            # removed entirely, the loop above silently keeps init defaults
+            # for X — operator sees no diagnostic. Per hft-rules §8 ("never
+            # silently drop"), surface the unmatched keys with actionable
+            # message naming the renames / removals likely involved.
+            active_names = {
+                type(cb).__name__ for cb in callbacks_list_obj.callbacks
+            }
+            unmatched = set(callback_state.keys()) - active_names
+            if unmatched:
+                warnings.warn(
+                    f"Checkpoint at {path} has callback_state key(s) "
+                    f"{sorted(unmatched)!r} with no matching active callback. "
+                    f"Active callbacks: {sorted(active_names)!r}. Likely "
+                    f"cause: callback class renamed (e.g., EarlyStopping → "
+                    f"EarlyStoppingValLoss subclass) or removed since "
+                    f"checkpoint was written. Affected callback(s) resume "
+                    f"with init defaults — patience counter / best_value / "
+                    f"history NOT preserved. Phase DESIGN-1 G-1.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         logger.info(f"Loaded checkpoint from {path} (epoch {self.state.current_epoch})")
 

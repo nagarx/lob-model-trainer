@@ -652,3 +652,165 @@ class TestEvaluateSplit:
         trainer.train()
         with pytest.raises(ValueError, match=r"Unknown split"):
             trainer.evaluate("nonsense")
+
+
+# =============================================================================
+# Phase DESIGN-1 A.3 REDESIGN (2026-05-10) — sklearn RNG-independence regression
+# =============================================================================
+
+
+class TestSklearnRngIndependence:
+    """Phase DESIGN-1 A.3 REDESIGN (2026-05-10) regression lock.
+
+    Locks the architectural invariant that sklearn paths are RNG-free at
+    predict-time. If a future model breaks this invariant, this test FAILS —
+    forcing re-evaluation of A.3's "no rng_state in sidecar" decision.
+
+    Ground-truth basis (Agent X 2026-05-10):
+      - TemporalRidge (lob-models/.../models/simple/temporal_ridge.py:102)
+        constructs ``Ridge(alpha=...)`` — closed-form solver
+        ``(X^T X + αI)^{-1} X^T y`` with NO ``random_state`` argument.
+      - TemporalGradBoost (lob-models/.../models/simple/temporal_gradboost.py:116)
+        hardcodes ``random_state=42`` in the constructor and uses
+        ``np.random.RandomState(42)`` (line 137) for fit-time subsampling
+        — both HERMETIC, ignoring global RNG.
+      - Both ``predict()`` paths are deterministic given the fitted model
+        (linear coefficient evaluation / tree traversal).
+
+    Therefore SimpleModelTrainer.save_checkpoint deliberately omits
+    ``rng_state_python`` + ``rng_state_numpy`` keys from the sidecar
+    (which the PyTorch path embeds at trainer.py:1318). Capturing global
+    RNG would buy ZERO determinism today.
+    """
+
+    @pytest.mark.parametrize(
+        "model_type, model_config",
+        [
+            ("temporal_ridge", {"alpha": 1.0}),
+            (
+                "temporal_gradboost",
+                {"n_estimators": 5, "max_depth": 2, "learning_rate": 0.1},
+            ),
+        ],
+    )
+    def test_predict_invariant_to_global_rng_perturbation(
+        self, model_type, model_config, simple_data_dir, tmp_path
+    ):
+        """sklearn predict() output is bit-exact identical across arbitrary
+        global python+numpy RNG state perturbation.
+
+        If this test fails, sklearn paths have become RNG-dependent —
+        re-evaluate Phase DESIGN-1 A.3 REDESIGN per #PY-93 cycle.
+        """
+        import random
+
+        # Build trainer + fit once with known global RNG state
+        random.seed(42)
+        np.random.seed(42)
+
+        trainer = SimpleModelTrainer(
+            data_dir=str(simple_data_dir),
+            model_type=model_type,
+            model_config=model_config,
+            output_dir=str(tmp_path / "output"),
+        )
+        trainer.setup()
+        trainer.train()
+
+        # Capture predictions on test split with KNOWN global RNG state
+        preds_a = trainer.model.predict(trainer._X_test).copy()
+
+        # Aggressively perturb global python + numpy RNG state
+        random.seed(99999)
+        np.random.seed(99999)
+        for _ in range(1000):
+            _ = random.random()
+            _ = np.random.rand(50)
+        # Add some structured perturbations the sklearn internals might use
+        _ = np.random.randint(0, 1_000_000, size=10_000)
+        _ = np.random.standard_normal(size=10_000)
+        _ = np.random.permutation(np.arange(10_000))
+
+        # Predict AGAIN on the SAME inputs with perturbed global state
+        preds_b = trainer.model.predict(trainer._X_test).copy()
+
+        # BIT-EXACT equality is the locked invariant
+        assert np.array_equal(preds_a, preds_b), (
+            f"Phase DESIGN-1 A.3 REDESIGN INVARIANT VIOLATED: "
+            f"{model_type} predictions differ after global RNG perturbation. "
+            f"This means the sklearn path is NOT RNG-free at predict-time, "
+            f"contradicting A.3 REDESIGN's no-sidecar-rng-capture decision. "
+            f"Counts: pre n_unique={len(np.unique(preds_a))}, "
+            f"post n_unique={len(np.unique(preds_b))}. "
+            f"Means: pre={float(preds_a.mean()):.10f}, "
+            f"post={float(preds_b.mean()):.10f}. "
+            f"Re-evaluate A.3 REDESIGN per #PY-93 cycle and consider "
+            f"adding rng_state_python + rng_state_numpy to the sidecar."
+        )
+
+    def test_save_load_roundtrip_invariant_to_rng_perturbation(
+        self, simple_data_dir, tmp_path
+    ):
+        """End-to-end: save_checkpoint then load_checkpoint with perturbed
+        RNG state in between produces bit-exact identical predictions.
+
+        Closes the producer-consumer chain for Phase DESIGN-1 A.3 REDESIGN —
+        proves the sidecar's missing rng_state keys are not a hidden
+        prerequisite for save/load determinism.
+        """
+        import random
+
+        # Setup trainer (using flat-keyword path so config=None — exercises
+        # the legacy DeprecationWarning branch but skips sidecar; we test
+        # the model-only round-trip which is the rng-relevant scope).
+        trainer = SimpleModelTrainer(
+            data_dir=str(simple_data_dir),
+            model_type="temporal_ridge",
+            model_config={"alpha": 1.0},
+            output_dir=str(tmp_path / "output"),
+        )
+        trainer.setup()
+        trainer.train()
+        preds_pre_save = trainer.model.predict(trainer._X_test).copy()
+
+        # Save with arbitrary global state, then perturb, then reload
+        random.seed(42)
+        np.random.seed(42)
+        # save_checkpoint emits DeprecationWarning when self.config is None
+        # (legacy flat-keyword path) — that's intentional Phase Q.6.5.F
+        # design; not the test target. Filter to keep test output clean.
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            ckpt_path = trainer.save_checkpoint()
+
+        # Aggressively perturb global state between save and load
+        random.seed(11111)
+        np.random.seed(11111)
+        for _ in range(1000):
+            _ = np.random.rand(100)
+
+        # Build a FRESH trainer and load checkpoint (no setup() — load only)
+        trainer_b = SimpleModelTrainer(
+            data_dir=str(simple_data_dir),
+            model_type="temporal_ridge",
+            model_config={"alpha": 1.0},
+            output_dir=str(tmp_path / "output_b"),
+        )
+        # We need the test data loaded; setup() also rebuilds the model
+        # from config but load_checkpoint will overwrite self.model with
+        # the fitted sklearn pickle.
+        trainer_b.setup()
+        trainer_b.load_checkpoint(ckpt_path)
+        preds_post_load = trainer_b.model.predict(trainer_b._X_test).copy()
+
+        # Bit-exact equality: load was unaffected by global RNG perturbation
+        assert np.array_equal(preds_pre_save, preds_post_load), (
+            f"Phase DESIGN-1 A.3 REDESIGN INVARIANT VIOLATED: "
+            f"sklearn save/load round-trip differs after global RNG "
+            f"perturbation between save and load. The sidecar must capture "
+            f"rng_state to preserve determinism. "
+            f"Means: pre={float(preds_pre_save.mean()):.10f}, "
+            f"post={float(preds_post_load.mean()):.10f}."
+        )
