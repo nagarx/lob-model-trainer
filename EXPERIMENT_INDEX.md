@@ -2162,3 +2162,50 @@ This is **EXPECTED behavior** per Phase II + Phase X.1 v2 design (`hft-contracts
 - **74**: Stage 8 reproduces R9 metrics + R9 best OptRet bit-exactly, validating that Phase Y deployment + Phase C.1 truth-pin do NOT alter MODEL behavior — they only correct the IDENTITY/PROVENANCE side of the contract. Same checkpoint, same data, same horizons feeding the model loss function = same metrics. Phase C.1 affects the FINGERPRINT (data-axis identity claim) but not the COMPUTATION (model output values). **This separation is the architectural invariant Phase C.1+Y was designed to preserve**: provenance correctness without computation drift.
 
 - **75**: Stage 8 wall-clock (~5s for export-only on MPS) is the SHORTEST validated empirical probe in the cycle. Pattern documented for future use: "validate Phase Y producer changes by re-running export only on existing checkpoints" — burns ~5s instead of ~5-10min for re-train. Useful for future Phase Y producer-side iteration without re-training compute cost.
+
+---
+
+## R-16a Cycle 6 — Multi-Arm Sweep (point vs peak × Ridge vs TLOB × H60, 2026-05-11)
+
+**Backfilled 2026-05-13** per hft-rules §13 same-session ledger mandate (closes §13 violation; R-16a ran 2026-05-11, ledger entry overdue 2 days). See Sub-cycle 3 + Phase R-17 v2 context in CLAUDE.md L1023 banner.
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | H1a: peak_return labels enhance IC vs point_return at H60; H2: Ridge captures ~88-91% of TLOB IC at smoothed labels (cross-cycle reproducibility check); H3: IC decays monotonically H10>H60>H300 |
+| **Method** | 2×2 sweep manifest `hft-ops/experiments/sweeps/cycle6_r16a_point_vs_peak_H60.yaml` axes: `model_type ∈ {temporal_ridge, tlob}` × `return_type ∈ {point_return, peak_return}` (4 grid points × 1 seed = 4 records); regression at H60; v3p0 baseline corpus (98 features, 60s time-based) |
+| **Data** | 233 days NVDA XNAS, v3p0 baseline (e5_timebased_60s_v3p0); test split = 8085 samples per arm |
+| **Sweep ID** | `cycle6_r16a_point_vs_peak_H60_20260511T012915` |
+| **Status** | **TRAINING-INCOMPLETE-LEDGER + BACKTESTS-COMPLETED** — 4 training records show `status: failed` + `test_metrics: None` in JSON (Agent E mid-impl audit 2026-05-12 + verified 2026-05-13). Backtest records show `status: completed` with valid OptRet metrics — backtests RAN against signal exports produced by the same training cycle. The anomaly suggests training+signal_export succeeded but ledger-finalization recorded "failed" (training stage exit-code mismatch?). **Filed as #PY-182 NEW** — see PHASE_P_BACKLOG.md for investigation cycle. Phase Y trust columns (experiment_provenance_hash + compatibility_fingerprint) ARE populated correctly per Phase Y deployment 2026-05-05. |
+
+**Trust columns (verified from training JSON records)** — Phase Y composability check post-deployment:
+
+| Arm | model_type | return_type | experiment_provenance_hash | compatibility_fingerprint |
+|---|---|---|---|---|
+| Ridge × point | temporal_ridge | point_return | `901c25dd1eb0f8a5...` | `44d3a00a883ef869...` |
+| Ridge × peak | temporal_ridge | peak_return | `9d86357a642b4ed9...` | `7ef24c63788b0532...` |
+| TLOB × point | tlob | point_return | `a1fdaaf362c3ba60...` | `44d3a00a883ef869...` |
+| TLOB × peak | tlob | peak_return | `22c8834b8768c14c...` | `7ef24c63788b0532...` |
+
+**Empirical Phase Y validation R-16a**: 4 distinct `experiment_provenance_hash` (model_type axis discriminates) + 2 distinct `compatibility_fingerprint` (return_type axis discriminates — same-model arms share compat_fp). Cross-cycle reproducibility: Ridge × point × H60's compat_fp matches cycle5_multi_arm 2026-05-10 baseline (same data axis), confirming Phase C.1 truth-pin + Phase Y composability hold across cycles.
+
+**Backtest results** (see `lob-backtester/BACKTEST_INDEX.md` Round 16a for full 8-threshold sweep per arm; 4 backtest records all `status: completed` at `hft-ops/experiments/ledger/runs/cycle6_r16a_*_backtest_*.json`):
+
+| Arm | Best Threshold | Best OptRet | Win Rate | Sharpe | n_entries |
+|---|---|---|---|---|---|
+| Ridge × peak | deep_itm_1.4bps | **+2.84%** | 50.43% | -7.40 | 702 |
+| Ridge × point | atm_5bps | +0.98% | 51.53% | -6.48 | 326 |
+| TLOB × peak | deep_itm_1.4bps | +0.22% | 43.08% | -2.86 | 65 |
+| TLOB × point | itm_2bps | +0.08% | 49.87% | -9.11 | 393 |
+
+**CRITICAL FRAMING — see Phase R-17 v2 16-agent audit 2026-05-11**: Ridge × peak's "+2.84%" finding is **PRELIMINARY OUTLIER-DRIVEN OPTION-CONVEXITY ARTIFACT**, NOT validated alpha. Wave 3 16-agent re-derivation found p ≈ 0.74 (rigorous correction); mean OptRet across 8 thresholds for Ridge×peak = **-0.34% NEGATIVE** (cherry-pick smoking gun); top 7 trades = 123.2% of return (outlier-driven); WR 50.43% indistinguishable from coin-flip (z=0.23 → no directional edge); peak_return label has forward-leaking semantics `[k+1:k+h+1]`. Underlying share-equivalent return is **-1.87% NEGATIVE** (`best_total_return` field). Multi-seed power analysis required for proper interpretation — R-16c sweep authored at `cycle7_r16c_multi_seed_r16a.yaml` (40 grid points × 10 seeds).
+
+**Lessons:**
+
+- **76**: **First R-cycle to populate `experiment_provenance_hash` and `compatibility_fingerprint` end-to-end via Phase Y deployment** (Sub-cycle 4b SSoT extraction; Phase Y composer deployed 2026-05-05). 4/4 training records have both fields populated. Cross-cycle bit-exact match with cycle5_multi_arm baseline confirms Phase C.1 truth-pin holds.
+- **77**: **TLOB × peak produces NEGATIVE test_ic** (banner cite: -0.0125; not persisted in training_record.json due to #PY-182). Counter-predicts peak labels. Indicates TLOB encoder learns smoothed-return patterns that anti-correlate with forward-peak structure. Worth investigating separately.
+- **78**: **§13 violation discipline**: R-16a results were known via MEMORY.md banner from 2026-05-11 but NOT formally documented in EXPERIMENT_INDEX / BACKTEST_INDEX until 2026-05-13. **Lesson**: same-session ledger update mandate must be enforced via cycle-close checklist. Backfilling 2 days later required reading 8 JSON records + reconciling status:failed anomaly. Filed as PROCESS-DRIFT alongside #PY-182.
+- **79**: **Phase 9 smoke-test on R-16a Ridge×Peak fixtures (Sub-cycle 4b 2026-05-12) empirically validated #PY-180 fix** (post-fix REFUTE verdict reproduces; CI bounds correctly sub-1% in fraction units; pre-fix banner cited "CI=(-214%, +1087%)" was DOLLAR×100 misrender). See PHASE_P_BACKLOG #PY-180 STATUS:CLOSED footer + hft-ops commit `fa90238`.
+
+**Outstanding work (deferred)**:
+- **#PY-182 NEW**: investigate training_record.status:failed + test_metrics:None anomaly across all 4 R-16a training records. Banner-cited test_ic values (0.1473, 0.0775, 0.0570, -0.0125) came from in-process state not persisted to JSON. Either (a) ledger-finalization bug, or (b) training stage crashed AFTER signal_export but BEFORE metric persistence, or (c) test_metrics emission path missing for this codepath.
+- **R-16c sweep launch**: cycle7_r16c_multi_seed_r16a.yaml is LAUNCH-READY (40 grid points × 10 seeds; ~80 min compute). Multi-seed power analysis on Ridge × Peak +2.84% will confirm/refute outlier-driven artifact framing.
