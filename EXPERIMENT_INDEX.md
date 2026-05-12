@@ -2209,3 +2209,58 @@ This is **EXPECTED behavior** per Phase II + Phase X.1 v2 design (`hft-contracts
 **Outstanding work (deferred)**:
 - **#PY-182 NEW**: investigate training_record.status:failed + test_metrics:None anomaly across all 4 R-16a training records. Banner-cited test_ic values (0.1473, 0.0775, 0.0570, -0.0125) came from in-process state not persisted to JSON. Either (a) ledger-finalization bug, or (b) training stage crashed AFTER signal_export but BEFORE metric persistence, or (c) test_metrics emission path missing for this codepath.
 - **R-16c sweep launch**: cycle7_r16c_multi_seed_r16a.yaml is LAUNCH-READY (40 grid points × 10 seeds; ~80 min compute). Multi-seed power analysis on Ridge × Peak +2.84% will confirm/refute outlier-driven artifact framing.
+
+### R-16c: Multi-Seed Power Analysis on R-16a Ridge×Peak +2.84% (REFUTE VERDICT, 2026-05-13)
+
+**Sweep ID**: `cycle7_r16c_multi_seed_r16a_20260512T063700`
+**Manifest**: `hft-ops/experiments/sweeps/cycle7_r16c_multi_seed_r16a.yaml`
+**Compute**: ~6 hr wall-clock on M1 Pro MPS (PyTorch 2.10.0)
+**Grid topology**: 2 model × 2 return_type × 10 seeds = 40 expected grid points; **36 actually produced** (4 seed_42 records correctly deduped against R-16a cycle6 pre-existing records — same fingerprint). Analyzed via `--allow-partial` flag with rationale documented.
+
+**Hypothesis**: R-16a's headline "Ridge × peak deep_itm_1.4bps OptRet=+2.84%" is **outlier-driven option-convexity artifact on forward-leaking peak_return label**, NOT validated alpha. Wave 3 16-agent re-derivation (2026-05-11) found rigorous corrected p ≈ 0.74; mean OptRet across 8 thresholds = -0.34% NEGATIVE; top 7 trades = 123.2% of return. R-16c multi-seed paired-bootstrap with 9-block-length blocks will test 5 pre-registered gates per manifest §H1+H4+H5.
+
+**Pre-registered decision gates**:
+- H1a: mean OptRet > +1.0% per trade
+- H1b: pooled-bootstrap CI lower-bound > 0
+- H1c: drop-top-5 mean > 0
+- H4: mean across 8 thresholds > -0.5% (negative control)
+- H5: Ridge bit-exact invariant (Phase A.3 REDESIGN deterministic-prediction lock)
+
+**Verdict: REFUTE (exit_code=1)** — H1a FAIL, H1b FAIL, H1c PASS (~0), H4 PASS (~0), H5 PASS.
+
+**Observed**:
+- `h1_mean` (Ridge×Peak deep_itm_1.4bps mean OptRet per trade) = **+0.00469%** (vs +1.0% gate floor)
+- `h1_ci_low` = -0.0017%, `h1_ci_high` = +0.0116% → **CI crosses zero**
+- `h1_drop_top5` = +0.0013% (negligible)
+- `h4_mean` (Ridge×Peak mean across 8 thresholds) = +0.0016% (negligible; ~0)
+- `h5_invariant_ok` = True (Ridge bit-exact across seeds, per Phase A.3 REDESIGN)
+
+**Per-arm bootstrap CI summary** (`*` = statistically significant at α=0.05 — CI does not cross zero):
+
+| Arm | n significant cells / 8 thresholds | Direction | Comment |
+|---|---|---|---|
+| TemporalRidge × point | 0 / 8 | ZERO | All CIs cross zero; mean ∈ [-0.011%, +0.005%] per trade |
+| **TemporalRidge × peak** (F7 target) | **0 / 8** | **ZERO** | All CIs cross zero; mean ∈ [-0.005%, +0.011%] per trade |
+| TLOB × point | 4 / 8 | **NEGATIVE** | Significantly LOSING at deep_itm_1.4bps through atm_5bps; n=0 at higher thresholds (model not confident enough) |
+| TLOB × peak | 7 / 8 | **NEGATIVE** | Significantly LOSING at every threshold with data; only max_conv_20bps non-sig (n=1 seed × 107 trades) |
+
+**Total: 0 of 32 cells statistically significant POSITIVE; 11 of 32 cells statistically significant NEGATIVE; 21 of 32 indistinguishable from zero**.
+
+**Cross-cycle reproducibility (Phase Y composer empirical validation)**:
+- 4 R-16a seed_42 records correctly deduped against R-16c grid points #1, #11, #21, #31 (fingerprint match — same model + same return_type + same data + same seed=42 = same experiment). Verified by sweep log "Duplicate found: cycle6_r16a_point_vs_peak_H60__temporal_ridge_point_return_20260511T012925_3a832bb6. Skipping."
+- This validates **fingerprint-based dedup works correctly across separate sweeps** (Phase Y reproducibility invariant).
+
+**Conclusion**: R-16a's +2.84% finding is RIGOROUSLY REFUTED via multi-seed paired-bootstrap with 36 grid points (9 seeds × 4 arms; Ridge cells pooled to 1 seed per H5 invariant per manifest L166-167). No directional alpha exists in Ridge predictions on either point or peak labels at H60 on v3p0 corpus. TLOB encoder COUNTER-predicts at most thresholds (losing significantly). Both findings are consistent with **CLAUDE.md E8 label-execution mismatch** (smoothed labels ≠ tradeable returns) and **Wave 3 outlier-driven interpretation** (top 7 trades carry 123% of R-16a Ridge×Peak return; rigorous CI confirms zero per-trade edge).
+
+**Lessons:**
+
+- **80**: **First R-cycle with pre-registered falsifiable decision-gate analyzer that produced REFUTE verdict in single run**. R-16c proves the empirical experiment cadence is healthy: hypothesis → manifest → sweep → analyzer → ledger documentation in single session per hft-rules §13. Validates Sub-cycle 4b investment in `r16c_analysis.py` library + standalone CLI.
+- **81**: **Cross-sweep fingerprint dedup works correctly** — Phase Y composer + dedup module correctly identify `(model_type, return_type, seed=42)` as equivalent across `cycle6_r16a_*` (2026-05-11) and `cycle7_r16c_*` (2026-05-12) sweeps. 4 of 40 grid points were skipped without re-execution, saving ~5% compute. **This is the correct behavior** and a positive Phase Y validation finding. Required `--allow-partial` flag on analyzer to consume 36/40 — flag added with documented rationale (UserWarning emit on partial analysis).
+- **82**: **TLOB COUNTER-predicts peak_return labels significantly negative across 7 of 8 thresholds** — extends earlier Stage 2/3 finding (TLOB×Peak test_ic=-0.0125 in cycle5_multi_arm). Counter-prediction at 5σ-tight CI = systematic anti-correlation, not noise. Suggests TLOB encoder learns features that anti-correlate with forward-peak label structure. Worth investigating in dedicated cycle (see #PY-183 NEW).
+- **83**: **#PY-180 fix validated at scale**: cycle-7 analyzer ran 36 grid records × 8 thresholds × 10K bootstrap iterations × 9-block-length = ~25M bootstrap operations on FRACTIONAL units. All CIs in sub-1% range as expected. No NaN/Inf propagation. `n_nonfinite_replaced=0` across all cells. The DOLLAR→FRACTION conversion at `_load_per_trade_pnls` is empirically correct.
+- **84**: **2 NEW analyzer CLI bugs discovered + fixed same-session**: (a) `paths.root` → `paths.pipeline_root` (2 sites in `r16c_analysis.py:467` + `analyze_r16c.py:121` post-flag-addition; PipelinePaths exposes `pipeline_root` not `root`); (b) `--allow-partial` flag + `min_grid_points` kwarg added for cross-sweep dedup case. UserWarning emit when partial. Future R-cycles using this analyzer benefit from the flag.
+
+**Outstanding work (deferred)**:
+- **#PY-183 NEW**: TLOB encoder COUNTER-predicts peak_return labels (negative test_ic + significantly-negative bootstrap CI across 7 of 8 thresholds). Investigate whether TLOB's BiN normalization + dual attention learns anti-correlated features specifically for forward-peak label structure.
+- **#PY-184 STATUS:CLOSED-by-this-commit**: Analyzer CLI bug fixes (`paths.pipeline_root` at 2 sites + `--allow-partial` flag) shipped together with this ledger entry in atomic hft-ops commit (closed self-referentially by Commit 1 of the R-16c cycle-close 3-commit bundle).
+- **R-16a backtest records**: 4 records at `hft-ops/experiments/ledger/runs/cycle6_r16a_*_backtest_R-16a_*.json` (gitignored; reachable but not in main ledger). They lack `experiment_provenance_hash` field by ExperimentRecord design (backtest records use different schema than training records — observation-side artifact). Phase Y composability is for TRAINING records.
