@@ -40,7 +40,11 @@ dependencies = [
     "hft-contracts>=2.7.0",
 
     # Shared metrics library (IC, R², regression metrics with NaN safety)
-    "hft-metrics",
+    # >=0.1.9: Cluster Z extension (Sub-cycle 1 2026-05-12) — block_bootstrap_ci
+    # 4-tuple return; trainer consumes at analysis/stat_rigor/ci.py:334
+    # (Phase 2 P2.A TestMetricsCIArtifact). Pre-v0.1.9 install would raise
+    # ValueError at runtime. See hft-metrics CHANGELOG v0.1.9.
+    "hft-metrics>=0.1.9",
 
     # Model architectures (local: pip install -e ../lob-models)
     "lob-models",

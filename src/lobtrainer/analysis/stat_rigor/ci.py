@@ -323,7 +323,15 @@ def compute_ci(
     for metric_name in config.metric_names:
         statistic_fn, _input_key = _METRIC_REGISTRY[metric_name]
         try:
-            estimate, ci_low, ci_high = block_bootstrap_ci(
+            # hft-metrics v0.1.9 (Cluster Z extension 2026-05-12): block_bootstrap_ci
+            # now returns 4-tuple (estimate, ci_low, ci_high, n_nonfinite_replaced).
+            # The n_nonfinite_replaced counter mirrors the Cluster Z observability
+            # pattern at pairwise.py:380-384. Phase 2 P2.A consumer already has a
+            # downstream defense at L350-360 (raises on CI-bounds violation); the
+            # counter provides EARLIER visibility (count > 0 surfaces partial
+            # substitution before the bounds check fires). For now, discard via _;
+            # future cycle may surface count via TestMetricsCIArtifact diagnostic field.
+            estimate, ci_low, ci_high, _n_nonfinite = block_bootstrap_ci(
                 statistic_fn=statistic_fn,
                 x=labels_1d, y=pred_1d,
                 n_bootstraps=config.n_bootstraps,
