@@ -171,8 +171,94 @@ class TestExperimentResultInit:
             name="test",
             experiment_id="custom_id_123",
         )
-        
+
         assert result.experiment_id == "custom_id_123"
+
+
+class TestExperimentIdSha256Generation:
+    """#PY-188 closure (2026-05-13): experiment_id uses sha256_hex via
+    `hft_contracts.canonical_hash` SSoT, NOT raw `hashlib.md5(...)[:8]`.
+
+    Pre-fix used MD5 truncated to 8-hex chars (4B-combination collision
+    risk + Class A SSoT discipline violation per hft-rules §0).
+
+    Post-fix: SHA-256 over canonical-JSON (same canonical-form used by
+    Phase Y experiment_provenance_hash + feature_set.content_hash + all
+    other monorepo Class A primitives).
+
+    Backward-compat: ID format ``{name}_{timestamp}_{8-hex}`` unchanged
+    for downstream consumers (registry path-name + index key).
+    """
+
+    def test_id_format_unchanged_for_consumers(self):
+        """ID still matches `{name}_{timestamp}_{8-hex}` pattern."""
+        import re
+
+        result = ExperimentResult(name="test_exp", config={"x": 1})
+        # Pattern: name + "_" + YYYYMMDD_HHMMSS + "_" + 8 hex chars
+        pat = r"^test_exp_\d{8}_\d{6}_[0-9a-f]{8}$"
+        assert re.match(pat, result.experiment_id), (
+            f"experiment_id format drift: {result.experiment_id}"
+        )
+
+    def test_id_hash_uses_sha256_via_ssot(self):
+        """Hash portion matches SHA-256 prefix over canonical-JSON config,
+        NOT MD5. Locks the SSoT discipline."""
+        from hft_contracts.canonical_hash import canonical_json_blob, sha256_hex
+
+        config = {"alpha": 0.5, "n_estimators": 100}
+        result = ExperimentResult(name="t", config=config)
+
+        # Recompute hash via canonical SSoT — must match suffix.
+        expected_hash = sha256_hex(canonical_json_blob(config))[:8]
+        actual_hash = result.experiment_id.split("_")[-1]
+        assert actual_hash == expected_hash, (
+            f"experiment_id hash {actual_hash} != SHA-256 SSoT {expected_hash}. "
+            f"If this fails, _generate_id may have regressed to MD5 or to a "
+            f"non-canonical JSON form."
+        )
+
+    def test_id_hash_not_md5(self):
+        """Locks the regression — hash must NOT match MD5[:8] over same
+        config."""
+        import hashlib
+        import json
+
+        config = {"alpha": 0.5, "n_estimators": 100}
+        result = ExperimentResult(name="t", config=config)
+
+        # Pre-fix would have been this:
+        md5_hash = hashlib.md5(
+            json.dumps(config, sort_keys=True).encode()
+        ).hexdigest()[:8]
+        actual_hash = result.experiment_id.split("_")[-1]
+        assert actual_hash != md5_hash, (
+            f"experiment_id regression: hash {actual_hash} matches MD5[:8]. "
+            f"#PY-188 fix has been reverted; restore the SHA-256 SSoT path."
+        )
+
+    def test_id_deterministic_for_same_config(self):
+        """Same config + same timestamp → same hash (mocked via direct call)."""
+        config = {"foo": "bar", "baz": 42}
+        r1 = ExperimentResult(name="x", config=config)
+        r2 = ExperimentResult(name="x", config=config)
+
+        hash1 = r1.experiment_id.split("_")[-1]
+        hash2 = r2.experiment_id.split("_")[-1]
+        assert hash1 == hash2, (
+            f"Hash should be deterministic for same config; got {hash1} vs {hash2}"
+        )
+
+    def test_id_distinct_for_distinct_configs(self):
+        """Different configs → different hashes (collision-resistance check)."""
+        r1 = ExperimentResult(name="x", config={"foo": 1})
+        r2 = ExperimentResult(name="x", config={"foo": 2})
+
+        hash1 = r1.experiment_id.split("_")[-1]
+        hash2 = r2.experiment_id.split("_")[-1]
+        assert hash1 != hash2, (
+            f"Different configs must produce different hashes; got {hash1} == {hash2}"
+        )
 
 
 class TestExperimentResultSerialization:

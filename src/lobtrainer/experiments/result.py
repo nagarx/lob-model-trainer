@@ -285,9 +285,26 @@ class ExperimentResult:
             self.created_at = datetime.now().isoformat()
     
     def _generate_id(self) -> str:
-        """Generate unique experiment ID from config hash + timestamp."""
-        config_str = json.dumps(self.config, sort_keys=True)
-        config_hash = hashlib.md5(config_str.encode()).hexdigest()[:8]
+        """Generate unique experiment ID from config hash + timestamp.
+
+        #PY-188 closure (2026-05-13): SHA-256 via hft_contracts.canonical_hash
+        SSoT. Pre-fix used raw `hashlib.md5(config_str.encode()).hexdigest()[:8]`
+        which (a) bypassed Class A SSoT per hft-rules §0 reuse-first and
+        (b) carried 4B-combination collision risk on the truncated 8-hex tag.
+
+        Post-fix: SHA-256 over canonical-JSON form (sort_keys=True,
+        separators=(",", ":")) — same canonical-form contract used by
+        Phase Y experiment_provenance_hash + feature_set.content_hash +
+        all other monorepo Class A primitives. Algorithm aligned;
+        determinism preserved (same config → same 8-hex tag); ID format
+        ``{name}_{timestamp}_{8-hex}`` unchanged for downstream consumers.
+
+        Consumers treat the experiment_id as OPAQUE STRING (path-name +
+        index key) so the algorithm change is non-breaking.
+        """
+        from hft_contracts.canonical_hash import canonical_json_blob, sha256_hex
+
+        config_hash = sha256_hex(canonical_json_blob(self.config))[:8]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return f"{self.name}_{timestamp}_{config_hash}"
     
