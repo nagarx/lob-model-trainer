@@ -50,7 +50,11 @@ class TestInformationCoefficient:
         assert abs(information_coefficient(y, -y) - (-1.0)) < 1e-10
 
     def test_too_few_samples(self):
-        assert information_coefficient(np.array([1.0, 2.0]), np.array([3.0, 4.0])) == 0.0
+        # hft-metrics v0.1.10 Cluster Z (2026-05-11): `spearman_ic` returns NaN
+        # via `sanitize_pair` when n<3. The prior 0.0 sentinel was migrated to
+        # NaN per hft-rules §8 (never silently drop) — see
+        # `hft-metrics/src/hft_metrics/ic.py:80-91` + module docstring.
+        assert np.isnan(information_coefficient(np.array([1.0, 2.0]), np.array([3.0, 4.0])))
 
 
 class TestPearsonCorrelation:
@@ -60,7 +64,9 @@ class TestPearsonCorrelation:
         assert abs(pearson_correlation(y, pred) - 1.0) < 1e-10
 
     def test_too_few_samples(self):
-        assert pearson_correlation(np.array([1.0]), np.array([2.0])) == 0.0
+        # See TestInformationCoefficient.test_too_few_samples — same Cluster Z
+        # NaN-sentinel migration in `hft-metrics/.../ic.py::pearson_r`.
+        assert np.isnan(pearson_correlation(np.array([1.0]), np.array([2.0])))
 
 
 class TestMAE:
