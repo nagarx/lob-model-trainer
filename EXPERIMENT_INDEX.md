@@ -2523,3 +2523,11 @@ This is **EXPECTED behavior** per Phase II + Phase X.1 v2 design (`hft-contracts
 - **#PY-218 producer-side cleanup** (STILL OPEN): Rust types.rs:117-131 LIST format inconsistency at 3 sister sites (SignedTrend / SignedOpportunity / TripleBarrierClassIndex). Validator-side workaround (Phase 0.5 / hft-contracts 2.7.1) is shipped; producer-side architectural fix deferred. ~1.5 hr realistic.
 - **#PY-219 NEW candidate**: TB↔SHIFTED_MAPPING alignment is coincidental not contractual (Wave 1D §3 finding): backtester treats `{0=Down→SELL, 1=Stable→no-entry, 2=Up→BUY}` and TB labels `{0=SL, 1=Timeout, 2=PT}` happen to align (SL barrier-hit ≈ continued downward; PT barrier-hit ≈ continued upward) but NO contract assertion enforces this. If anyone renumbers TB encoding the alignment silently inverts. Add TB label-encoding semantic alignment validator. ~30 min.
 - **R-17a checkpoint preserved** at `lob-model-trainer/outputs/experiments/r17a_logistic_tb_v3p0_h30/checkpoints/best.pt` (101 KB; epoch 10) for future R-19/R-20 cross-architecture comparison baselines.
+
+**Orchestrator-bypass + ledger trade-off note (added 2026-05-14 post 3-wave cross-pipeline validation)**: R-17a was run via DIRECT trainer invocation (`python scripts/train.py --config ...`) rather than hft-ops orchestrator (per Phase 0.5 anti-drift #6 — but **NOTE**: Wave 3 W3-1 of comprehensive validation cycle empirically REFUTED the "ValidationStage rejects 1-D classification labels" framing; the bypass was a DEPRECATION choice, NOT a structural requirement). Direct invocation does NOT call `_record_experiment` → R-17a is **INVISIBLE to `hft-ops ledger list --provenance-hash` queries**. Query R-17a alternatively via:
+- signal_metadata.json: `outputs/experiments/r17a_logistic_tb_v3p0_h30/signals/test/signal_metadata.json` (`compatibility_fingerprint=dd21d07922809691...`, `model_config_hash=9d2fdcef837d6227...`)
+- best.pt checkpoint: `outputs/experiments/r17a_logistic_tb_v3p0_h30/checkpoints/best.pt`
+- THIS EXPERIMENT_INDEX entry
+- Round 17a in `lob-backtester/BACKTEST_INDEX.md`
+
+R-17a is part of a CLASS of ~26.7% of recent experiments (46 dirs vs 172 ledger records) that lack the 5th traceability layer. Per backlog #PY-223, the long-term fix is a ledger-write helper in `scripts/train.py` mirroring `cli._record_experiment` (~2-3 hr; closes class-of-bugs).
