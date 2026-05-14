@@ -2346,3 +2346,83 @@ This is **EXPECTED behavior** per Phase II + Phase X.1 v2 design (`hft-contracts
 - **H6 LABEL-EXECUTION DIAGNOSTIC**: report computed but not in render_verdict output yet. Smoothed_return IC at H10 (0.33-0.38) is ~18-29× higher than point_return IC at H10 (0.01-0.02). This MASSIVE label-conditional ratio is the structural cause of CLAUDE.md E8 — exporter the cell-level point/smoothed ratio in next analyzer iteration.
 - **R-16d-extended (deferred)**: Multi-seed power analysis at H60 point_return (the peak-IC tradeable cell) — pre-registered trigger condition is INDETERMINATE per H1 (2/4 arms decay) but with H2/H3/H4/H5 all PASS suggests the data is statistically informative, not noise. 4 seeds × 12 cells = 48 records ~3 hr compute.
 - **#PY-183 NEW** (filed 2026-05-13): TLOB COUNTER-predicts peak_return at R-16c; combined with R-16d's "TLOB underperforms Ridge for point_return" finding, the TLOB architecture is broadly suboptimal for execution-aligned tradeable horizons.
+
+---
+
+### R-16e: Multi-Seed Extended at H60-hold on v3p0 (INDETERMINATE VERDICT, 2026-05-14)
+
+**Sweep ID**: `cycle9_r16e_multi_seed_h60_point_20260514T015452`
+**Manifest**: `hft-ops/experiments/sweeps/cycle9_r16e_multi_seed_h60_point.yaml`
+**Compute**: 1h52m wall-clock (UTC 01:54:52 → 03:46:59) on M1 Pro MPS (PyTorch 2.10.0); 40/40 cells completed; 0 failed; 0 skipped (`--force` overrode Phase Y dedup against R-16d's 4 Ridge cells per intentional cross-cycle override documented at manifest line 34-50)
+**Grid topology**: 2 model × 2 return_type × 10 seeds = **40 grid points** (Cartesian product; seeds 42-51). NEW vs R-16d: extends N=1 → N=10 + introduces matched H60-hold backtest config (`--hold-events 60`) closing R-16d's H10-hold-only tradeability gap on the Ridge×Point×H60-label peak-IC cell.
+
+**Hypothesis**: Test whether R-16d's Ridge × Point × H60 IC=0.147 / Ratio=2.585 (strongest tradeable-aligned signal in pipeline history) is TRADEABLE at matched H60-hold via multi-seed power analysis. Pre-registered gates per manifest line 141-159:
+- **H1 PRIMARY (three-conjunctive)**: (a) Ridge × Point × H60-hold pooled per-trade bootstrap CI > 0 at deep_itm_1.4bps; (b) mean OptRet across 8 thresholds > 0 for primary cell; (c) per-seed test_ic CI lower bound > 0.05
+- **H2 BASELINE RATIO**: Ridge/TLOB IC ratio > 1.5 (R-16d observed 2.585)
+- **H4 ARCHITECTURAL INVARIANT**: Ridge × seed_42..51 produces BIT-EXACT identical predicted_returns.npy SHA-256 within each (model, return_type) cell (Phase A.3 REDESIGN lock; verifies sklearn Ridge RNG-free property)
+- **H6 LABEL-EXECUTION DIAGNOSTIC**: smoothed × {Ridge, TLOB} mean OptRet at H60-hold ≤ 0 confirms CLAUDE.md E8 is STRUCTURAL (label-side mismatch) NOT hold-mismatch artifact
+
+**Decision gate (committed BEFORE running per hft-rules §13 line 145-159)**:
+- GO if H1(a)+H1(b)+H1(c) all PASS AND H4 PASS
+- REFUTE if any H1 fails AND not borderline
+- INDETERMINATE if H1(a) borderline (CI within ±H1_BORDERLINE_MARGIN=1% in fraction units) AND H1(b) PASS → trigger R-16e-extended N=20 + 30-day walk-forward
+- ABORT if H4 fails (Ridge non-deterministic across seeds)
+
+**Verdict: INDETERMINATE (exit_code=1)** — H1(a) FAIL borderline; H1(b) PASS; H1(c) PASS; H4 PASS; H6 E8 CONFIRMED.
+
+**Pre-registered hypothesis gate results** (verbatim from `hft-ops/ledger/r16e_verdicts/cycle9_r16e_multi_seed_h60_point_20260514T015452_verdict.json` — INDEPENDENTLY re-verified bit-exact by metrics-validator agent 2026-05-14):
+- **H1(a)**: CI=(-0.000468, +0.000313) FAIL (crosses zero) BUT **BORDERLINE** (max|CI|=0.0468% << 1% margin). Per #PY-208 fix: this is INDETERMINATE per manifest line 157-158
+- **H1(b)**: `mean_across_8 = +0.00016089146728446395` (>0) **PASS**
+- **H1(c)**: per-seed test_ic CI lower = 0.1473 (> 0.05 floor) **PASS**
+- **H2 RATIO point_return**: 1.653× [CI 1.479, 1.907] **FAIL** (borderline; CI low 1.479 just below 1.5 floor by 1.4%)
+- **H2 RATIO smoothed_return**: 1.084× [CI 1.067, 1.105] FAIL (informational; matches CLAUDE.md "TemporalRidge captures 91%" within tolerance — 1.084 ≈ Ridge captures 92% of TLOB IC at smoothed labels)
+- **H4 INVARIANT**: PASS — all 10 Ridge × Point × H60 seeds produce IDENTICAL predicted_returns.npy SHA-256 `fe33748bb772b795cc1e7ec966e113120291d328abd1934a98b84c0ebf373bd5` (Phase A.3 REDESIGN sklearn-RNG-free property verified; SHA independently computed by metrics-validator agent 2026-05-14 via `shasum -a 256` on per-seed `signals/test/predicted_returns.npy` — not currently embedded in verdict JSON, only `h4.invariant_ok: true`. See #PY-214 NEW for future analyzer JSON enrichment with `verified_shas: Dict[cell, sha256_hex]`.)
+- **H6 E8 CONFIRMED**: smoothed × Ridge mean=-0.000200 ≤ 0 AND smoothed × TLOB mean=-0.000022 ≤ 0 → label-execution mismatch is STRUCTURAL (label-side), NOT hold-mismatch artifact
+
+**Per-cell summary at H1_TARGET_THRESHOLD = deep_itm_1.4bps**:
+
+| Cell | n_seeds | n_trades | mean | CI 95% |
+|---|---|---|---|---|
+| temporal_ridge × point_return (PRIMARY) | 1 (H4-pool) | 130 | -0.000054 | (-0.00047, +0.00031) |
+| temporal_ridge × smoothed_return | 1 (H4-pool) | 132 | -0.000200 | (-0.00055, +0.00019) |
+| tlob × point_return | 10 | 1264 | -0.000107 | (-0.00021, -0.00001) |
+| tlob × smoothed_return | 10 | 1319 | -0.000022 | (-0.00012, +0.00008) |
+
+**MAJOR EMPIRICAL FINDINGS (NEW science from R-16e)**:
+
+1. **#PY-208 SPEC-DRIFT CAUGHT + FIXED MID-CYCLE** (most important architectural finding): r16e_analysis.py's original `_classify_verdict_r16e` had DRIFTED from manifest line 145-149+205-208 pre-registration — DROPPED H1(b) "mean across 8 thresholds" gate entirely + ADDED unauthorized "mean at deep_itm_1.4bps > 0" single-threshold gate. Drifted analyzer rendered REFUTE; manifest-aligned analyzer renders INDETERMINATE. Path A root-cause fix shipped LOCAL 2026-05-14: NEW `H1_BORDERLINE_MARGIN = 0.01` constant + NEW `_mean_across_thresholds_primary_cell` helper + extended `R16eDecisionGateOutcome` dataclass + INDETERMINATE clause per manifest line 157-158. Tests 34→39 (+5 INDETERMINATE clause tests). Caught by mid-cycle 3-agent adversarial gate (REFUTE-challenger Agent 3 read manifest fresh + spotted spec drift). See PHASE_P_BACKLOG.md #PY-208 STATUS:CLOSED-2026-05-14 for full closure narrative.
+
+2. **H4 ARCHITECTURAL INVARIANT VALIDATED AT N=10 SCALE** (cross-cycle bit-exact): all 10 Ridge × Point × H60 seeds produce IDENTICAL predicted_returns.npy SHA-256. R-16d's single-seed Ridge×Point×H60 SHA matches R-16e seed_42 BIT-EXACT confirming Phase A.3 REDESIGN sklearn-RNG-free invariant holds cross-cycle. Analyzer uses `cell_records[:1]` single-seed pooling convention (`r16e_analysis.py:618`) for H4-passed cells — correctly avoids artificial variance deflation from pooling 10 redundant copies.
+
+3. **H6 E8 STRUCTURALLY CONFIRMED at H60-hold** (NEW finding): smoothed × {Ridge, TLOB} mean OptRet BOTH ≤ 0 at matched H60-hold backtest config. This EMPIRICALLY refutes the "hold-mismatch artifact" hypothesis — CLAUDE.md E8 label-execution mismatch is LABEL-SIDE STRUCTURAL, NOT artifact of H10-hold misaligned with H60-label. Directly motivates Triple-Barrier label experiment per CLAUDE.md "What NOT To Do" entry "Training on smoothed labels for point-to-point trading (E8) — Model's predictions are structurally orthogonal to tradeable returns. Need labels aligned with execution."
+
+4. **H2 RATIO BORDERLINE FAIL** (point_return): Ridge IC=0.1473 vs TLOB IC_mean=0.0891 = Ratio 1.653 with CI=(1.479, 1.907). Floor 1.5; CI low 1.479 is JUST BELOW floor (by 1.4%). R-16d's single-seed Ratio=2.585 falls within R-16e's CI upper bound — R-16d's headline ratio was within statistical sampling range, but the MEAN ratio under N=10 is 1.653 (lower than R-16d single-seed). Ridge dominance over TLOB on point_return IS REAL (CI low > 1) but NOT as strong as R-16d's single-seed implied.
+
+5. **N=20 SEED EXTENSION CAVEAT FOR RIDGE PRIMARY CELL** (architectural note for next-cycle author; filed as #PY-213 NEW): per Wave 2 Adversarial Agent 2 empirical verification (2026-05-14 95% confidence CONFIRM), H4 invariance means going N=10 → N=20 on Ridge × Point primary cell produces ZERO new statistical power (Ridge RNG-free → analyzer single-seed pooling → n_trades stays at 130). The MEANINGFUL part of manifest line 159's INDETERMINATE remediation is the 30-day walk-forward (NEW out-of-sample data), NOT the seed-extension half. Naïve "N=20 seeds only" remediation against Ridge primary cell is waste of compute. TLOB cells DO produce per-seed variation (n_trades varies 114-132) so N=20 IS meaningful for TLOB — applicability is model-axis-dependent.
+
+**Cross-cycle reproducibility (Phase Y composer empirical validation)**:
+- 40/40 distinct experiment_provenance_hash populated (continues R-16d's 100% Phase Y trust-column population)
+- 4 distinct compatibility_fingerprint (2 model × 2 return_type = 4 cells)
+- 2 distinct model_config_hash (Ridge vs TLOB)
+- Cross-cycle BIT-EXACT match with R-16d: Ridge × Point × H60 cell at R-16e seed_42 produces SHA-256 IDENTICAL to R-16d's single-seed (`fe33748b...`)
+
+**Adversarial validation cumulative**: 18 agents across this cycle (Wave 4 prep 8 + Phase 2.a pre-impl 3 + Phase 2.e mid-impl 1 + post-sweep 3 + post-fix 3). Phase 2.h pre-commit gate verdict APPROVE-COMMIT from all 3 agents (code-reviewer + hft-architect + metrics-validator independently re-verifying bit-exact verdict). Plus Wave 1+2 (7 agents) post-compact-prep validation 2026-05-14 confirming INDETERMINATE verdict + flagging H4-invariance N=20 caveat.
+
+**Lessons**:
+
+- **89**: **#PY-208 SPEC-DRIFT CAUGHT MID-CYCLE BY ADVERSARIAL VALIDATION**: r16e_analysis.py's `_classify_verdict_r16e` had drifted from manifest line 145-149+205-208 pre-registration (DROPPED H1(b) mean-across-8-thresholds gate; ADDED unauthorized single-threshold gate). Mid-cycle 3-agent adversarial validation (REFUTE-challenger explicit-tasked) caught the drift via fresh manifest re-read. Same-cycle Path A root-cause fix preserved manifest pre-registration discipline per §13. Pattern: even well-tested analyzer code can DRIFT from spec — adversarial mid-impl + post-sweep gates are LOAD-BEARING for §13 compliance. This is the FIRST R-cycle in pipeline history to detect + fix analyzer drift mid-cycle via adversarial validation.
+
+- **90**: **H6 E8 STRUCTURALLY CONFIRMED AT H60-HOLD**: smoothed × {Ridge, TLOB} BOTH produce mean OptRet ≤ 0 at matched H60-hold. This is the FIRST empirical confirmation that CLAUDE.md E8 label-execution mismatch is LABEL-SIDE STRUCTURAL (NOT artifact of H10-hold misaligned with H60-label). Directly motivates Triple-Barrier label experiment as the architectural fix. Authoritative refutation of "maybe E8 is just hold-mismatch" hypothesis.
+
+- **91**: **H4 ARCHITECTURAL INVARIANT VALIDATED CROSS-CYCLE AT N=10**: 10 Ridge × Point × H60 seeds produce IDENTICAL SHA-256 cross-cycle (R-16e seed_42 SHA matches R-16d's single-seed). Phase A.3 REDESIGN sklearn-RNG-free invariant proven cross-cycle. Analyzer's `cell_records[:1]` single-seed pooling convention is CORRECT (avoids artificial variance deflation). Empirically locked the H5/H4 architectural test pattern for future R-cycles.
+
+- **92**: **N=20 SEED EXTENSION CAVEAT FOR RIDGE CELLS** (filed as #PY-213 NEW): manifest line 159 INDETERMINATE remediation "N=20 seeds + 30-day walk-forward" is CONJUNCTIVE per ground-truth re-read. Walk-forward IS the meaningful part for Ridge cells (H4 invariance means seed-extension produces ZERO new info on Ridge primary cell). Future R-cycles authoring N=K remediation should split into separate sub-clauses with model-specific applicability OR document H4-invariance caveat at manifest authoring time. NEW lesson for manifest discipline: pre-register remediation paths must be model-axis-aware when invoking properties like H4 invariance.
+
+- **93**: **H2 RATIO BORDERLINE FAIL UNDER MULTI-SEED**: R-16d's single-seed Ratio=2.585 (Ridge×Point) was within R-16e's N=10 CI=(1.479, 1.907). R-16e mean Ratio=1.653 (with CI low just below 1.5 floor by 1.4%). Ridge dominance over TLOB on point_return IS REAL (CI low > 1) but R-16d's headline OVERSTATED the MAGNITUDE of dominance. Pattern recurrence: single-seed headlines can mislead — multi-seed power analysis tightens the estimate AND can shift the conclusion category (here from PASS to BORDERLINE FAIL).
+
+**Outstanding work**:
+- **Triple-Barrier (TB) label experiment pivot** [USER AUTHORIZED THIS SESSION 2026-05-14]: per H6 E8 STRUCTURAL CONFIRMATION + Wave 2 Adversarial 3 evidence that TB infrastructure is ALREADY SHIPPED end-to-end (1077 LOC Rust generator `triple_barrier.rs` + Python contract `hft-contracts/src/hft_contracts/labels.py:100,180,211` + trainer `LabelingStrategy.TRIPLE_BARRIER` at schema.py:141 + `dataset.py:953,1195,1558` dispatch + 4 extractor TOMLs + 4 trainer YAMLs + 3 hft-ops manifests). Realistic effort 5-7 hr.
+- **#PY-212 NEW**: r16e_analysis.py `EXPECTED_GRID_POINTS = 40` hardcoded constant — sister-site #PY-208 class hazard. For N=20+ sweeps, analyzer warning messages misreport `{count}/40`. Promote to manifest-driven OR CLI flag (~30 min).
+- **#PY-213 NEW**: manifest line 159 INDETERMINATE remediation "N=20 + walk-forward" ambiguity given H4 invariance — Ridge-cell seed-extension is naïve waste; walk-forward IS meaningful. Future manifests should split into model-specific sub-clauses (Path A docs ~15 min OR Path B architectural walk-forward harness ~3-4 hr).
+- **R-16e-extended N=20 DEFERRED**: pre-registered manifest line 159 remediation deferred in favor of Triple-Barrier pivot per H6 STRUCTURAL CONFIRMATION + Wave 2 EV analysis (Option B > Option A info-gain per same-session authorization).
+- **#PY-209 cross-cycle analyzer drift audit** (deferred): audit r16c_analysis.py + r16d_analysis.py against their manifest pre-registrations for #PY-208-class drift.
