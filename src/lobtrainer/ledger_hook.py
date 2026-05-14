@@ -124,72 +124,25 @@ def _resolve_ledger_dir(
     return None
 
 
-def _harvest_signal_metadata(
-    output_dir: Path,
-) -> Dict[str, Optional[str]]:
-    """Best-effort harvest of trust columns from ``signal_metadata.json``.
+def _find_signal_metadata_path(output_dir: Path) -> Optional[Path]:
+    """Return the first existing ``signal_metadata.json`` under ``output_dir``.
 
-    Returns a dict with the 3 trust-column keys (``compatibility_fingerprint``,
-    ``model_config_hash``, ``feature_set_ref``) — values are ``None`` when
-    the file is missing OR malformed OR the key is absent.
+    Probes ``_SIGNAL_METADATA_CANDIDATES`` in priority order. Returns the
+    resolved absolute Path on first hit, ``None`` otherwise.
 
-    Per hft-rules §8: malformed JSON / OS errors are surfaced via WARN log
-    + the affected key set to ``None`` (never silently swallow).
+    Phase 8D / #PY-223 SSoT migration (2026-05-14): trust-column harvest
+    itself now delegates to
+    :func:`hft_contracts.experiment_recorder.harvest_trust_columns_from_signal_metadata`
+    inside :func:`write_minimal_ledger_record` — this helper retains the
+    trainer-local probe semantics ONLY (probe order + multi-split fallback;
+    trainer is the only consumer that needs this).
     """
-    out: Dict[str, Optional[Any]] = {
-        "compatibility_fingerprint": None,
-        "model_config_hash": None,
-        "feature_set_ref": None,
-        "_metadata_source": None,
-    }
-
     output_dir_resolved = Path(output_dir).expanduser().resolve()
     for relpath in _SIGNAL_METADATA_CANDIDATES:
         candidate = output_dir_resolved / relpath
-        if not candidate.exists():
-            continue
-        try:
-            with open(candidate, "r") as f:
-                metadata = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning(
-                "ledger_hook: failed to load %s: %s — skipping harvest",
-                candidate, exc,
-            )
-            continue
-
-        if not isinstance(metadata, dict):
-            logger.warning(
-                "ledger_hook: %s root is not a dict (got %s); skipping harvest",
-                candidate, type(metadata).__name__,
-            )
-            continue
-
-        # Phase II compatibility block (lives under "compatibility" sub-key
-        # post Phase Q.6.5). Harvest both nested and top-level for legacy
-        # pre-Phase-II signal_metadata.json (data_source != "mbo_lob" path).
-        compat_block = metadata.get("compatibility")
-        if isinstance(compat_block, dict):
-            fp = compat_block.get("fingerprint")
-            if isinstance(fp, str):
-                out["compatibility_fingerprint"] = fp
-
-        # model_config_hash also lives at signal_metadata top level
-        # (per Phase Y deployment 2026-05-05).
-        mch = metadata.get("model_config_hash")
-        if isinstance(mch, str):
-            out["model_config_hash"] = mch
-
-        # feature_set_ref top-level dict (per Phase 4 4c.4 propagation).
-        fs_ref = metadata.get("feature_set_ref")
-        if isinstance(fs_ref, dict):
-            out["feature_set_ref"] = fs_ref
-
-        out["_metadata_source"] = str(candidate)
-        # First hit wins; do not look further.
-        return out
-
-    return out
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _config_to_dict(config: Any) -> Dict[str, Any]:
@@ -307,7 +260,8 @@ def write_minimal_ledger_record(
         was skipped (no ledger dir found) OR failed (caught + logged).
     """
     try:
-        # Resolve ledger directory.
+        # Resolve ledger directory (trainer-local: handles operator-provided
+        # --ledger-dir + climb-from-output_dir fallback).
         records_dir = _resolve_ledger_dir(
             explicit_dir=ledger_dir,
             output_dir=output_dir,
@@ -319,15 +273,8 @@ def write_minimal_ledger_record(
 
         # Lazy imports to keep module-load surface small (matches
         # SimpleModelTrainer pattern at simple_trainer.py:773).
-        from hft_contracts.atomic_io import atomic_write_json
         from hft_contracts.canonical_hash import canonical_json_blob, sha256_hex
-        from hft_contracts.experiment_record import ExperimentRecord
-        from hft_contracts.provenance import Provenance, GitInfo
-
-        # Timestamp + name.
-        now = timestamp or datetime.now(timezone.utc)
-        timestamp_str = now.strftime("%Y%m%dT%H%M%S")
-        name = getattr(config, "name", "unnamed")
+        from hft_contracts.experiment_recorder import record_from_artifacts
 
         # Compute a stable fingerprint over the config dict. This is NOT
         # the orchestrator's structural fingerprint (which hashes a
@@ -338,23 +285,14 @@ def write_minimal_ledger_record(
         # records).
         config_dict = _config_to_dict(config)
         fingerprint = sha256_hex(canonical_json_blob(config_dict))
-        experiment_id = f"{name}_{timestamp_str}_{fingerprint[:8]}"
 
-        # Harvest trust columns from signal_metadata.json if present.
-        harvested = _harvest_signal_metadata(output_dir)
-        compatibility_fingerprint = harvested["compatibility_fingerprint"]
-        model_config_hash = harvested["model_config_hash"]
-        feature_set_ref = harvested["feature_set_ref"]
-        signal_metadata_source = harvested["_metadata_source"]
-
-        # Build training_config payload. We embed the resolved config
-        # dict + optionally the model_config_hash trust column (mirroring
-        # the orchestrator's pattern at cli.py:747).
-        training_config: Dict[str, Any] = dict(config_dict)
-        if model_config_hash is not None:
-            training_config["model_config_hash"] = model_config_hash
+        # Probe for signal_metadata.json across the 4 candidate paths
+        # (Phase 8D / #PY-223 retains trainer-local probe semantics; the
+        # actual HARVEST is delegated to the SSoT below).
+        signal_metadata_path = _find_signal_metadata_path(output_dir)
 
         # Flatten training_metrics (val_* + test_* + best-val-metric).
+        # Mirrors scripts/train.py::_dump_test_metrics flat-scalar convention.
         training_metrics: Dict[str, Any] = {}
         training_metrics.update(_flatten_metric_dict(val_metrics, prefix="val_"))
         training_metrics.update(_flatten_metric_dict(test_metrics, prefix="test_"))
@@ -367,72 +305,85 @@ def write_minimal_ledger_record(
             if isinstance(best_val, (int, float)) and not isinstance(best_val, bool):
                 training_metrics["best_val_metric"] = float(best_val)
 
-        # Minimal Provenance — no git context, no data_dir hash (those
-        # would require subprocess calls the orchestrator handles via
-        # build_provenance). The orchestrator-side ``hft-ops ledger
-        # rebuild-index`` path can re-derive provenance from a fuller
-        # context if needed later.
-        contract_version = getattr(config, "contract_version", "3.0")
-        try:
-            provenance = Provenance(
-                git=GitInfo(commit_hash="", branch="", dirty=False, short_hash=""),
-                config_hashes={"trainer": fingerprint},
-                data_dir_hash=None,
-                contract_version=contract_version,
-                timestamp_utc=now.isoformat(),
-                retroactive=False,
-                schema_version="1.0",
-            )
-        except Exception as exc:  # pragma: no cover — defensive
-            logger.warning(
-                "ledger_hook: Provenance construction failed (%s); "
-                "skipping ledger write",
-                exc,
-            )
-            return None
-
-        # Tags — pull from config if available.
+        # Tags from config (Pydantic v2 SafeBaseModel OR legacy attr).
         tags = list(getattr(config, "tags", []) or [])
 
-        # Construct ExperimentRecord. Only fields documented as required by
-        # ``hft_contracts.experiment_record.ExperimentRecord`` are populated;
-        # the rest fall through to defaults.
-        record = ExperimentRecord(
-            experiment_id=experiment_id,
-            name=name,
-            manifest_path="",  # direct invocation — no manifest
-            fingerprint=fingerprint,
-            feature_set_ref=feature_set_ref,
-            compatibility_fingerprint=compatibility_fingerprint,
-            signal_export_output_dir=signal_metadata_source,
-            provenance=provenance,
+        # Phase 8D / #PY-223 (2026-05-14): delegate ExperimentRecord
+        # construction + trust-column harvest + Phase Y composer to the
+        # hft-contracts SSoT (v2.8.0+; commit d773ac4).
+        #
+        # The SSoT handles:
+        #   - harvest_trust_columns_from_signal_metadata (when path provided)
+        #     — populates feature_set_ref + compatibility_fingerprint +
+        #     model_config_hash from signal_metadata.json (graceful None when
+        #     file missing OR pre-Phase-Y schema OR malformed)
+        #   - build_provenance (with empty git_info if not in repo; full
+        #     git capture when pipeline_root is a git working tree). The
+        #     trainer-side path computes data_dir_hash when data_dir
+        #     resolved — empty when not.
+        #   - ExperimentRecord construction with all 22+ fields
+        #   - Phase Y compute_experiment_provenance_hash composition AND
+        #     graceful-None when sources missing + WARN diagnostic
+        #   - model_config_hash injection into training_config (nested
+        #     location read by Phase Y composer)
+        #
+        # ledger_path: ABSOLUTE path that record_from_artifacts uses as the
+        # parent of "records/" subdir. _resolve_ledger_dir returns the
+        # records/ dir directly; pass its parent.
+        contract_version = getattr(config, "contract_version", "3.0")
+        now = timestamp or datetime.now(timezone.utc)
+
+        # The trainer-side data_dir is config.data.data_dir (when accessible).
+        # build_provenance needs Path-like. Graceful None: SSoT handles.
+        data_dir = None
+        cfg_data = getattr(config, "data", None)
+        if cfg_data is not None:
+            raw_data_dir = getattr(cfg_data, "data_dir", None)
+            if raw_data_dir:
+                data_dir = Path(raw_data_dir).expanduser().resolve()
+
+        # Hypothesis / description / pipeline_root with graceful fallbacks.
+        # pipeline_root resolution: explicit > climb-from-records_dir
+        # (records_dir.parent.parent is typically <pipeline_root>/hft-ops/ledger).
+        if pipeline_root is None:
+            pipeline_root = records_dir.parent.parent.parent  # records/ → ledger/ → hft-ops/ → root
+
+        # ledger_path=None: SSoT constructs the record + composes Phase Y
+        # composer but does NOT write. We save manually below to preserve
+        # the trainer-local `records_dir` semantic where _resolve_ledger_dir
+        # returns the FILE-PARENT directory (not a parent-of-records-dir).
+        # This avoids SSoT's `<ledger_path>/records/<id>.json` layout
+        # convention that would land the file one directory deeper than
+        # the trainer-local helper expects.
+        record = record_from_artifacts(
+            name=getattr(config, "name", "unnamed"),
+            pipeline_root=Path(pipeline_root),
             contract_version=contract_version,
-            training_config=training_config,
+            fingerprint=fingerprint,
+            signal_metadata_path=signal_metadata_path,
             training_metrics=training_metrics,
-            tags=tags,
-            created_at=now.isoformat(),
-            duration_seconds=duration_seconds,
-            status="completed",
+            training_config=config_dict,
+            data_dir=data_dir,
+            trainer_config_dict=config_dict,
             stages_completed=["training"],
+            status="completed",
+            duration_seconds=duration_seconds if duration_seconds is not None else 0.0,
+            tags=tags,
+            ledger_path=None,  # save manually below to preserve trainer path semantic
         )
 
-        # Atomic write — fails loud on OSError per atomic_io.py contract.
-        #
-        # Timestamp-collision semantic: same name + same timestamp + same
-        # config fingerprint produces the same ``experiment_id`` → atomic
-        # write OVERWRITES the prior record. Acceptable per the
-        # ``atomic_write_json`` contract (it is overwrite-safe); operators
-        # re-running the same config within a single second get a single
-        # canonical record.
-        record_path = records_dir / f"{experiment_id}.json"
-        record_dict = record.to_dict()
-        atomic_write_json(record_path, record_dict)
+        # Save manually to records_dir per trainer-local path contract.
+        # Uses ExperimentRecord.save() → hft_contracts.atomic_io.atomic_write_json
+        # SSoT (tmp + fsync + os.replace; overwrite-safe per
+        # ``atomic_write_json`` documented contract).
+        record_path = records_dir / f"{record.experiment_id}.json"
+        record.save(record_path)
         logger.info(
             "ledger_hook: wrote minimal ExperimentRecord to %s "
-            "(compat_fp=%s, mch=%s)",
+            "(compat_fp=%s, epH=%s)",
             record_path,
-            "✓" if compatibility_fingerprint else "absent",
-            "✓" if model_config_hash else "absent",
+            "✓" if record.compatibility_fingerprint else "absent",
+            "✓" if record.experiment_provenance_hash else "absent",
         )
         return record_path
 

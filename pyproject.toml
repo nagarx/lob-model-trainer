@@ -37,7 +37,7 @@ dependencies = [
     # - callbacks.py:689 (ModelCheckpoint best.pt copy → atomic_copy)
     # - simple_trainer.py:761-764 (4 sklearn signal saves → atomic_write_npy)
     # - exporter.py:497-529 (9 pytorch signal saves → atomic_write_npy)
-    "hft-contracts>=2.7.0",
+    "hft-contracts>=2.8.0",
 
     # Shared metrics library (IC, R², regression metrics with NaN safety)
     # >=0.1.9: Cluster Z extension (Sub-cycle 1 2026-05-12) — block_bootstrap_ci

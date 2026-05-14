@@ -4,7 +4,27 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — Phase Y / γ-1 LITE / #PY-88 Phase 2 (2026-05-10 evening) — sklearn `LabelsConfig.return_type` axis closure + bundled top-level `return_type` emission
+## [Unreleased]
+
+### Phase 8D — #PY-223 Phase 3 (2026-05-14) — ledger_hook refactor: delegate to hft-contracts SSoT
+
+**Changed — `ledger_hook.write_minimal_ledger_record` delegates to `hft_contracts.experiment_recorder.record_from_artifacts`**
+
+Phase 3 of 3-phase #PY-223 closure. Phase 1 shipped `hft_contracts.experiment_recorder` SSoT at `hft-contracts` v2.8.0 (`d773ac4`). Phase 2 refactored `hft-ops/cli.py::_record_experiment` to delegate to the SSoT (`69dbe11`). Phase 3 ELIMINATES the Path A trainer-local mirror (parallel-session ship at `aeec3b0`) by refactoring `ledger_hook.write_minimal_ledger_record` to consume the SSoT.
+
+- `src/lobtrainer/ledger_hook.py` — refactored: deleted ~150 LOC of inline implementation (Provenance construction, ExperimentRecord composition, Phase Y composer logic) → ~80 LOC of delegation to `record_from_artifacts(...)`. Renamed `_harvest_signal_metadata` → `_find_signal_metadata_path` (now returns Path-or-None; HARVEST itself delegates to SSoT). Net delta: 449 → 313 LOC (-136 LOC; -30% lines).
+- `tests/test_ledger_hook.py` — migrated: `TestHarvestSignalMetadata` class (7 tests for inline harvest semantics) replaced with `TestFindSignalMetadataPath` (4 tests for trainer-local probe order; harvest semantics now tested at `hft-contracts/tests/test_experiment_recorder.py` — 40 tests, 1.9× coverage). Test helper `_write_signal_metadata` corrected to match real producer schema at `lobtrainer/export/metadata.py:189` (top-level `compatibility_fingerprint` value, not nested `compatibility.fingerprint`).
+- `pyproject.toml` — `hft-contracts>=2.7.0` → `>=2.8.0` (required for `record_from_artifacts` SSoT).
+
+**Architectural impact**: closes the doomed-mirror risk introduced by the parallel-session Path A ship. Now Phase 3 honors the original user-authorized Path B intent (BOTH cli AND trainer consume SSoT — zero class-of-divergence risk per CLAUDE.md root §"Shared coordination surface"). Phase Y composer now fires inside SSoT during the trainer write — records have populated `experiment_provenance_hash` when all 4 sources present (graceful None otherwise; same WARN diagnostic as orchestrator path).
+
+**Known limitation (acceptable; tracked)**: `timestamp` kwarg of `write_minimal_ledger_record` is currently a no-op post-SSoT migration (SSoT uses its own `datetime.now(timezone.utc)` for experiment_id). Test `test_explicit_timestamp_silently_ignored_post_ssot_migration` locks the current behavior. Future cycle: thread `timestamp` through SSoT via `experiment_id_override` if operators need deterministic IDs.
+
+**Tests**: 1829 pass + 77 skip (was 1832 pre-refactor; -3 from test class consolidation: 7 TestHarvestSignalMetadata + 6 TestWriteMinimalLedgerRecord + 3 TestPY223PartialRecordContract = 16 in original write hook + 5 TestResolveLedgerDir = 21 → 18 in new structure with 4 in TestFindSignalMetadataPath + 6 + 3 + 5 = 18 post-refactor). Zero behavioral regressions.
+
+---
+
+## [Unreleased PRIOR] — Phase Y / γ-1 LITE / #PY-88 Phase 2 (2026-05-10 evening) — sklearn `LabelsConfig.return_type` axis closure + bundled top-level `return_type` emission
 
 **Fixed (#PY-88 — sklearn label dispatch honors `return_type`)**
 

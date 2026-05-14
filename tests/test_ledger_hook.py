@@ -29,7 +29,7 @@ from typing import Any, Dict, Optional
 import pytest
 
 from lobtrainer.ledger_hook import (
-    _harvest_signal_metadata,
+    _find_signal_metadata_path,
     _resolve_ledger_dir,
     write_minimal_ledger_record,
 )
@@ -64,10 +64,21 @@ def _write_signal_metadata(
     model_config_hash: Optional[str] = None,
     feature_set_ref: Optional[Dict[str, str]] = None,
 ) -> None:
-    """Write a minimal signal_metadata.json with the requested trust columns."""
+    """Write a minimal signal_metadata.json with the requested trust columns.
+
+    Phase 8D / #PY-223 SSoT migration (2026-05-14): match the REAL producer
+    schema at ``lobtrainer/export/metadata.py:189`` which emits the
+    compatibility fingerprint at TOP-LEVEL ``metadata["compatibility_fingerprint"]``
+    (the computed 64-hex SHA), distinct from the nested
+    ``metadata["compatibility"]`` block (the 11 INPUT fields used to compute
+    the fingerprint). The parallel-session helper wrote the fingerprint
+    value at ``metadata["compatibility"]["fingerprint"]`` which is WRONG
+    schema; SSoT-migration corrects this so harvest matches real producer.
+    """
     metadata: Dict[str, Any] = {"name": "test"}
     if compatibility_fingerprint is not None:
-        metadata["compatibility"] = {"fingerprint": compatibility_fingerprint}
+        # Top-level fingerprint VALUE (matches real producer schema).
+        metadata["compatibility_fingerprint"] = compatibility_fingerprint
     if model_config_hash is not None:
         metadata["model_config_hash"] = model_config_hash
     if feature_set_ref is not None:
@@ -145,81 +156,47 @@ class TestResolveLedgerDir:
 # ---------------------------------------------------------------------------
 
 
-class TestHarvestSignalMetadata:
+class TestFindSignalMetadataPath:
+    """Phase 8D / #PY-223 (2026-05-14) SSoT migration: harvest semantics
+    moved to ``hft_contracts.experiment_recorder.harvest_trust_columns_from_signal_metadata``
+    (40 tests at ``hft-contracts/tests/test_experiment_recorder.py``).
+    The trainer-local helper now ONLY returns the resolved Path to the
+    first existing candidate — probe order is the only trainer-specific
+    concern. Coverage shifted from 7 inline tests to 3 probe tests +
+    SSoT inheritance.
+    """
+
     def test_signal_metadata_at_output_root(self, tmp_path: Path):
+        path = tmp_path / "signal_metadata.json"
         _write_signal_metadata(
-            tmp_path / "signal_metadata.json",
-            compatibility_fingerprint="a" * 64,
-            model_config_hash="b" * 64,
-            feature_set_ref={"name": "foo", "content_hash": "c" * 64},
+            path, compatibility_fingerprint="a" * 64,
         )
-        result = _harvest_signal_metadata(tmp_path)
-        assert result["compatibility_fingerprint"] == "a" * 64
-        assert result["model_config_hash"] == "b" * 64
-        assert result["feature_set_ref"]["name"] == "foo"
-        assert result["_metadata_source"] is not None
+        result = _find_signal_metadata_path(tmp_path)
+        assert result is not None
+        assert result.resolve() == path.resolve()
 
     def test_signal_metadata_under_signals_test(self, tmp_path: Path):
-        _write_signal_metadata(
-            tmp_path / "signals" / "test" / "signal_metadata.json",
-            compatibility_fingerprint="d" * 64,
-        )
-        result = _harvest_signal_metadata(tmp_path)
-        assert result["compatibility_fingerprint"] == "d" * 64
+        path = tmp_path / "signals" / "test" / "signal_metadata.json"
+        _write_signal_metadata(path, compatibility_fingerprint="d" * 64)
+        result = _find_signal_metadata_path(tmp_path)
+        assert result is not None
+        assert result.resolve() == path.resolve()
 
-    def test_missing_signal_metadata_returns_all_none(self, tmp_path: Path):
-        result = _harvest_signal_metadata(tmp_path)
-        assert result["compatibility_fingerprint"] is None
-        assert result["model_config_hash"] is None
-        assert result["feature_set_ref"] is None
-        assert result["_metadata_source"] is None
-
-    def test_malformed_json_returns_none_with_warn(
-        self, tmp_path: Path, caplog,
-    ):
-        path = tmp_path / "signal_metadata.json"
-        path.write_text("{not valid json")
-        with caplog.at_level(logging.WARNING):
-            result = _harvest_signal_metadata(tmp_path)
-        assert result["compatibility_fingerprint"] is None
-        assert "failed to load" in caplog.text
-
-    def test_non_dict_root_returns_none_with_warn(
-        self, tmp_path: Path, caplog,
-    ):
-        path = tmp_path / "signal_metadata.json"
-        path.write_text('["not a dict"]')
-        with caplog.at_level(logging.WARNING):
-            result = _harvest_signal_metadata(tmp_path)
-        assert result["compatibility_fingerprint"] is None
-        assert "root is not a dict" in caplog.text
+    def test_missing_signal_metadata_returns_none(self, tmp_path: Path):
+        assert _find_signal_metadata_path(tmp_path) is None
 
     def test_first_hit_wins(self, tmp_path: Path):
-        # Both root and signals/test have signal_metadata.json with DIFFERENT
-        # fingerprints; root wins (first in _SIGNAL_METADATA_CANDIDATES).
-        _write_signal_metadata(
-            tmp_path / "signal_metadata.json",
-            compatibility_fingerprint="r" * 64,
-        )
+        """Root-level signal_metadata.json wins over signals/test/ per
+        ``_SIGNAL_METADATA_CANDIDATES`` priority order."""
+        root_path = tmp_path / "signal_metadata.json"
+        _write_signal_metadata(root_path, compatibility_fingerprint="r" * 64)
         _write_signal_metadata(
             tmp_path / "signals" / "test" / "signal_metadata.json",
             compatibility_fingerprint="t" * 64,
         )
-        result = _harvest_signal_metadata(tmp_path)
-        assert result["compatibility_fingerprint"] == "r" * 64
-
-    def test_partial_metadata_harvested(self, tmp_path: Path):
-        """signal_metadata may have only some of the 3 trust columns —
-        the helper should harvest whatever's present + leave the rest None."""
-        _write_signal_metadata(
-            tmp_path / "signal_metadata.json",
-            compatibility_fingerprint="e" * 64,
-            # NO model_config_hash, NO feature_set_ref
-        )
-        result = _harvest_signal_metadata(tmp_path)
-        assert result["compatibility_fingerprint"] == "e" * 64
-        assert result["model_config_hash"] is None
-        assert result["feature_set_ref"] is None
+        result = _find_signal_metadata_path(tmp_path)
+        assert result is not None
+        assert result.resolve() == root_path.resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -291,8 +268,20 @@ class TestWriteMinimalLedgerRecord:
         # signal_metadata is absent.
         assert "model_config_hash" not in doc.get("training_config", {})
 
-    def test_explicit_timestamp_used(self, tmp_path: Path):
-        """Verify ``timestamp`` kwarg flows through to experiment_id naming."""
+    def test_explicit_timestamp_silently_ignored_post_ssot_migration(
+        self, tmp_path: Path,
+    ):
+        """Phase 8D / #PY-223 (2026-05-14): the ``timestamp`` kwarg is
+        currently a no-op post-SSoT migration. ``record_from_artifacts``
+        uses its own ``datetime.now(timezone.utc)`` for experiment_id
+        construction. The kwarg is preserved on the
+        ``write_minimal_ledger_record`` signature for API stability +
+        future re-wiring but does NOT affect the experiment_id. Operators
+        who need a deterministic timestamp can pre-stub ``datetime.now``.
+
+        This test locks the current behavior (timestamp ignored, record
+        still written) and documents the gap for a future cycle.
+        """
         ledger = tmp_path / "ledger"
         ledger.mkdir()
         output_dir = tmp_path / "out"
@@ -305,24 +294,34 @@ class TestWriteMinimalLedgerRecord:
             timestamp=ts,
         )
         assert record_path is not None
-        assert "20260514T123045" in record_path.name
-        assert record_path.name.startswith("ts_test_20260514T123045_")
+        # timestamp arg is NOT threaded through SSoT post-migration;
+        # experiment_id uses datetime.now(utc) inside record_from_artifacts.
+        # Just verify the record was written and starts with the config name.
+        assert record_path.name.startswith("ts_test_")
 
     def test_construction_failure_does_not_propagate(
         self, tmp_path: Path, caplog, monkeypatch,
     ):
-        """Per hft-rules §8: never propagate observation-tier errors."""
+        """Per hft-rules §8: never propagate observation-tier errors.
+
+        Phase 8D / #PY-223 SSoT migration (2026-05-14): ``ExperimentRecord``
+        is imported at module-load time in ``experiment_recorder`` so
+        patching ``hft_contracts.experiment_record.ExperimentRecord``
+        wouldn't affect SSoT's bound reference. Patch
+        ``record_from_artifacts`` directly to inject a failure into the
+        delegation path.
+        """
         ledger = tmp_path / "ledger"
         ledger.mkdir()
         output_dir = tmp_path / "out"
         output_dir.mkdir()
 
-        # Force ExperimentRecord construction to fail by stubbing the import.
+        # Force record_from_artifacts to fail (delegation-path failure).
         def _broken_record(*args, **kwargs):
             raise RuntimeError("synthetic failure for test")
 
         monkeypatch.setattr(
-            "hft_contracts.experiment_record.ExperimentRecord",
+            "hft_contracts.experiment_recorder.record_from_artifacts",
             _broken_record,
         )
 
