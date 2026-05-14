@@ -225,9 +225,35 @@ class SignalExporter:
         return result
 
     def _infer_classification(self, model, device, loader) -> Dict[str, Any]:
-        """Standard classification: logits → argmax predictions."""
+        """Standard classification: logits → argmax predictions + synthesized
+        agreement_ratio and confirmation_score for backtester compatibility.
+
+        Phase R-17a (2026-05-14): adds ``agreement_ratio`` + ``confirmation_score``
+        keys so single-horizon classification exports satisfy the readability
+        backtester's gate contract at
+        ``lob-backtester/.../strategies/readability.py:117-132``. Both arrays
+        would be ``None`` without this synthesis, causing
+        ``data.agreement_ratio[i]`` to raise ``TypeError: 'NoneType' is not
+        subscriptable`` at backtest time.
+
+        Semantic note: For single-horizon classification, ``agreement_ratio``
+        is **synthetic-constant 1.0** by construction (trivially "all horizons
+        agree" when there is only one horizon). This differs from
+        ``_infer_hmhp_classification``, where ``agreement_ratio`` measures
+        inter-horizon agreement of separate decoder heads (see hmhp.py:467-468).
+        The downstream ``agreement_stats.full_agreement = sum(ag > 0.99)`` at
+        ``_build_metadata`` (L599-600) will report 100% for non-HMHP
+        single-horizon — interpret as "no inter-horizon information"
+        rather than "high confidence". Confirmation_score = per-sample
+        softmax-max is the meaningful confidence filter for non-HMHP
+        classification (and the backtester gate at readability.py:121).
+        """
+        import torch.nn.functional as F
+        from hft_contracts.validation import assert_finite_array
+
         all_preds = []
         all_labels = []
+        all_conf = []
 
         for features, labels in loader:
             features = features.to(device)
@@ -236,14 +262,69 @@ class SignalExporter:
             all_preds.append(preds)
             all_labels.append(labels.numpy())
 
+            # Per-sample softmax-max confidence. Defensive binary-signal guard:
+            # for ``num_classes == 1`` (BINARY_SIGNAL task_type at
+            # strategies/classification.py:91), softmax over dim=1 on shape
+            # ``[B, 1]`` is trivially 1.0 — emit 1.0 explicitly so the semantic
+            # is clear at consumer side rather than relying on a degenerate
+            # softmax that could surface as misleading "high confidence".
+            #
+            # Note: ``.detach()`` is required because softmax (unlike argmax)
+            # preserves gradients — without it, ``.numpy()`` would raise
+            # ``RuntimeError: Can't call numpy() on Tensor that requires grad``
+            # when ``_infer_classification`` is invoked outside the
+            # ``@torch.no_grad()`` context of ``_run_inference`` (e.g., in
+            # direct unit tests). Argmax above does NOT need .detach() because
+            # argmax has no gradient. Calls via ``_run_inference`` (production
+            # path) are already grad-disabled; .detach() is a no-op there.
+            if output.logits.shape[1] > 1:
+                conf = (
+                    F.softmax(output.logits, dim=1)
+                    .max(dim=1)
+                    .values
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
+            else:
+                conf = np.ones(output.logits.shape[0], dtype=np.float32)
+            all_conf.append(conf)
+
         predictions = np.concatenate(all_preds).astype(np.int32)
         labels = np.concatenate(all_labels).astype(np.int32)
+        confirmation_score = np.concatenate(all_conf).astype(np.float64)
+        # agreement_ratio synthetic-constant 1.0 — see semantic note in docstring.
+        agreement_ratio = np.ones(len(predictions), dtype=np.float64)
+
+        # Phase R-17a (2026-05-14): producer fail-loud per hft-rules §8.
+        # Mirrors ``_infer_regression`` (L393-401) and
+        # ``_infer_hmhp_regression`` (L449+) patterns. NaN/Inf in
+        # confirmation_score indicates degenerate logits (e.g., -inf
+        # inputs from a stale broken checkpoint). Refuse to emit corrupt
+        # inference output at the producer boundary rather than letting
+        # it propagate through the readability backtest filter, where
+        # ``confirmation_score > min_confidence`` would silently become
+        # ``NaN > 0.65 == False`` and drop every signal silently.
+        assert_finite_array(
+            confirmation_score,
+            name="SignalExporter._infer_classification.confirmation_score",
+            extra_diagnostic=(
+                "Refusing to emit corrupt inference output. confirmation_score "
+                "is softmax-max of logits — non-finite values indicate "
+                "degenerate logits. Investigate model numerical stability "
+                "(loss divergence, BiN/normalization init, attention mask, etc.)."
+            ),
+        )
+        # agreement_ratio is synthetic-constant 1.0 → finite by construction;
+        # no assert_finite_array needed.
 
         return {
             "signal_type": "classification",
             "n_samples": len(predictions),
             "predictions": predictions,
             "labels": labels,
+            "agreement_ratio": agreement_ratio,
+            "confirmation_score": confirmation_score,
         }
 
     def _infer_hmhp_classification(self, model, device, loader) -> Dict[str, Any]:

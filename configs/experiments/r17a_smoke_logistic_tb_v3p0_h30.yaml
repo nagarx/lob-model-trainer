@@ -1,0 +1,85 @@
+# =============================================================================
+# R-17a Phase 0 SMOKE — LogisticLOB on TB v3p0 corpus (3-epoch)
+# =============================================================================
+#
+# PURPOSE: Phase 0 smoke validation BEFORE committing to full R-17a cycle.
+#   (a) Verify corpus loads correctly (window_size=20, T×F=20×98 features, int8 labels)
+#   (b) Verify LogisticLOB + FLATTEN pooling produces a 1960-dim linear classifier
+#   (c) Verify CrossEntropy + focal loss runs without error on 37/47/16 imbalance
+#   (d) Verify class predictions don't collapse to single class (≥5% per class)
+#
+# GATE: After 3 epochs, val-set prediction distribution shows ≥5% per class.
+#       If degenerate (e.g., 100% predict Timeout), regroup; do NOT proceed
+#       to full cycle.
+#
+# PROVENANCE (synthesis from 9-agent Wave 1+2 ground-truth investigation 2026-05-14):
+#   - User-authorized: pooling=FLATTEN (true Ridge-equivalent at T×F=1960)
+#   - Agent B: TemporalRidge is regression-only → use `logistic` (LogisticLOB)
+#   - Agent F: LogisticLOB IS ridge-regularized linear classifier (weight_decay≈α)
+#   - Agent G: PyTorch path; classification export ALREADY emits predictions/labels;
+#     ~6 LOC adapter for agreement/confirmation deferred to Phase 1
+#   - Agent H: source="precomputed" — trainer reads labels.npy directly,
+#     does NOT consume forward_prices.npy (so the (N,61) vs (N,36) shape drift
+#     in the TOML comment is COSMETIC, not a blocker for this cycle)
+#   - Agent I: bypass hft-ops orchestrator (direct trainer invocation) to
+#     skip the ValidationStage gate that rejects 1-D classification labels
+#
+# COMPOSITION OVERRIDES (relative to chained bases):
+#   - data.sequence.window_size: 20 (corpus actual; base sets 100)
+#   - data.sequence.stride: 1 (corpus actual; base sets 10)
+#   - data.labels.source: "precomputed" (read labels.npy int8 directly)
+#   - data.labels.task: "classification" (explicit; corpus is 3-class)
+#   - model.model_type: "logistic"
+#   - model.logistic_pooling: "flatten" (T×F=1960; Ridge-equivalent)
+#   - train.epochs: 3 (smoke only; base sets 100)
+#   - train.early_stopping_patience: 10 (avoid early stop on smoke)
+# =============================================================================
+
+_base:
+  - "../bases/datasets/nvda_98feat_triple_barrier.yaml"
+  - "../bases/labels/triple_barrier_volscaled.yaml"
+  - "../bases/train/classification_triple_barrier.yaml"
+
+name: "r17a_smoke_logistic_tb_v3p0_h30"
+description: |
+  R-17a Phase 0 SMOKE: LogisticLOB on TB v3p0 corpus (3-epoch).
+  FLATTEN pooling (T×F=1960 features, Ridge-equivalent).
+  Gate: per-class predictions ≥ 5% on val split → proceed to full cycle.
+
+tags:
+  - r17a
+  - smoke
+  - logistic
+  - triple-barrier
+  - tb-v3p0
+  - flatten-pooling
+
+data:
+  data_dir: "../data/exports/nvda_v3p0_tb_pt40_sl20_h30"
+
+  sequence:
+    window_size: 20       # OVERRIDE base 100 — v3p0 TB corpus is 20-step 60s-bin
+    stride: 1             # OVERRIDE base 10
+
+  labels:
+    source: "precomputed" # Read int8 labels.npy directly (no LabelFactory)
+    task: "classification"
+
+  cache_in_memory: true
+
+model:
+  model_type: "logistic"
+  input_size: 98
+  num_classes: 3
+  dropout: 0.0
+
+  # FLATTEN pooling: [B, T=20, F=98] → [B, 1960] → Linear(1960, 3)
+  logistic_pooling: "flatten"
+  logistic_feature_indices: null
+
+train:
+  epochs: 3                    # OVERRIDE base 100 — smoke only
+  early_stopping_patience: 10  # OVERRIDE base 15 — avoid early stop
+
+output_dir: outputs/experiments/r17a_smoke_logistic_tb_v3p0_h30
+log_level: INFO

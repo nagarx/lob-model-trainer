@@ -1,0 +1,100 @@
+# =============================================================================
+# R-17a — LogisticLOB on TB v3p0 corpus (production, 100-epoch full cycle)
+# =============================================================================
+#
+# PURPOSE: First execution-aligned classification cycle in pipeline history.
+#   Tests whether Triple-Barrier labels + LogisticLOB (Ridge-equivalent at
+#   FLATTEN pooling T×F=1960) clears the E8 label-execution mismatch identified
+#   in R-16e Lesson #90 ("smoothed × {Ridge, TLOB} both produce mean OptRet ≤ 0
+#   at matched H60-hold → LABEL-SIDE STRUCTURAL, NOT hold-mismatch artifact").
+#
+# DERIVED FROM smoke YAML `r17a_smoke_logistic_tb_v3p0_h30.yaml` (2026-05-14):
+#   - Same composition + same data/model overrides
+#   - REMOVED smoke-only overrides: `train.epochs: 3` and
+#     `train.early_stopping_patience: 10`
+#   - Let base `classification_triple_barrier.yaml` defaults apply
+#     (epochs=100, early_stopping_patience=15)
+#
+# PRE-REGISTERED H1-H6 GATES (per PRIMARY handoff §4 + Adv1 outcome-agnostic):
+#   - H1 PRIMARY three-conjunctive at deep_itm_1.4bps:
+#       (a) mean PT-trade OptRet > 0% AND
+#       (b) pooled bootstrap CI lower > 0% AND
+#       (c) PT-trade win rate > 50% (corresponds to PT-precision > 35.7% in
+#           pure-EV terms with asymmetric 2:1 R:R per Adv1 §2)
+#   - H2 BASELINE: PT precision > 21.1% (16.1% prior + 5pp lift)
+#   - H3 vs R-16e SMOOTHED: best OptRet > +0.51%
+#   - H4 vs R-16e POINT (diagnostic): best OptRet > +1.0%
+#   - H5 ARCHITECTURAL: each class predicted ≥ 5% (smoke v2 PASS at 47.9/42.5/9.6)
+#   - H6 COST-COVERAGE: empirical PT-hit rate on PT-predicted samples ≥ 50%
+#
+# DECISION MATRIX: GO if H1 + H5 PASS; GO-CONDITIONAL if H1 borderline + H5 PASS;
+#   REFUTE if H1 FAILS + H5 PASS; INDETERMINATE if H1 borderline + H5 marginal;
+#   ABORT if H5 FAILS (class collapse).
+#
+# REVISED PRIORS (post 9-agent prep cycle): P(GO)≈0.20-0.30, P(REFUTE)≈0.50-0.65,
+#   P(INDETERMINATE)≈0.15-0.20. Train with OUTCOME-AGNOSTIC mindset (Adv1 §7).
+#
+# PROVENANCE: Inherits all 9-agent Wave 1+2 corrections from smoke YAML.
+# =============================================================================
+
+_base:
+  - "../bases/datasets/nvda_98feat_triple_barrier.yaml"
+  - "../bases/labels/triple_barrier_volscaled.yaml"
+  - "../bases/train/classification_triple_barrier.yaml"
+
+name: "r17a_logistic_tb_v3p0_h30"
+description: |
+  R-17a — Production cycle: LogisticLOB on TB v3p0 corpus (100-epoch).
+  FLATTEN pooling (T×F=1960 features, Ridge-equivalent).
+  First execution-aligned classification cycle; tests E8 label-side fix
+  per R-16e Lesson #90.
+
+tags:
+  - r17a
+  - production
+  - logistic
+  - triple-barrier
+  - tb-v3p0
+  - flatten-pooling
+  - execution-aligned
+
+data:
+  data_dir: "../data/exports/nvda_v3p0_tb_pt40_sl20_h30"
+
+  sequence:
+    window_size: 20       # OVERRIDE base 100 — v3p0 TB corpus is 20-step 60s-bin
+    stride: 1             # OVERRIDE base 10
+
+  labels:
+    source: "precomputed" # Read int8 labels.npy directly (no LabelFactory)
+    task: "classification"
+
+  cache_in_memory: true
+
+model:
+  model_type: "logistic"
+  input_size: 98
+  num_classes: 3
+  dropout: 0.0
+
+  # FLATTEN pooling: [B, T=20, F=98] → [B, 1960] → Linear(1960, 3)
+  logistic_pooling: "flatten"
+  logistic_feature_indices: null
+
+train:
+  # Only override is num_workers; otherwise inherit base
+  # `classification_triple_barrier.yaml` defaults (epochs=100,
+  # early_stopping_patience=15, focal γ=2, class_weights=true,
+  # batch_size=64, learning_rate=1e-4, weight_decay=1e-5, scheduler=cosine).
+  #
+  # num_workers=0 micro-fix per Phase 2 pre-impl gate (2026-05-14):
+  # base defaults to 4 workers. With cache_in_memory=true (data section),
+  # multiprocessing fork would replicate the ~1.0 GB cache 4× at DataLoader
+  # construction → OOM hazard on full 233-day corpus + model state +
+  # gradients + activations. Smoke ran on subset without symptoms, but
+  # production 100-epoch run on full corpus has higher fork-time exposure.
+  # Synchronous loading (num_workers=0) is acceptable for cached dataset.
+  num_workers: 0
+
+output_dir: outputs/experiments/r17a_logistic_tb_v3p0_h30
+log_level: INFO

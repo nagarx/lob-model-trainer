@@ -1,0 +1,66 @@
+{
+  "resolved": {
+    "data": {
+      "cache_in_memory": true,
+      "data_dir": "../data/exports/nvda_v3p0_tb_pt40_sl20_h30",
+      "feature_count": 98,
+      "labeling_strategy": "triple_barrier",
+      "labels": {
+        "source": "precomputed",
+        "task": "classification"
+      },
+      "normalization": {
+        "clip_value": 10.0,
+        "eps": 1e-08,
+        "exclude_features": [
+          93
+        ],
+        "strategy": "hybrid"
+      },
+      "num_classes": 3,
+      "sequence": {
+        "stride": 1,
+        "window_size": 20
+      }
+    },
+    "description": "R-17a \u2014 Production cycle: LogisticLOB on TB v3p0 corpus (100-epoch).\nFLATTEN pooling (T\u00d7F=1960 features, Ridge-equivalent).\nFirst execution-aligned classification cycle; tests E8 label-side fix\nper R-16e Lesson #90.\n",
+    "log_level": "INFO",
+    "model": {
+      "dropout": 0.0,
+      "input_size": 98,
+      "logistic_feature_indices": null,
+      "logistic_pooling": "flatten",
+      "model_type": "logistic",
+      "num_classes": 3
+    },
+    "name": "r17a_logistic_tb_v3p0_h30",
+    "output_dir": "outputs/experiments/r17a_logistic_tb_v3p0_h30",
+    "tags": [
+      "r17a",
+      "production",
+      "logistic",
+      "triple-barrier",
+      "tb-v3p0",
+      "flatten-pooling",
+      "execution-aligned"
+    ],
+    "train": {
+      "batch_size": 64,
+      "early_stopping_patience": 15,
+      "epochs": 100,
+      "focal_gamma": 2.0,
+      "gradient_clip_norm": 1.0,
+      "learning_rate": 0.0001,
+      "loss_type": "focal",
+      "mixed_precision": false,
+      "num_workers": 0,
+      "pin_memory": true,
+      "scheduler": "cosine",
+      "seed": 42,
+      "task_type": "multiclass",
+      "use_class_weights": true,
+      "weight_decay": 1e-05
+    }
+  },
+  "status": "ok"
+}

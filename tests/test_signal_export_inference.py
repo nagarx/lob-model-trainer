@@ -238,6 +238,138 @@ class TestInferClassification:
             f"Invalid class indices: {set(result['predictions'])}"
         )
 
+    # =========================================================================
+    # Phase R-17a (2026-05-14) — agreement_ratio + confirmation_score synthesis
+    # =========================================================================
+
+    def test_agreement_ratio_present_and_ones(self, clf_model, clf_loader):
+        """Phase R-17a: agreement_ratio synthesized as all-ones for single-horizon.
+
+        Semantic: single-horizon classification trivially "all horizons agree"
+        because there is only one horizon. Differs from HMHP where
+        agreement_ratio measures inter-horizon agreement (hmhp.py:467-468).
+        """
+        config = _make_config(loss_type=LossType.CROSS_ENTROPY)
+        strategy = ClassificationStrategy(config, DEVICE)
+        exporter = _make_exporter(clf_model, strategy)
+
+        result = exporter._infer_classification(clf_model, DEVICE, clf_loader)
+        assert "agreement_ratio" in result, (
+            f"Phase R-17a adapter must emit agreement_ratio key "
+            f"(got keys: {list(result.keys())})"
+        )
+        assert result["agreement_ratio"].dtype == np.float64, (
+            f"Expected float64, got {result['agreement_ratio'].dtype}"
+        )
+        assert result["agreement_ratio"].shape == (N_SAMPLES,), (
+            f"Expected shape ({N_SAMPLES},), got {result['agreement_ratio'].shape}"
+        )
+        assert np.all(result["agreement_ratio"] == 1.0), (
+            f"agreement_ratio should be synthetic-constant 1.0 for single-horizon; "
+            f"got unique values: {np.unique(result['agreement_ratio'])}"
+        )
+
+    def test_confirmation_score_present_softmax_max(self, clf_model, clf_loader):
+        """Phase R-17a: confirmation_score = per-sample softmax-max, dtype float64."""
+        config = _make_config(loss_type=LossType.CROSS_ENTROPY)
+        strategy = ClassificationStrategy(config, DEVICE)
+        exporter = _make_exporter(clf_model, strategy)
+
+        result = exporter._infer_classification(clf_model, DEVICE, clf_loader)
+        assert "confirmation_score" in result, (
+            f"Phase R-17a adapter must emit confirmation_score key "
+            f"(got keys: {list(result.keys())})"
+        )
+        assert result["confirmation_score"].dtype == np.float64
+        assert result["confirmation_score"].shape == (N_SAMPLES,)
+        # Softmax-max upper bound (one-hot extreme) is 1.0.
+        assert np.all(result["confirmation_score"] <= 1.0 + 1e-6), (
+            f"confirmation_score must be <= 1.0 (softmax-max upper bound); "
+            f"got max={result['confirmation_score'].max()}"
+        )
+
+    def test_confirmation_score_lower_bound_uniform(self, clf_model, clf_loader):
+        """Phase R-17a: confirmation_score >= 1/num_classes (uniform-softmax lower bound).
+
+        Mathematically, softmax-max for C classes is in [1/C, 1.0]: minimum at
+        uniform logits (e.g., zeros) gives 1/C; maximum at one-hot logits gives 1.0.
+        For NUM_CLASSES=3, lower bound is ~0.333.
+        """
+        config = _make_config(loss_type=LossType.CROSS_ENTROPY)
+        strategy = ClassificationStrategy(config, DEVICE)
+        exporter = _make_exporter(clf_model, strategy)
+
+        result = exporter._infer_classification(clf_model, DEVICE, clf_loader)
+        lower_bound = 1.0 / NUM_CLASSES - 1e-6  # epsilon for float rounding
+        assert np.all(result["confirmation_score"] >= lower_bound), (
+            f"confirmation_score must be >= 1/num_classes={1.0/NUM_CLASSES:.4f} "
+            f"(softmax-max lower bound); got min={result['confirmation_score'].min():.4f}"
+        )
+
+    def test_nan_guard_on_degenerate_logits(self, clf_loader):
+        """Phase R-17a §8 fail-loud: NaN logits → ValueError (refuse corrupt output).
+
+        Mirrors `_infer_regression` (L312-320) + `_infer_hmhp_regression`
+        (L396-403) patterns. Without this guard, NaN confirmation_score would
+        silently flow into the readability backtester where
+        ``confirmation_score > min_confidence`` evaluates to ``False`` for
+        NaN, silently dropping every signal.
+        """
+        from types import SimpleNamespace
+
+        class _NaNLogitsModel(torch.nn.Module):
+            def __init__(self, num_classes):
+                super().__init__()
+                self.num_classes = num_classes
+
+            def forward(self, features):
+                B = features.shape[0]
+                # All-NaN logits — softmax-max will be NaN, guard must raise.
+                logits = torch.full((B, self.num_classes), float("nan"))
+                return SimpleNamespace(logits=logits)
+
+        config = _make_config(loss_type=LossType.CROSS_ENTROPY)
+        strategy = ClassificationStrategy(config, DEVICE)
+        nan_model = _NaNLogitsModel(NUM_CLASSES)
+        exporter = _make_exporter(nan_model, strategy)
+
+        with pytest.raises(ValueError, match=r"(?i)confirmation_score|non.?finite|NaN"):
+            exporter._infer_classification(nan_model, DEVICE, clf_loader)
+
+    def test_binary_signal_defensive_guard(self, features):
+        """Phase R-17a: num_classes=1 (BINARY_SIGNAL) → confirmation_score = 1.0.
+
+        For ``num_classes == 1`` (BINARY_SIGNAL task_type at
+        strategies/classification.py:91), ``F.softmax(logits, dim=1)`` on shape
+        ``[B, 1]`` is trivially 1.0 — but emitting that as
+        "confidence" is misleading. Defensive guard emits 1.0 explicitly so
+        the semantic is clear at consumer side.
+        """
+        from types import SimpleNamespace
+
+        class _BinaryLogitsModel(torch.nn.Module):
+            def forward(self, features):
+                B = features.shape[0]
+                # Single-logit output; shape [B, 1] simulates BINARY_SIGNAL.
+                logits = torch.randn(B, 1)
+                return SimpleNamespace(logits=logits)
+
+        config = _make_config(loss_type=LossType.CROSS_ENTROPY, num_classes=1)
+        strategy = ClassificationStrategy(config, DEVICE)
+        binary_model = _BinaryLogitsModel()
+        binary_loader = DataLoader(
+            TensorDataset(features, torch.zeros(N_SAMPLES, dtype=torch.long)),
+            batch_size=BATCH_SIZE,
+        )
+        exporter = _make_exporter(binary_model, strategy)
+
+        result = exporter._infer_classification(binary_model, DEVICE, binary_loader)
+        # Defensive guard emits 1.0 for binary-signal (not degenerate softmax).
+        assert np.all(result["confirmation_score"] == 1.0), (
+            f"Binary signal (num_classes=1) should emit confirmation_score=1.0 "
+            f"via defensive guard; got {result['confirmation_score'][:5]}"
+        )
+
 
 # =============================================================================
 # TestInferHMHPClassification
@@ -368,13 +500,24 @@ class TestRunInferenceDispatch:
     """Tests for _run_inference strategy dispatch."""
 
     def test_dispatches_to_classification(self, clf_model, clf_loader):
-        """Classification strategy → _infer_classification path."""
+        """Classification strategy → _infer_classification path.
+
+        Phase R-17a (2026-05-14): also asserts adapter-synthesized
+        ``agreement_ratio`` + ``confirmation_score`` keys propagate through
+        the dispatch (integration check — closes Adv2 gap that the per-method
+        tests cover keys-in-result but the dispatcher might fail to forward).
+        """
         config = _make_config(loss_type=LossType.CROSS_ENTROPY)
         strategy = ClassificationStrategy(config, DEVICE)
         exporter = _make_exporter(clf_model, strategy)
 
         result = exporter._run_inference(clf_loader)
         assert result["signal_type"] == "classification"
+        # Phase R-17a: verify Phase 1 adapter keys propagate through dispatch
+        assert "agreement_ratio" in result, (
+            "Phase R-17a adapter keys must propagate through _run_inference dispatch"
+        )
+        assert "confirmation_score" in result
 
     def test_dispatches_to_regression(self, reg_model, reg_loader):
         """Regression strategy → _infer_regression path."""

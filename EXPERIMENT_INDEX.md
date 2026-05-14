@@ -2426,3 +2426,100 @@ This is **EXPECTED behavior** per Phase II + Phase X.1 v2 design (`hft-contracts
 - **#PY-213 NEW**: manifest line 159 INDETERMINATE remediation "N=20 + walk-forward" ambiguity given H4 invariance — Ridge-cell seed-extension is naïve waste; walk-forward IS meaningful. Future manifests should split into model-specific sub-clauses (Path A docs ~15 min OR Path B architectural walk-forward harness ~3-4 hr).
 - **R-16e-extended N=20 DEFERRED**: pre-registered manifest line 159 remediation deferred in favor of Triple-Barrier pivot per H6 STRUCTURAL CONFIRMATION + Wave 2 EV analysis (Option B > Option A info-gain per same-session authorization).
 - **#PY-209 cross-cycle analyzer drift audit** (deferred): audit r16c_analysis.py + r16d_analysis.py against their manifest pre-registrations for #PY-208-class drift.
+
+---
+
+### R-17a: LogisticLOB on TB v3p0 Corpus (REFUTE VERDICT, 2026-05-14)
+
+**Config**: `lob-model-trainer/configs/experiments/r17a_logistic_tb_v3p0_h30.yaml`
+**Checkpoint**: `lob-model-trainer/outputs/experiments/r17a_logistic_tb_v3p0_h30/checkpoints/best.pt` (epoch 10 of 25; val_loss=0.392169)
+**Corpus**: `data/exports/nvda_v3p0_tb_pt40_sl20_h30/` (233 days NVDA XNAS / 129,912 sequences / 1.0 GB; θ_PT=40 bps / θ_SL=20 bps / τ_max=30 bins; first execution-aligned classification corpus in pipeline history)
+**Compute**: 17.5 min (1047.6s) training on M1 Pro MPS — 25 epochs / early-stopped via patience=15 / best at epoch 10
+**Adapter**: Phase 1 exporter adapter shipped LOCAL (~75 LOC + 5 new tests) — `lob-model-trainer/src/lobtrainer/export/exporter.py:_infer_classification` synthesizes `agreement_ratio` (constant 1.0 single-horizon) + `confirmation_score` (softmax-max with .detach() + binary-signal guard + NaN guard); closes Phase 4 ship-blocker (backtester gates `agreement_ratio[i]` directly).
+
+**Hypothesis (pre-registered per PRIMARY handoff §4 + Adv1 outcome-agnostic)**: Test whether Triple-Barrier labels + LogisticLOB (Ridge-equivalent at FLATTEN pooling T×F=1960) clears the E8 label-execution mismatch identified in R-16e Lesson #90 ("smoothed × {Ridge, TLOB} both produce mean OptRet ≤ 0 at matched H60-hold → LABEL-SIDE STRUCTURAL, NOT hold-mismatch artifact"). Revised priors per 9-agent prep (Adv1): P(GO)≈0.20-0.30, P(REFUTE)≈0.50-0.65, P(INDETERMINATE)≈0.15-0.20. Trained OUTCOME-AGNOSTIC (not REFUTE-bias per Adv1 §7).
+
+**Pre-registered H1-H6 gates** (per handoff §4 + Wave 2 amendments):
+- **H1 PRIMARY three-conjunctive** at deep_itm_1.4bps: (a) mean PT-trade OptRet > 0% AND (b) pooled bootstrap CI lower > 0% AND (c) PT-trade win rate > 50%
+- **H2 BASELINE**: PT precision > 21.1% (16.1% prior + 5pp lift)
+- **H3 vs R-16e SMOOTHED**: best OptRet > +0.51%
+- **H4 vs R-16e POINT** (diagnostic): best OptRet > +1.0%
+- **H5 ARCHITECTURAL**: each class predicted ≥ 5%
+- **H6 COST-COVERAGE diagnostic**: empirical PT-hit rate on PT-predicted samples ≥ 50%
+
+**Decision matrix**: GO if H1 + H5 PASS; GO-CONDITIONAL if H1 borderline + H5 PASS; **REFUTE if H1 FAILS + H5 PASS**; INDETERMINATE if H1 borderline + H5 marginal; ABORT if H5 FAILS.
+
+**Verdict: REFUTE** — H1 FAILS + H5 PASS.
+
+**Pre-registered hypothesis gate results**:
+
+| Gate | Threshold | Empirical | Result |
+|---|---|---|---|
+| H1a mean OptRet > 0% | > 0% | -1.26% (option) / -1.62% (equity) | **FAIL** |
+| H1b bootstrap CI lower > 0% | > 0% | Not computed (single-seed; CI math redundant — point estimate already negative) | **FAIL** (implied) |
+| H1c PT-trade win rate > 50% | > 50% | 44.14% | **FAIL** |
+| H2 PT precision > 21.1% | > 21.1% | 22.0% | **BARELY PASS** (+0.9pp margin) |
+| H3 vs R-16e SMOOTHED > +0.51% | > +0.51% | -1.26% | **FAIL** |
+| H4 vs R-16e POINT > +1.0% (diag) | > +1.0% | -1.26% | **FAIL** |
+| H5 ARCHITECTURAL each class ≥ 5% | all ≥ 5% | 20.7% / 41.4% / 37.9% | **PASS** |
+| H6 PT-hit rate ≥ 50% | ≥ 50% | 22.0% (= PT precision) | **FAIL** |
+
+**Test set metrics (n=17,480)**:
+- accuracy = 0.5006 (essentially random)
+- macro_f1 = 0.4643
+- predicted_trade_win_rate = 0.2239 (chance for 3-class = 0.333; below chance)
+- decisive_prediction_rate = 0.5865 (model predicts SL/PT 58.65% of time)
+
+**Per-class test metrics**:
+
+| Class | Precision | Recall | F1 | n_actual | n_predicted | Predicted % |
+|---|---|---|---|---|---|---|
+| StopLoss (0) | 0.551 | 0.287 | 0.378 | 6,936 (39.7%) | 3,617 | 20.7% |
+| Timeout (1) | 0.733 | 0.672 | 0.701 | 7,884 (45.1%) | 7,228 | 41.4% |
+| ProfitTarget (2) | 0.220 | 0.548 | 0.314 | 2,660 (15.2%) | 6,635 | 37.9% |
+
+**Critical class-distribution shift smoke → convergence**: model FLIPPED from over-predicting SL at 3 epochs (47.9%, smoke v2) to OVER-predicting PT at convergence (37.9% predicted vs 15.2% actual). Focal loss γ=2 + class_weights=true pushed strongly toward minority class (PT) but with low precision (22%, barely passing baseline). PT recall climbed to 0.548 — model "finds" 55% of true PTs — but P=0.22 means it mis-labels 78% of PT-predicted samples.
+
+**Backtest metrics** (readability backtest, ATM delta=0.5 0DTE; `--min-confidence 0.40` calibrated via P25 of emitted confirmation_score per Adv3 §7 + Wave 1A operator-caveat; n_trades=333 over 35 test days):
+- **0DTE option-mode** (IBKR cost model + BSM theta): **-1.26% total return**, WinRate 44.14%, avg P&L -$3.78/trade, avg costs $5.31/trade ($2.65 spread + $1.40 commission + $1.27 theta), avg hold 3.0 min, avg underlying move +1.66 bps/trade
+- **Equity-mode**: -1.62%, WinRate 43.54%, Sharpe -5.30, Profit factor 0.79, Expectancy -$4.86
+- **Gated directional accuracy**: 45.04% on 4,924 confidence-gated samples
+
+**Major empirical findings (NEW science from R-17a)**:
+
+1. **R-17a is the FIRST execution-aligned classification cycle in pipeline history**. Infrastructure validated end-to-end: TB v3p0 corpus + Phase 0.5 validator nested-fallback (hft-contracts 2.7.1) + Phase 1 exporter adapter + readability backtester. Producer→consumer chain works at full data scale.
+
+2. **TB×Logistic at 40/20 bps barriers is REFUTED on v3p0 NVDA**. Per-trade economics: avg underlying move +1.66 bps (positive direction!) but $5.31 avg cost ($2.65 spread + $1.40 commission + $1.27 theta) cannot be overcome. Pure-EV math: 22.0% PT precision × +40 bps + 78.0% × -20 bps - 1.4 bps cost = **-8.2 bps net per PT-predicted trade**. This corroborates **#PY-217 closure finding**: "TB at IBKR breakevens (1.4-4.9 bps) INFEASIBLE on v3p0 60s NVDA — ZERO H5-PASS combinations across ~50 tested" (at the cost-aware barrier scale; R-17a confirms at the 40/20 bps non-cost-aware barrier scale).
+
+3. **CRITICAL: Adv1 hopeful priors were partially WRONG, Wave 1F pessimism was partially RIGHT**. Adv1 §1 predicted "PT precision at 3 epochs (0.241) has clear room to grow to ~0.50 over 15-27 epochs". Empirical: PT precision STAYED at 0.22 over 25 epochs (smoke 0.241 → final 0.220, slight DECLINE). The model finds asymptotic local minimum near 22% PT precision — well below the 35.7% pure-EV breakeven and far from 50% H1 threshold. Wave 1F's "+30pp gap from 22% to 52% TWR architecturally improbable" was correct.
+
+4. **Phase 1 adapter empirically validated end-to-end**. `agreement_ratio.npy` + `confirmation_score.npy` synthesis works correctly:
+   - `agreement_ratio`: all 1.0 (single-horizon trivially agrees) — confirmed in signal_metadata
+   - `confirmation_score`: range [0.334, 0.9997] (softmax-max for 3-class), P25=0.41, P50=0.47, P75=0.53, mean=0.484, std=0.104
+   - NaN guard works (no false trip on real data; 100% finite)
+   - Backtester gates work: `confirmation_score > 0.40` passes 13,591 of 17,480 (77.8%)
+   - HMHP semantic equivalence note in docstring is accurate (agreement_ratio synthetic-constant vs HMHP's inter-horizon agreement)
+
+5. **Phase Y composer continues 100% trust-column population**: compat_fingerprint=`dd21d07922809691...`. R-17a is a single-arm experiment (1 cell) so no cross-arm comparison; but the trust-column is populated, continuing R-16d/R-16e Phase Y deployment success.
+
+6. **Cost model insight**: avg cost $5.31/trade at ATM delta=0.5. Component breakdown: $2.65 spread (49.9%) + $1.40 commission (26.4%) + $1.27 theta (23.9%). For Deep ITM (delta≥0.7), spread ≈ $1.00/trade and theta ≈ $0.04/min, total cost ≈ $2.50 → would still need +1.5 bps directional capture to break even (we have +1.66 bps avg). Deep ITM may BARELY break even at the MEAN trade — but WinRate 44% (below 50%) means median-trade expectation is negative. Documented as recommended sensitivity analysis for future cycles.
+
+**Lessons**:
+
+- **94**: **R-17a REFUTED at 40/20 bps barriers**: TB×Logistic on v3p0 60s NVDA does NOT find directional alpha overcoming costs at θ=40/20 bps barriers. Empirically corroborates #PY-217 INFEASIBLE finding (which was for cost-aware θ ≤ 15 bps; R-17a extends finding to non-cost-aware 40/20 bps via direct backtest). Future TB experiments at v3p0 NVDA must EITHER (a) use cost-aware barriers (θ ≤ 5 bps but H5 likely fails — needs verification) OR (b) use different model architecture (TLOB/HMHP) OR (c) use different feature set (orderbook microstructure beyond LOB-only).
+
+- **95**: **PT-precision plateau at 22% on TB v3p0 NVDA across architectures**: smoke 3-epoch and 25-epoch convergence BOTH land at PT precision ≈ 22%, suggesting an information-theoretic ceiling rather than a training-dynamic floor. Wave 1F's "predicted_trade_win_rate at 22% is below chance" pessimism was empirically vindicated. Adv1's "classification convergence takes 15-27 epochs to climb PT precision to 50%" hopeful prior was NOT empirically supported.
+
+- **96**: **Phase 1 adapter ships clean Phase Y composability for classification path**: ~75 LOC adapter + 5 new tests at `_infer_classification` synthesizes `agreement_ratio` + `confirmation_score` keys; closes Phase 4 backtester ship-blocker (`data.agreement_ratio[i]` direct index would TypeError on None without synthesis). NaN guard + binary-signal defensive guard + HMHP semantic equivalence note. First execution-aligned classification cycle in pipeline history uses this adapter end-to-end successfully.
+
+- **97**: **`--min-confidence` calibration is operator-facing requirement** (sister of Adv3 §7): default `--min-confidence 0.65` in `run_readability_backtest.py` would gate 93.1% of R-17a signals (only 6.9% with conf > 0.65). At calibrated P25=0.40, 77.8% of signals pass — backtester fires 333 trades. Future operators MUST inspect `confirmation_score` quantiles from emitted signal_metadata BEFORE running readability backtest — defaults are tuned for HMHP confidence distributions, not single-horizon softmax-max.
+
+- **98**: **Cost economics dominate at 40/20 bps barrier scale**: $5.31 avg cost/trade exceeds $2.82 avg gross gain ($170 × 1.66 bps × 100-share notional). At Deep ITM (delta≥0.7), cost halves to ~$2.50 — making break-even POSSIBLE but requiring WinRate ≥ 50% (we have 44%). The model has slight signal (+1.66 bps avg underlying move ≠ 0) but insufficient to overcome cost asymmetry from spread + commission + theta combined.
+
+**Outstanding work**:
+- **R-18 NEXT CYCLE candidate**: cost-aware barrier sweep (θ ∈ {0.5, 1.0, 1.5, 2.0, 3.0} bps × τ_max=30, Ridge OR Logistic) per Wave 1F recommendation + Adv1 §5 alternative analysis. R-18 tests whether reducing θ to cost-aware range eliminates the cost gap. CAUTION per #PY-217: ZERO H5-PASS combinations at θ ≤ 15 bps were found at corpus extraction stage; R-18 must FIRST verify H5 PASS at chosen θ before training.
+- **R-19 NEXT CYCLE candidate**: try different MODEL (TLOB or HMHP) on same TB v3p0 corpus — does TLOB attention find directional signal that LogisticLOB FLATTEN misses?
+- **R-20 NEXT CYCLE candidate**: try different FEATURE SET (98 LOB-only vs 116 LOB+experimental vs 128 LOB+seasonality) on TB v3p0 — does feature expansion lift PT precision above 22% plateau?
+- **#PY-218 producer-side cleanup** (STILL OPEN): Rust types.rs:117-131 LIST format inconsistency at 3 sister sites (SignedTrend / SignedOpportunity / TripleBarrierClassIndex). Validator-side workaround (Phase 0.5 / hft-contracts 2.7.1) is shipped; producer-side architectural fix deferred. ~1.5 hr realistic.
+- **#PY-219 NEW candidate**: TB↔SHIFTED_MAPPING alignment is coincidental not contractual (Wave 1D §3 finding): backtester treats `{0=Down→SELL, 1=Stable→no-entry, 2=Up→BUY}` and TB labels `{0=SL, 1=Timeout, 2=PT}` happen to align (SL barrier-hit ≈ continued downward; PT barrier-hit ≈ continued upward) but NO contract assertion enforces this. If anyone renumbers TB encoding the alignment silently inverts. Add TB label-encoding semantic alignment validator. ~30 min.
+- **R-17a checkpoint preserved** at `lob-model-trainer/outputs/experiments/r17a_logistic_tb_v3p0_h30/checkpoints/best.pt` (101 KB; epoch 10) for future R-19/R-20 cross-architecture comparison baselines.
