@@ -196,6 +196,34 @@ Examples:
         ),
     )
 
+    # #PY-223 MINIMAL Step 2 (2026-05-14): direct-trainer-invocation ledger
+    # hook. Closes the R-17a-class ~26% experiment-invisibility gap. Opt-in
+    # to avoid surprising operators using the deprecation runway; harvest-
+    # from-signal-metadata when available, partial-record otherwise.
+    parser.add_argument(
+        "--record-to-ledger",
+        action="store_true",
+        help=(
+            "#PY-223 MINIMAL: after training completes, write a minimal "
+            "ExperimentRecord JSON to <pipeline_root>/hft-ops/ledger/records/ "
+            "so direct trainer invocations become visible to "
+            "`hft-ops ledger list` queries. Harvest-from-signal-metadata "
+            "when present (typically requires running export_signals.py "
+            "FIRST; partial record otherwise). Default OFF — opt-in until "
+            "the direct-invocation deprecation runway closes."
+        ),
+    )
+    parser.add_argument(
+        "--ledger-dir",
+        type=str,
+        default=None,
+        help=(
+            "Explicit path override for the ledger records directory used "
+            "by --record-to-ledger. Defaults to <pipeline_root>/hft-ops/"
+            "ledger/records via climb-from-output_dir search."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -464,13 +492,23 @@ def main():
     logger.info("FINAL EVALUATION")
     logger.info("=" * 60)
     
+    # #PY-223 MINIMAL Step 2 (2026-05-14): capture val + test metrics here
+    # so the ledger hook below does not pay the cost of re-evaluation. On
+    # large test sets (e.g., 8K+ sequences × forward pass × batch) the
+    # duplicate evaluate() costs ~30-90s for zero benefit. Mid-impl code-
+    # reviewer MED-2 closure.
+    val_metrics_for_ledger: Optional[Any] = None
+    test_metrics_for_ledger: Optional[Any] = None
     for split in ['val', 'test']:
         try:
             metrics = trainer.evaluate(split)
             if split == 'test':
+                test_metrics_for_ledger = metrics
                 written = _dump_test_metrics(metrics, output_dir)
                 if written is not None:
                     logger.info(f"Saved test metrics to {written}")
+            elif split == 'val':
+                val_metrics_for_ledger = metrics
             logger.info(f"\n{split.upper()} Results:\n{_safe_summary(metrics)}")
         except ValueError as e:
             logger.warning(f"Could not evaluate {split}: {e}")
@@ -479,7 +517,31 @@ def main():
     final_model_path = output_dir / 'checkpoints' / 'final.pt'
     trainer.save_checkpoint(final_model_path)
     logger.info(f"Saved final model to {final_model_path}")
-    
+
+    # #PY-223 MINIMAL Step 2 (2026-05-14): direct-trainer-invocation ledger
+    # hook. COEXISTS with save_config(line 371) per Wave 2 NEW-3 — adds an
+    # ExperimentRecord that makes the run visible to `hft-ops ledger list`
+    # queries WITHOUT replacing the config sidecar. Default-OFF (opt-in).
+    if args.record_to_ledger:
+        from lobtrainer.ledger_hook import write_minimal_ledger_record
+        # Reuse the val + test metrics captured during the final-eval loop
+        # above (mid-impl MED-2 closure — avoids 30-90s duplicate eval).
+        record_path = write_minimal_ledger_record(
+            config=config,
+            output_dir=output_dir,
+            train_result=train_result,
+            val_metrics=val_metrics_for_ledger,
+            test_metrics=test_metrics_for_ledger,
+            ledger_dir=Path(args.ledger_dir) if args.ledger_dir else None,
+        )
+        if record_path is not None:
+            logger.info(f"Wrote minimal ledger record: {record_path}")
+        else:
+            logger.warning(
+                "ledger_hook: --record-to-ledger was set but no record was "
+                "written (see WARN messages above for cause)"
+            )
+
     logger.info(f"\nExperiment completed. Outputs saved to: {output_dir}")
 
 
