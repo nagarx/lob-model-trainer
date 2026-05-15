@@ -89,7 +89,11 @@ def _resolve_ledger_dir(
     contract.
     """
     if explicit_dir is not None:
-        resolved = Path(explicit_dir).expanduser().resolve()
+        # #PY-234 / HF-1 (2026-05-15): .absolute() preserves operator-provided
+        # path semantics; .resolve() dereferences symlinks → silent
+        # provenance fingerprint drift for symlinked-data deployments per
+        # #PY-83-cluster anti-drift class. Per hft-rules §0 reuse-first.
+        resolved = Path(explicit_dir).expanduser().absolute()
         if resolved.exists():
             return resolved
         logger.warning(
@@ -98,7 +102,9 @@ def _resolve_ledger_dir(
         )
 
     if pipeline_root is not None:
-        candidate = Path(pipeline_root).expanduser().resolve() / "hft-ops" / "ledger" / "records"
+        # #PY-234 / HF-1 (2026-05-15): .absolute() preserves operator pipeline_root
+        # semantics (sister of L92 fix). Per #PY-83-cluster discipline.
+        candidate = Path(pipeline_root).expanduser().absolute() / "hft-ops" / "ledger" / "records"
         if candidate.exists():
             return candidate
         logger.warning(
@@ -107,7 +113,9 @@ def _resolve_ledger_dir(
         )
 
     # Climb from output_dir looking for hft-ops/ledger/records sibling.
-    current = Path(output_dir).expanduser().resolve()
+    # #PY-234 / HF-1 (2026-05-15): .absolute() preserves output_dir semantics
+    # for symlinked-output deployments (sister of L92 fix).
+    current = Path(output_dir).expanduser().absolute()
     for _ in range(8):  # bounded climb to avoid runaway upward traversal
         candidate = current / "hft-ops" / "ledger" / "records"
         if candidate.exists():
@@ -137,7 +145,10 @@ def _find_signal_metadata_path(output_dir: Path) -> Optional[Path]:
     trainer-local probe semantics ONLY (probe order + multi-split fallback;
     trainer is the only consumer that needs this).
     """
-    output_dir_resolved = Path(output_dir).expanduser().resolve()
+    # #PY-234 / HF-1 (2026-05-15): .absolute() preserves symlinked-output_dir
+    # for trust-column harvest probe (closes silent compat_fp drift on
+    # symlinked staging directories per #PY-83-cluster discipline).
+    output_dir_resolved = Path(output_dir).expanduser().absolute()
     for relpath in _SIGNAL_METADATA_CANDIDATES:
         candidate = output_dir_resolved / relpath
         if candidate.exists():
@@ -340,7 +351,12 @@ def write_minimal_ledger_record(
         if cfg_data is not None:
             raw_data_dir = getattr(cfg_data, "data_dir", None)
             if raw_data_dir:
-                data_dir = Path(raw_data_dir).expanduser().resolve()
+                # #PY-234 / HF-1 (2026-05-15): .absolute() preserves symlinked
+                # data_dir semantics for build_provenance → data_dir_hash.
+                # Pre-fix .resolve() dereferenced symlinks → fingerprint
+                # mismatch against retro records that resolved against
+                # symlink path. Per #PY-83-cluster discipline.
+                data_dir = Path(raw_data_dir).expanduser().absolute()
 
         # Hypothesis / description / pipeline_root with graceful fallbacks.
         # pipeline_root resolution: explicit > climb-from-records_dir

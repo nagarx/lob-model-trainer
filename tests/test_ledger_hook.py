@@ -441,3 +441,149 @@ class TestPY223PartialRecordContract:
         # No .tmp.* files in ledger.
         tmp_files = list(ledger.glob("*.tmp.*"))
         assert tmp_files == [], f"Found partial files: {tmp_files}"
+
+
+class TestHF1PathAbsoluteDiscipline:
+    """HF-1 (2026-05-15) — ledger_hook.py uses .absolute() not .resolve().
+
+    Closes #PY-234 (was claimed CLOSED by Phase 3 SSoT refactor f763d63 but
+    5 sites at L96/107/118/151/359 retained .resolve() — verified ACTIVE by
+    Wave 1 Agent E hidden-findings hunt 2026-05-15 + Pre-Impl Agent K
+    ground-truth re-verification 2026-05-15).
+
+    Defect class (sister of #PY-83-cluster locked by
+    test_py83_cluster_config_loader_symlink.py):
+        Path(operator_provided).expanduser().resolve()
+
+    .resolve() dereferences symlinks → operator-provided symlinked paths
+    (common per CLAUDE.md "data/ symlinked to external APFS") silently
+    become canonical paths in ledger records → fingerprint mismatch
+    against retro records computed against symlink path.
+
+    Fix: .absolute() preserves operator-provided path semantics. Sister of
+    α-1.1 hft-ops paths.resolve() + α-3 feature_set_resolver + α-1.2
+    lob-model-trainer config loader merge.py (all 2026-05-10).
+
+    Pre-Impl Agent J SHIP-BLOCKER #1 mandated symlinked-output_dir
+    regression test for L151 (trust-column harvest probe class).
+    SHIP-BLOCKER #2 mandated symlinked-data_dir regression test for L359
+    (provenance fingerprint drift). Test 5 below is source-level
+    regression lock covering all 5 sites including L359.
+    """
+
+    def test_resolve_ledger_dir_explicit_dir_preserves_symlink(
+        self, tmp_path: Path
+    ):
+        """L96: explicit ledger_dir as symlink → result preserves symlink path."""
+        from lobtrainer.ledger_hook import _resolve_ledger_dir
+
+        real_records = tmp_path / "real_records"
+        real_records.mkdir()
+        symlink_records = tmp_path / "symlink_records"
+        symlink_records.symlink_to(real_records)
+
+        result = _resolve_ledger_dir(
+            output_dir=tmp_path,
+            explicit_dir=str(symlink_records),
+            pipeline_root=None,
+        )
+        assert result is not None, "Symlinked explicit_dir should resolve"
+        # Pre-fix .resolve() would have deref'd → "real_records" in path
+        # Post-fix .absolute() preserves → "symlink_records" in path
+        assert "symlink_records" in str(result), (
+            f"Expected symlink name preserved; got {result} "
+            "(if 'real_records' present, .resolve() regression — HF-1)"
+        )
+
+    def test_resolve_ledger_dir_pipeline_root_preserves_symlink(
+        self, tmp_path: Path
+    ):
+        """L107: pipeline_root as symlink → result preserves symlink path."""
+        from lobtrainer.ledger_hook import _resolve_ledger_dir
+
+        real_root = tmp_path / "real_pipeline_root"
+        (real_root / "hft-ops" / "ledger" / "records").mkdir(parents=True)
+        symlink_root = tmp_path / "symlink_pipeline_root"
+        symlink_root.symlink_to(real_root)
+
+        result = _resolve_ledger_dir(
+            output_dir=tmp_path,
+            explicit_dir=None,
+            pipeline_root=str(symlink_root),
+        )
+        assert result is not None, "Symlinked pipeline_root should resolve"
+        assert "symlink_pipeline_root" in str(result), (
+            f"Expected symlink preserved; got {result} (HF-1 regression)"
+        )
+
+    def test_resolve_ledger_dir_climb_from_symlinked_output_preserves_symlink(
+        self, tmp_path: Path
+    ):
+        """L118: climb from symlinked output_dir → result preserves symlink."""
+        from lobtrainer.ledger_hook import _resolve_ledger_dir
+
+        real_root = tmp_path / "real_pipeline_root"
+        (real_root / "hft-ops" / "ledger" / "records").mkdir(parents=True)
+        symlink_root = tmp_path / "symlink_pipeline_root"
+        symlink_root.symlink_to(real_root)
+        output_dir = symlink_root / "outputs" / "experiments" / "test"
+        output_dir.mkdir(parents=True)
+
+        result = _resolve_ledger_dir(
+            output_dir=output_dir,
+            explicit_dir=None,
+            pipeline_root=None,
+        )
+        assert result is not None, "Climb should find records via symlinked root"
+        assert "symlink_pipeline_root" in str(result), (
+            f"Expected symlink preserved through climb; got {result}"
+        )
+
+    def test_find_signal_metadata_path_preserves_symlinked_output_dir(
+        self, tmp_path: Path
+    ):
+        """L151: signal_metadata probe with symlinked output_dir preserves symlink.
+
+        Agent J SHIP-BLOCKER #1: trust-column-harvest probe class. Symlinked
+        deployments would silently miss signal_metadata.json post-deref
+        (Phase α-1.1 #PY-83-cluster regression risk).
+        """
+        from lobtrainer.ledger_hook import _find_signal_metadata_path
+
+        real_output = tmp_path / "real_output"
+        real_output.mkdir()
+        (real_output / "signal_metadata.json").write_text('{"compatibility": {}}')
+        symlink_output = tmp_path / "symlink_output"
+        symlink_output.symlink_to(real_output)
+
+        result = _find_signal_metadata_path(symlink_output)
+        assert result is not None, "Probe must find signal_metadata.json via symlink"
+        assert "symlink_output" in str(result), (
+            f"Expected symlink preserved; got {result} (Agent J SHIP-BLOCKER #1)"
+        )
+
+    def test_no_resolve_chain_in_ledger_hook_source(self):
+        """Source-level regression lock for ALL 5 sites including L359.
+
+        Agent J SHIP-BLOCKER #2: L359 write_minimal_ledger_record data_dir
+        flows into build_provenance → data_dir_hash. Symlinked data_dir
+        deployments would silently produce divergent hashes if .resolve()
+        re-introduced. Source-level grep is the simplest invariant lock
+        (no need to mock build_provenance call chain).
+
+        Locks all 5 sites: L96 + L107 + L118 + L151 + L359.
+        """
+        import inspect
+
+        import lobtrainer.ledger_hook as mod
+
+        source = inspect.getsource(mod)
+        # Pre-fix pattern: .expanduser().resolve() — 5 occurrences pre-HF-1.
+        # Post-fix pattern: .expanduser().absolute() — all 5 sites use
+        # .absolute() to preserve symlink-source semantics.
+        assert ".expanduser().resolve()" not in source, (
+            "ledger_hook.py contains .expanduser().resolve() — HF-1 (2026-05-15) "
+            "regression. Use .expanduser().absolute() instead to preserve "
+            "symlink-source semantics per #PY-83-cluster discipline. "
+            "All 5 sites L96/107/118/151/359 must use .absolute()."
+        )
