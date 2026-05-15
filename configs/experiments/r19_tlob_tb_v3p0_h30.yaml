@@ -1,0 +1,167 @@
+# =============================================================================
+# R-19 — TLOB on TB v3p0 corpus (production, 100-epoch full cycle)
+# =============================================================================
+#
+# PURPOSE: Test architecture-vs-information-theoretic ceiling on TB v3p0.
+#   R-17a (LogisticLOB + flatten) achieved test_accuracy=0.5006, PT precision=22%
+#   on the SAME corpus (REFUTE verdict; PT-precision plateau identified).
+#   PT-precision plateau at 22% across smoke + final suggests info-theoretic
+#   ceiling. R-19 isolates the architectural variable (TLOB transformer with
+#   dual attention vs Logistic flatten) holding everything else identical:
+#   same corpus, same horizon, same loss, same class-weighting, same training
+#   schedule.
+#
+# CONTROL DISCIPLINE: Single-variable A/B at the ARCHITECTURAL-CLASS axis.
+#   model_type + paper-canonical model hyperparameters change vs R-17a (incl.
+#   `dropout=0.1` paper-canonical for TLOB vs R-17a's `dropout=0.0` paper-canonical
+#   for Logistic closed-form-linear; TLOB-specific `tlob_*` hyperparameters vs
+#   R-17a's `logistic_pooling` + `logistic_feature_indices`). The dropout difference
+#   is architecturally-coupled — regularization is paired with the model family,
+#   not an independent variable. Loss (focal γ=2.0 + auto class_weights via
+#   use_class_weights=true), corpus, optimizer, learning rate, scheduler, batch
+#   size, num_workers, callbacks, and seed are IDENTICAL to R-17a baseline.
+#
+# HYPERPARAMETER CHOICES (TLOB paper-canonical for dataset_type=nvda):
+#   - tlob_hidden_dim: 40        (paper default for dataset_type=nvda; LOB paper §4.2;
+#                                 ~125K params keeps capacity proximity to R-17a's
+#                                 1960-param Logistic flatten without runaway)
+#   - tlob_num_layers: 4         (paper default; depth needed vs Logistic's flatten)
+#   - tlob_num_heads: 1          (LOCKED per #PY-236; paper-canonical; TLOB
+#                                 embed_dim = hidden_dim × num_heads so ANY positive
+#                                 integer satisfies torch constraint, but 1 matches
+#                                 paper + R-17a comparison baseline. Sweep over
+#                                 num_heads must NOT happen without leaf YAML override
+#                                 — feature-attention block at tlob.py:166-173
+#                                 requires divisibility per Wave 2 Agent X pre-impl)
+#   - tlob_dropout: 0.1          (paper default; modest reg for 100-epoch run)
+#   - tlob_use_bin: true         (paper default; BiN normalization integral to TLOB)
+#   - tlob_use_sinusoidal_pe: true (default; hidden_dim=40 is even → PE valid)
+#   - tlob_mlp_expansion: 4.0    (paper default)
+#   - tlob_dataset_type: "nvda"  (default for v3p0 NVDA corpus)
+#
+# CLASS-IMBALANCE POLICY (per #PY-238 + single-variable A/B discipline):
+#   TB v3p0 class distribution: 52.4 / 14.5 / 33.1 (SL / Timeout / PT).
+#   INHERIT base config: loss_type=focal + focal_gamma=2.0 + use_class_weights=true.
+#   Trainer at classification.py:103-114 auto-computes inverse-freq class_weights
+#   from train_loader → FocalLoss(alpha=weights, gamma=2.0).
+#   IDENTICAL to R-17a's loss policy — isolates architectural variable only.
+#   #PY-238 framing note: focal+class_weights were ALREADY active in R-17a's
+#   inherited base; R-19 keeping identical preserves clean A/B controlling for
+#   architecture alone (changing loss would confound architecture × loss axes).
+#
+# PRE-REGISTERED H1-H6 GATES (mirror R-17a's pre-registered gates per outcome-
+# agnostic discipline — apply identical comparators for direct ablation read):
+#   - H1 PRIMARY three-conjunctive at deep_itm_1.4bps (REFUTE-PARTIAL R-17a baseline):
+#       (a) mean PT-trade OptRet > 0% AND
+#       (b) pooled bootstrap CI lower > 0% AND
+#       (c) PT-trade win rate > 50%
+#   - H2 BASELINE vs R-17a: PT precision > 22.0% (R-17a final 22%; +0pp is GO floor,
+#       +5pp = meaningful ceiling-break; reject info-theoretic ceiling hypothesis)
+#   - H3 ARCHITECTURAL LIFT: TLOB test_accuracy > R-17a 0.5006
+#   - H4 vs R-16e POINT (diagnostic): best OptRet > +1.0%
+#   - H5 ARCHITECTURAL: each class predicted ≥ 5% (must hold post-smoke for production;
+#       class collapse triggers ABORT — TLOB minority over-prediction artifact possible
+#       per R-17a observation 47.9→20.7% SL flip under focal loss)
+#   - H6 COST-COVERAGE: empirical PT-hit rate on PT-predicted samples ≥ 50%
+#
+# DECISION MATRIX (outcome-agnostic):
+#   - GO if H1 + H2 + H5 PASS (architecture clears info-theoretic plateau)
+#   - CONFIRM-PLATEAU if H1 borderline + H2 fails
+#     (R-17a result stands; plateau is info-theoretic NOT architectural)
+#   - REFUTE if H2 fails + H5 PASS
+#     (TLOB cannot extract additional signal beyond Logistic flatten on this corpus)
+#   - ABORT if H5 FAILS (class collapse — investigate before scaling)
+#
+# COMPARISON ARTIFACT: R-17a's best.pt at
+#   outputs/experiments/r17a_logistic_tb_v3p0_h30/checkpoints/best.pt
+# provides exact baseline metrics for H2/H3 comparison. Run R-19 backtest
+# with --min-confidence 0.40 (same as R-17a) for controlled comparison.
+#
+# COMPUTE BUDGET: ~125K params (TLOB hidden=40, layers=4, T=20, F=98).
+#   Batch size: inherit 64 from base. Epochs: 100 hard cap; early-stop
+#   patience=15 typically converges at epoch 15-30. Wall-clock ~30-45 min
+#   on M1 Pro MPS with num_workers=0.
+#
+# PROVENANCE: Cloned from R-17a YAML (2026-05-14 production cycle); only
+# model.* fields swapped. Same _base composition, same train.* overrides,
+# same data.* configuration. Pre-impl 3-agent design gate 2026-05-15.
+# =============================================================================
+
+_base:
+  - "../bases/datasets/nvda_98feat_triple_barrier.yaml"
+  - "../bases/labels/triple_barrier_volscaled.yaml"
+  - "../bases/train/classification_triple_barrier.yaml"
+
+name: "r19_tlob_tb_v3p0_h30"
+description: |
+  R-19 — Production cycle: TLOB on TB v3p0 corpus (100-epoch).
+  Architecture-vs-info-theoretic ceiling test against R-17a baseline.
+  Single-variable A/B: model_type=tlob (vs r17a logistic+flatten); loss +
+  corpus + training schedule IDENTICAL.
+
+tags:
+  - r19
+  - production
+  - tlob
+  - triple-barrier
+  - tb-v3p0
+  - dual-attention
+  - architecture-ablation
+  - r17a-comparison
+
+data:
+  data_dir: "../data/exports/nvda_v3p0_tb_pt40_sl20_h30"
+
+  sequence:
+    window_size: 20       # OVERRIDE base 100 — v3p0 TB corpus is 20-step 60s-bin
+    stride: 1             # OVERRIDE base 10
+
+  labels:
+    source: "precomputed" # Read int8 labels.npy directly (no LabelFactory)
+    task: "classification"
+
+  cache_in_memory: true
+
+model:
+  model_type: "tlob"
+  input_size: 98
+  num_classes: 3
+
+  # Generic ModelConfig.dropout (TLOB params builder reads self.dropout at
+  # schema.py:1703; there is NO tlob_dropout field — generic dropout flows in)
+  dropout: 0.1
+
+  # TLOB-specific hyperparameters (paper-canonical for dataset_type=nvda)
+  tlob_hidden_dim: 40
+  tlob_num_layers: 4
+  tlob_num_heads: 1            # LOCKED per #PY-236 (paper-canonical; ANY positive
+                               # integer architecturally valid, but 1 matches paper
+                               # + R-17a comparison baseline. Feature-attention block
+                               # at lob-models/.../tlob.py:166-173 requires
+                               # divisibility — sweep over num_heads must NOT happen
+                               # without explicit override per Wave 2 Agent X)
+  tlob_use_bin: true
+  tlob_use_sinusoidal_pe: true
+  tlob_mlp_expansion: 4.0
+  tlob_dataset_type: "nvda"
+
+train:
+  # Inherit ALL train hyperparameters from base config for single-variable
+  # control vs R-17a:
+  #   - epochs: 100, early_stopping_patience: 15
+  #   - batch_size: 64, learning_rate: 1.0e-4, weight_decay: 1.0e-5
+  #   - scheduler: cosine, gradient_clip_norm: 1.0
+  #   - task_type: multiclass, loss_type: focal, focal_gamma: 2.0
+  #   - use_class_weights: true (trainer auto-computes inverse-freq weights
+  #     from train_loader — same path as R-17a; #PY-238 class-imbalance policy
+  #     is INHERITED, not new intervention)
+  #   - seed: 42 (paper-canonical; same as R-17a — locks data-shuffle path)
+  #
+  # num_workers=0 mirrors R-17a OOM-on-fork guard with cache_in_memory=true.
+  # Smoke ran on subset without symptoms, but production 100-epoch run on full
+  # corpus has higher fork-time exposure. Synchronous loading acceptable for
+  # cached dataset.
+  num_workers: 0
+
+output_dir: outputs/experiments/r19_tlob_tb_v3p0_h30
+log_level: INFO

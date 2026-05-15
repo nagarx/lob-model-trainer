@@ -1,0 +1,70 @@
+# =============================================================================
+# R-19 SMOKE — TLOB on TB v3p0 corpus (3 epochs, no early-stop)
+# =============================================================================
+#
+# PURPOSE: pre-impl smoke validation for R-19 production cycle. Verifies:
+#   (a) YAML composition + TLOB classification path doesn't error
+#   (b) tlob_num_heads=1 doesn't trigger shape error in feature-attention block
+#       (lob-models/.../tlob.py:166-173 divisibility check)
+#   (c) H5 architectural gate PASS-INDICATOR (each class predicted >= 5%)
+#       — if smoke shows class collapse, production training is ABORT
+#   (d) compute envelope estimate (per-epoch wall-clock on M1 Pro MPS)
+#
+# DERIVED FROM `r19_tlob_tb_v3p0_h30.yaml` (2026-05-15 prep cycle):
+#   - Same composition + same data/model overrides
+#   - Smoke-only override: `train.epochs: 3` + `train.early_stopping_patience: 100`
+#     (disable early-stop for short smoke; let all 3 epochs run)
+#
+# Mirrors R-17a's smoke convention. NOT for production decisions; smoke results
+# inform "GO/ABORT" on production launch — never the final verdict.
+# =============================================================================
+
+_base:
+  - "../bases/datasets/nvda_98feat_triple_barrier.yaml"
+  - "../bases/labels/triple_barrier_volscaled.yaml"
+  - "../bases/train/classification_triple_barrier.yaml"
+
+name: "r19_smoke_tlob_tb_v3p0_h30"
+description: |
+  R-19 SMOKE — 3-epoch TLOB on TB v3p0 corpus. Pre-impl validation that
+  TLOB classification path + num_heads=1 produces sane class distribution
+  before launching production 100-epoch cycle.
+
+tags:
+  - r19
+  - smoke
+  - tlob
+  - triple-barrier
+  - tb-v3p0
+  - pre-impl
+
+data:
+  data_dir: "../data/exports/nvda_v3p0_tb_pt40_sl20_h30"
+  sequence:
+    window_size: 20
+    stride: 1
+  labels:
+    source: "precomputed"
+    task: "classification"
+  cache_in_memory: true
+
+model:
+  model_type: "tlob"
+  input_size: 98
+  num_classes: 3
+  dropout: 0.1
+  tlob_hidden_dim: 40
+  tlob_num_layers: 4
+  tlob_num_heads: 1
+  tlob_use_bin: true
+  tlob_use_sinusoidal_pe: true
+  tlob_mlp_expansion: 4.0
+  tlob_dataset_type: "nvda"
+
+train:
+  epochs: 3                            # SMOKE override
+  early_stopping_patience: 100         # SMOKE override (disable early-stop for 3 epochs)
+  num_workers: 0
+
+output_dir: outputs/experiments/r19_smoke_tlob_tb_v3p0_h30
+log_level: INFO
