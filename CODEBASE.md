@@ -1322,6 +1322,111 @@ def create_worker_init_fn(base_seed: int):
     ...
 ```
 
+### DESIGN-1 Architectural Patterns (2026-05-10)
+
+Load-bearing reproducibility patterns established by Cycle DESIGN-1 (PyTorch Determinism Contract). See `CHANGELOG.md` under `[Unreleased]` → "DESIGN-1 PyTorch Determinism Contract (2026-05-10)" for the full ship narrative; the patterns below MUST be preserved by any future refactor of the reproducibility surface.
+
+**1. `set_seed` extension contract** (`src/lobtrainer/utils/reproducibility.py::set_seed` around L161-260)
+
+```python
+def set_seed(
+    seed: int,
+    deterministic_cudnn: bool = True,
+    *,
+    strict_determinism: bool = False,  # DESIGN-1
+) -> None:
+    if seed >= 2**32:  # NEW-DET-2: numpy legacy RandomState upper bound
+        raise ValueError(...)
+    ...
+    # NEW-C1: warn_only=True by default (loose); opt in via strict_determinism=True
+    torch.use_deterministic_algorithms(True, warn_only=not strict_determinism)
+```
+
+**2. DataLoader determinism wiring pattern** (`trainer.py::Trainer._build_dataloaders` around L835-844)
+
+```python
+DataLoader(
+    ...,
+    worker_init_fn=create_worker_init_fn(self.config.train.seed),
+    generator=torch.Generator().manual_seed(self.config.train.seed),
+)
+```
+
+CRITICAL: `create_worker_init_fn` MUST use `functools.partial(worker_init_fn, base_seed=base_seed)` — closures are unpicklable under Python 3.14+ forkserver multiprocessing. Returning a closure here is a latent bug that breaks `num_workers > 0` paths on newer Python.
+
+**3. `RngStatePolicy` enum** (`reproducibility.py:35-90,185-300`)
+
+```python
+class RngStatePolicy(str, Enum):
+    STRICT = "strict"      # Raise RngStatePolicyError on missing keys
+    GRACEFUL = "graceful"  # WARN + reseed from fallback_seed (DEFAULT)
+    IGNORE = "ignore"      # No-op (cross-platform CI replays)
+
+RNG_STATE_SCHEMA_VERSION = 1  # forward-compat versioning
+```
+
+`get_seed_state()` returns v1-versioned dict: `{schema_version, python, numpy, torch, [torch_cuda], [torch_mps]}`. CUDA + MPS captures are best-effort try/except (graceful degradation across backends).
+
+**4. Option-C ordering pattern for `_pending_rng_state`** (`trainer.py:280-296,850-875`)
+
+`load_checkpoint` does NOT immediately restore RNG state — it captures `_pending_rng_state` + `_rng_policy` attrs which `setup()` consumes AFTER calling `set_seed()`:
+
+```python
+def setup(self):
+    set_seed(self.config.train.seed, strict_determinism=...)
+    # DESIGN-1 Option-C: restore AFTER set_seed, BEFORE DataLoader workers spawn (lazy on iter)
+    if getattr(self, '_pending_rng_state', None) is not None:
+        set_seed_state(
+            self._pending_rng_state,
+            policy=self._rng_policy,
+            fallback_seed=self.config.train.seed,
+        )
+        self._pending_rng_state = None  # Consumed-once invariant
+```
+
+This ordering guarantees workers observe the restored state, not the post-`set_seed` state. The `_pending_rng_state` attribute is consumed-once; nulling after use prevents accidental re-application.
+
+**5. CRITICAL fingerprint invariant — `rng_state` MUST NOT enter `compatibility_fingerprint` or `model_config_hash`**
+
+Construction-order guarantee: `compatibility_fingerprint` is computed in `trainer.py::Trainer._build_checkpoint_dict` (around L1338) BEFORE `rng_state` is added to the checkpoint dict (around L1353) (cannot include something not yet in scope). Defensively, `hft-ops/.../dedup.py::compute_fingerprint::exclude_keys` strip-set excludes `rng_state` + `callback_state`. Locked by 3 regression tests:
+
+- `tests/test_training_compatibility.py::TestRngStateInvariance` — mutates `config.train.seed`, asserts fingerprint unchanged.
+- `hft-ops/tests/test_dedup.py::test_rng_state_excluded_from_fingerprint` — injects `rng_state` at 3 nest levels in synthetic manifest.
+- `lob-models/tests/integration/test_phase0_forward_pass.py:33-96` parametrized over `warn_only={True, False}`.
+
+Future refactors that admit RNG state into fingerprint composition silently break experiment dedup + ledger-conflation (Phase-3-§3.3b class of bug).
+
+**6. Sklearn-RNG-FREE invariant (Phase A.3 REDESIGN)**
+
+Sklearn models (`TemporalRidge`, `TemporalGradBoost`) do NOT participate in rng_state load-bearing — verified via Agent X ground-truth: `Ridge` is closed-form (no `random_state` argument); `TemporalGradBoost` uses `random_state=42` hardcoded + hermetic local `np.random.RandomState(42)`. Capturing global RNG buys ZERO determinism on the predict path.
+
+The sklearn sidecar `<path>.config.json` carries `rng_state_python` + `rng_state_numpy` keys for symmetry with the PyTorch path, but these fields are observational (not load-bearing). Documented in `simple_trainer.save_checkpoint` docstring. Lock test: `TestSklearnRngIndependence` (3 tests) perturbs global RNG between save and predict, asserts bit-identical output.
+
+**7. INDEX_SCHEMA_VERSION NO BUMP for DESIGN-1**
+
+Per V2 verdict over Wave 3 D3's claim: `rng_state` lives in the **checkpoint** (`.pt` binary), NOT in the ledger `ExperimentRecord` or its `index_entry()` projection. Schema additions are surfaced at the checkpoint-dict layer only; ledger filtering surfaces are unaffected. The hft-ops `dedup.py::exclude_keys` defensive strip ensures `rng_state` cannot leak into `compute_fingerprint` even if a future record were to harvest it. Do NOT bump `INDEX_SCHEMA_VERSION` for purely-checkpoint-scope additions.
+
+### Phase Y Composer Healthy-State Preserve List (2026-05-13)
+
+Cross-cycle validation finding from the comprehensive 2026-05-13 audit (16 parallel adversarial agents across Wave 1 + Wave 2). The following invariants are verified HEALTHY and MUST be preserved by any refactor of the Phase Y composer / atomic-write paths / canonical-hash SSoT consumers:
+
+| # | Invariant | Evidence |
+|---|---|---|
+| 1 | Phase Y composer END-TO-END BIT-EXACT | Wave 1 Agent 2: 69/70 populated records reproduced via INDEPENDENT pure-stdlib reimplementation of `experiment_record.py:823-919`; 1 None==None legitimate (failed run) |
+| 2 | Cross-cycle BIT-EXACT reproducibility | R-16a ridge×point arm 1 `experiment_provenance_hash=901c25dd...` matches cycle5 ridge×point post-#PY-88 baseline BIT-IDENTICAL across all 4 components (`data_export_fp`, `feature_set_content_hash`, `compatibility_fp`, `model_config_hash`) |
+| 3 | `canonical_json_blob` frozen + 4 golden tests | `hft_contracts.canonical_hash.canonical_json_blob` SSoT is locked by 4 golden-hash tests; consumed by trainer `_compute_content_hash`, `compute_feature_set_hash`, `compute_label_strategy_hash`, `compute_model_config_hash` |
+| 4 | `atomic_write_json` discipline universal | All experiment/signal/ledger JSON artifacts use `hft_contracts.atomic_io.atomic_write_json` SSoT (verified at 5 sampled migration sites incl. `simple_trainer.py:765-866`, `exporter.py:502-534`, hft-ops `extraction_cache.py:323,661,691,714`, lob-backtester `registry.py:123`, callbacks.py:683-694) |
+| 5 | Class A/B SSoT primitives all in canonical-form usage | `canonical_hash`, `atomic_io.{atomic_write_json,binary,torch,npy,pickle,copy}`, `compatibility.CompatibilityContract`, `experiment_record.INDEX_SCHEMA_VERSION` |
+| 6 | Schema versions synchronized 3.0 | `pipeline_contract.toml::schema_version="3.0"` ↔ `hft_contracts.SCHEMA_VERSION="3.0"` ↔ Rust `SchemaVersion::CURRENT={3,0}` |
+| 7 | INDEX_SCHEMA_VERSION 1.6.0 | `experiment_record.py:68` matches root CLAUDE.md banner; `model_config_hash` top-level projection at `experiment_record.py:659-674` |
+| 8 | CR6 LabelFactory parity locked rtol=1e-12 | `hft-contracts/tests/test_label_factory_parity.py:38` |
+| 9 | sklearn arms RNG-FREE | `temporal_ridge.py:102` Ridge closed-form (no `random_state`); `temporal_gradboost.py:116` `random_state=42` hardcoded |
+| 10 | DESIGN-1 bit-exact replay test alive (Phase G-4) | `tests/test_bit_exact_replay.py` uses `torch.testing.assert_close(rtol=0, atol=0)` walking model_state_dict |
+
+Future refactors of the experiment-provenance surface (Phase Y composer, canonical-hash, atomic-write helpers, fingerprint exclude_keys, INDEX_SCHEMA_VERSION) MUST consult this list before deciding to modify any of the load-bearing invariants. Each invariant is locked by a regression test; breaking the test is the early-warning signal for cross-pipeline drift.
+
+**See**: DESIGN-1 source spec preserved at `.archive/2026-05-15-doc-audit-phase1/CYCLE_DESIGN-1_AUTHORIZED_SPEC_2026_05_10.md` (full §6 anti-drift list + §3 finding-closure matrix + §7 file-by-file touch list); comprehensive validation findings at `COMPREHENSIVE_VALIDATION_2026_05_13.md` §7 (full 20-item PRESERVE list).
+
 ---
 
 ## 17. Scripts and CLI

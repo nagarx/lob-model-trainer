@@ -6,6 +6,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### DESIGN-1 PyTorch Determinism Contract (2026-05-10)
+
+**Shipped — closes 6 reproducibility findings + 4 same-session LATENT bug fixes**
+
+DESIGN-1 establishes the architectural pattern "fail-loud + observability counter at boundary" for the reproducibility surface, in alignment with hft-rules §7 (determinism + reset semantics). Cumulative commits: `lob-model-trainer cc8e53d` (9 phases A.1 → A.4 + B + C + D + E + G-1 + G-4); companion `hft-ops c87e0d9` for orchestrator-side `--strict-determinism` flag passthrough.
+
+**Added — `set_seed` extension contract** (`src/lobtrainer/utils/reproducibility.py::set_seed` around L161-260)
+
+- Signature extended to `set_seed(seed, deterministic_cudnn=True, *, strict_determinism=False)`.
+- Adds `torch.use_deterministic_algorithms(True, warn_only=not strict_determinism)` per NEW-C1 closure. Default loose mode (warn_only=True) avoids breaking existing models that rely on non-deterministic kernels (e.g., `nn.MultiheadAttention` forward); production-gate runs opt in via `config.train.strict_determinism=True`.
+- `seed < 2**32` validation closes NEW-DET-2 (numpy legacy RandomState upper bound).
+
+**Added — DataLoader determinism wiring** (`src/lobtrainer/training/trainer.py::Trainer._build_dataloaders` around L835-844, `data/dataset.py::create_dataloaders` around L1604-1612)
+
+- `worker_init_fn=create_worker_init_fn(seed)` + `generator=torch.Generator().manual_seed(seed)` wired into both the Trainer-internal DataLoader construction site and the legacy public-API `create_dataloaders` helper.
+- CRITICAL: `create_worker_init_fn` now uses `functools.partial(worker_init_fn, base_seed=base_seed)` instead of a closure — closures are unpicklable under Python 3.14+ forkserver multiprocessing (LATENT bug #1 discovered + fixed same-session by 5-agent mid-impl gate).
+
+**Added — `RngStatePolicy` enum + checkpoint RNG state** (`reproducibility.py:35-90,185-300`; `trainer.py:280-296,850-875`)
+
+- New `RngStatePolicy(Enum)` with three modes: `STRICT` (raise `RngStatePolicyError` on incomplete state), `GRACEFUL` (WARN + reseed from `fallback_seed`; **default**), `IGNORE` (no-op; cross-platform CI replays).
+- `RNG_STATE_SCHEMA_VERSION = 1` module constant for forward-compat.
+- `get_seed_state()` extended to return v1-versioned dict with python/numpy/torch RNG states + best-effort CUDA + MPS capture (graceful try/except on each backend).
+- `set_seed_state()` policy-driven dispatch + `CheckpointMissingRngStateWarning` emit on missing keys.
+- `_build_checkpoint_dict` adds `'rng_state': get_seed_state()` as a new key alongside existing `'compatibility'` / `'compatibility_fingerprint'` / `'model_config_hash'` (closes NEW-W3-1).
+- `load_checkpoint(..., *, rng_policy=RngStatePolicy.GRACEFUL)` uses **Option-C deferred-restore ordering** via `_pending_rng_state` + `_rng_policy` attrs consumed by `setup()` AFTER `set_seed()` — workers spawn lazily on DataLoader iter, so restore happens BEFORE workers see RNG state (closes V2 critical #4).
+- `torch.load(weights_only=False)` pinned at `trainer.py:1442` — PyTorch ≥2.6 default is `weights_only=True`, which rejects numpy globals embedded in `rng_state['numpy']` (LATENT bug #2 discovered + fixed same-session).
+
+**Added — Sklearn parallel sidecar RNG state** (`simple_trainer.py::save_checkpoint`/`load_checkpoint`)
+
+- Sklearn sidecar `<path>.config.json` extended with `rng_state_python` + `rng_state_numpy` keys (JSON-canonical-form via `_serialize_*_rng_state_for_json` helpers in `reproducibility.py`).
+- **Sklearn-RNG-FREE invariant (Phase A.3 REDESIGN)**: Agent X ground-truth verified that `Ridge` (closed-form, no `random_state`) and `TemporalGradBoost` (`random_state=42` hardcoded + hermetic local `np.random.RandomState(42)`) are RNG-free at predict time — capturing global RNG buys ZERO determinism. The sidecar field is preserved for symmetry but documented as observational, not load-bearing. Lock test: `TestSklearnRngIndependence` (3 tests) empirically perturbs global RNG and asserts predict-time bit-identity.
+
+**Added — `_safe_torch_load` canonical wrapper** (`reproducibility.py:_safe_torch_load`)
+
+- Pins `weights_only=False` across all checkpoint-reading sites (`trainer.py:1442`, `scripts/analysis/evaluate_model.py:73`); rationale comment cites cross-version stability across PyTorch 2.0-2.10+.
+- CVTrainer fold-seed validation at construction boundary: `validate_seed(seed + fold_idx)` raises before `model_copy` if seed overflows `2**32`.
+
+**Added — Callback state in checkpoint (Phase G-1)** (`trainer.py::_build_checkpoint_dict`, `callbacks.py::Callback`)
+
+- Callback ABC default `state_dict`/`load_state_dict` methods (back-compat).
+- `EarlyStopping.state_dict` = `{best_value, best_epoch, wait_count, stopped}`; EXCLUDES `_best_weights` (100MB-1GB bloat avoidance — `restore_best_weights=True` recomputes via best checkpoint).
+- `ModelCheckpoint.state_dict` / `MetricLogger.state_dict` analogous.
+- Trainer keys callback_state by **class name** with duplicate-name detection (raises `ValueError` on collision).
+- `load_checkpoint` emits **`UserWarning` on unmatched checkpoint keys** instead of silently discarding (LATENT bug #3 — silent subclass-rename loss on resume; discovered + fixed same-session via CRITIQUE 2).
+- `EarlyStopping.on_train_end` emits **`logger.warning` when `restore_best_weights=True` AND `_best_weights is None` AND `trainer._resumed_from_checkpoint=True`** (LATENT bug #4 — silent post-resume degradation where operator would get last-epoch weights instead of best; discovered + fixed same-session via CRITIQUE 3).
+
+**Added — Phase G-4 bit-exact replay test** (`tests/test_bit_exact_replay.py`)
+
+In-process integration test: `Trainer.setup() → train → save_checkpoint → load_checkpoint → train → assert_close(rtol=0, atol=0)` walking `model_state_dict`. Locks the cross-process resume reproducibility invariant. Autouse RNG cleanup fixture prevents test pollution.
+
+**Fingerprint invariant (Phase X.1 v2 preserved)**
+
+`rng_state` is NEVER admitted to `compatibility_fingerprint` OR `model_config_hash` — construction order guarantees this: `compatibility_fingerprint` is computed in `trainer.py::Trainer._build_checkpoint_dict` (around L1338) BEFORE `rng_state` is added to the checkpoint dict (around L1353) (cannot include something not yet in scope). Defensively, `"rng_state"` + `"callback_state"` are added to `hft-ops/.../dedup.py::compute_fingerprint::exclude_keys` strip-set (Phase B Site 2 / MOD-2). Locked by 3 regression tests:
+
+- `tests/test_training_compatibility.py::TestRngStateInvariance` (mutates seed in `config.train`; asserts fingerprint unchanged).
+- `hft-ops/tests/test_dedup.py::test_rng_state_excluded_from_fingerprint` (injects `rng_state` at 3 nest levels in synthetic manifest).
+- `lob-models/tests/integration/test_phase0_forward_pass.py:33-96` parametrized over `warn_only={True, False}` — forward-pass goldens preserved across both DESIGN-1 default + strict opt-in modes.
+
+**INDEX_SCHEMA_VERSION NO BUMP for DESIGN-1**
+
+Per V2 verdict over Wave 3 D3's claim: `rng_state` lives in the **checkpoint** (binary `.pt`), NOT in the ledger `ExperimentRecord` or its `index_entry()` projection. Schema additions are surfaced at the checkpoint-dict layer only; ledger filtering surfaces are unaffected. The hft-ops `dedup.py::exclude_keys` defensive strip ensures `rng_state` cannot leak into `compute_fingerprint` even if a future record were to harvest it.
+
+**SSoT primitives consumed (hft-rules §0 reuse-first)**
+
+- `lobtrainer.utils.reproducibility.{set_seed, get_seed_state, set_seed_state}` — extended in-place; zero new SSoT primitive module.
+- `torch.use_deterministic_algorithms` (PyTorch stdlib).
+- `functools.partial` (Python stdlib).
+- `hft_contracts.atomic_io.atomic_write_*` (already in use; no migration this cycle).
+
+**Anti-drift warnings** (preserved in source spec §6 — 13 items; full list at `.archive/2026-05-15-doc-audit-phase1/CYCLE_DESIGN-1_AUTHORIZED_SPEC_2026_05_10.md` §6)
+
+Highlights (full 13 in source): (1) NEW-C1 is NOT a 1-LOC fix — requires `warn_only=True` mode + `strict_determinism` config field. (2) `worker_init_fn` alone is INSUFFICIENT — must also pass `generator=torch.Generator().manual_seed(seed)`. (3) `set_seed_state` partial-state hazard requires `RngStatePolicy` enum + Option-C ordering. (4) Workers spawn LAZILY on iter — Option-C ordering ensures restore happens BEFORE workers observe state. (5) RNG state must NOT enter compatibility_fingerprint OR model_config_hash; locked by 3 regression tests. (6) Sklearn rng_state INCLUDED per user authorization (sidecar carries `rng_state_python` + `rng_state_numpy`); sklearn arms are RNG-FREE invariant verified separately. (7) INDEX_SCHEMA_VERSION NO BUMP. (8) PATH-A for #PY-50/N8 (banner amendment ~10 min); code fix deferred to dedicated #PY-50 cycle.
+
+**Tests**: lob-model-trainer 1747 → 1795 + 73 skip (+48 NEW DESIGN-1 tests); hft-ops 728 → 821 + 1 pre-existing skip (+93 cumulative across Phase B Site 1 + 2 + cycle-companion work). Zero regressions across all 6 modules.
+
+**Validation**: 23 parallel adversarial agents across 4 waves of pre-impl design (Wave 1: 11 + Wave 2: 6 + Wave 3 design: 5 + Wave 4 pre-impl: 2) + 5 mid-impl post-implementation gates + 3 pre-commit parallel gates. All convergent on APPROVE-WITH-DESIGN-REFINEMENTS.
+
+---
+
 ### Phase 8D — #PY-223 Phase 3 (2026-05-14) — ledger_hook refactor: delegate to hft-contracts SSoT
 
 **Changed — `ledger_hook.write_minimal_ledger_record` delegates to `hft_contracts.experiment_recorder.record_from_artifacts`**
