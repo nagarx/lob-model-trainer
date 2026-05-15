@@ -44,7 +44,12 @@ dependencies = [
     # 4-tuple return; trainer consumes at analysis/stat_rigor/ci.py:334
     # (Phase 2 P2.A TestMetricsCIArtifact). Pre-v0.1.9 install would raise
     # ValueError at runtime. See hft-metrics CHANGELOG v0.1.9.
-    "hft-metrics>=0.1.9",
+    # >=0.1.11: #PY-255 closure (2026-05-15) — block_bootstrap_ci extended with
+    # paired=False single-array mode. Trainer's paired call at ci.py:334 is
+    # unchanged (default paired=True preserves bit-exact behavior); pin bumped
+    # for cross-repo consumer-floor alignment + future paired=False usage
+    # in upcoming #PY-243 R-19 multi-seed analyzer.
+    "hft-metrics>=0.1.11",
 
     # Model architectures (local: pip install -e ../lob-models)
     "lob-models",
