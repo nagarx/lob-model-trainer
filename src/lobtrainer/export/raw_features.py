@@ -72,7 +72,7 @@ class RawFeatureExtractor:
         total = 0
 
         for seq_file in seq_files:
-            raw = np.load(seq_file, mmap_mode="r")
+            raw = np.load(seq_file, mmap_mode="r", allow_pickle=False)
 
             # Extract last timestep for each sequence
             if raw.ndim == 3:

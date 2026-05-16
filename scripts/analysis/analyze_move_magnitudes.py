@@ -175,11 +175,11 @@ def main():
     print("  MOVE MAGNITUDE ANALYSIS AT READABILITY GATES")
     print("=" * 70)
 
-    prices = np.load(sig_dir / "prices.npy")
-    predictions = np.load(sig_dir / "predictions.npy")
-    agreement = np.load(sig_dir / "agreement_ratio.npy")
-    confirmation = np.load(sig_dir / "confirmation_score.npy")
-    spreads = np.load(sig_dir / "spreads.npy")
+    prices = np.load(sig_dir / "prices.npy", allow_pickle=False)
+    predictions = np.load(sig_dir / "predictions.npy", allow_pickle=False)
+    agreement = np.load(sig_dir / "agreement_ratio.npy", allow_pickle=False)
+    confirmation = np.load(sig_dir / "confirmation_score.npy", allow_pickle=False)
+    spreads = np.load(sig_dir / "spreads.npy", allow_pickle=False)
 
     day_boundaries = load_day_boundaries(args.data_dir, args.split)
 

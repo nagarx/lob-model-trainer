@@ -436,8 +436,8 @@ def from_signal_dir(
                 f"signal_metadata.json in {signals_dir}."
             )
 
-    predicted = np.load(pred_path)
-    labels = np.load(labels_path)
+    predicted = np.load(pred_path, allow_pickle=False)
+    labels = np.load(labels_path, allow_pickle=False)
     with open(metadata_path, "r") as f:
         metadata = json.load(f)
 

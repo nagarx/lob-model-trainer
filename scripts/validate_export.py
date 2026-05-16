@@ -121,7 +121,7 @@ def main():
     for split in splits:
         split_dir = DATA_DIR / split
         for f in sorted(split_dir.glob("*_features.npy")):
-            data = np.load(f)
+            data = np.load(f, allow_pickle=False)
             if data.shape[1] != 98:
                 print(f"  ❌ {f.name}: shape={data.shape}")
                 dimension_ok = False
@@ -141,7 +141,7 @@ def main():
         total_samples = 0
         
         for f in split_dir.glob("*_features.npy"):
-            data = np.load(f)
+            data = np.load(f, allow_pickle=False)
             nan_count += np.isnan(data).sum()
             inf_count += np.isinf(data).sum()
             total_samples += data.shape[0]
@@ -161,7 +161,7 @@ def main():
         is_multi_horizon = False
         
         for f in split_dir.glob("*_labels.npy"):
-            labels = np.load(f)
+            labels = np.load(f, allow_pickle=False)
             # Handle multi-horizon labels (2D array)
             if labels.ndim == 2:
                 is_multi_horizon = True
@@ -200,8 +200,8 @@ def main():
         for feat_file in split_dir.glob("*_features.npy"):
             label_file = split_dir / feat_file.name.replace("_features", "_labels")
             if label_file.exists():
-                feat_data = np.load(feat_file)
-                label_data = np.load(label_file)
+                feat_data = np.load(feat_file, allow_pickle=False)
+                label_data = np.load(label_file, allow_pickle=False)
                 # Labels are created from sequences, so fewer samples expected
                 # Each label corresponds to a sequence, not a raw feature row
             else:
@@ -285,7 +285,7 @@ def main():
     categorical_values = {name: set() for name in categorical_checks}
     
     for feat_file in sorted((DATA_DIR / "train").glob("*_features.npy")):
-        data = np.load(feat_file)
+        data = np.load(feat_file, allow_pickle=False)
         for name, check in categorical_checks.items():
             idx = check["index"]
             col = data[:, idx]

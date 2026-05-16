@@ -123,7 +123,7 @@ def _load_split(
         from hft_contracts.validation import validate_idx_97_reserved
         for _w in validate_idx_97_reserved(seq_path, strict=False):
             logger.warning("idx-97 contract warning (%s): %s", day, _w)
-        seq = np.load(seq_path, mmap_mode="r")
+        seq = np.load(seq_path, mmap_mode="r", allow_pickle=False)
 
         # Phase Y / γ-1 LITE / #PY-88 (2026-05-10): source-dispatched
         # label derivation. Mirrors PyTorch dataset.py:650-693 3-way
@@ -190,7 +190,7 @@ def _resolve_labels_for_day(
     # `else` branch in dataset.py:650-693 which handles "precomputed"
     # uniformly with auto-without-fp via the cached labels code path.
     if labels_config is None or labels_config.source == "precomputed":
-        return np.load(cached_path)
+        return np.load(cached_path, allow_pickle=False)
 
     # Branches 2 + 3: determine if we use forward_prices.
     if labels_config.source == "forward_prices":
@@ -233,7 +233,7 @@ def _resolve_labels_for_day(
     if not use_fp:
         # auto-fallback to cached labels when metadata doesn't declare
         # forward_prices (legacy v2.2 exports or partial v3p0).
-        return np.load(cached_path)
+        return np.load(cached_path, allow_pickle=False)
 
     # Mirrors dataset.py:_compute_labels_from_forward_prices.
     from hft_contracts import ForwardPriceContract, LabelFactory
@@ -242,7 +242,7 @@ def _resolve_labels_for_day(
     # Memory-bound load: forward_prices.npy may be ~10x larger than
     # cached labels (300+ horizon columns vs 3-5). mmap keeps RAM bounded
     # across 230-day train concatenation.
-    fp = np.load(fp_path, mmap_mode="r")
+    fp = np.load(fp_path, mmap_mode="r", allow_pickle=False)
     contract = ForwardPriceContract.from_metadata(metadata)
     k = contract.smoothing_window_offset
 

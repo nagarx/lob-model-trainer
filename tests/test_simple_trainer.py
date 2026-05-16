@@ -333,10 +333,10 @@ class TestSimpleModelTrainer:
         trainer.evaluate()
         signal_dir = trainer.export_signals("test")
 
-        preds = np.load(signal_dir / "predicted_returns.npy")
-        labels = np.load(signal_dir / "regression_labels.npy")
-        spreads = np.load(signal_dir / "spreads.npy")
-        prices = np.load(signal_dir / "prices.npy")
+        preds = np.load(signal_dir / "predicted_returns.npy", allow_pickle=False)
+        labels = np.load(signal_dir / "regression_labels.npy", allow_pickle=False)
+        spreads = np.load(signal_dir / "spreads.npy", allow_pickle=False)
+        prices = np.load(signal_dir / "prices.npy", allow_pickle=False)
 
         n = preds.shape[0]
         assert labels.shape[0] == n, f"Labels N={labels.shape[0]} != preds N={n}"

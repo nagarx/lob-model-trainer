@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Option B Path B' TIER 1 Hygiene Bundle (2026-05-16 LATE) — #PY-291 RCE-via-NPY closure
+
+**Shipped — closes #PY-291 (RCE-via-malicious-NPY class still open in trainer post-FIND-110)** via Wave 2-C hidden findings hunt of 2026-05-16 Cross-Pipeline Validation cycle. Sister of `lob-backtester` FIND-110 closure (commit `20dbc8f` 2026-05-14).
+
+**Added — `allow_pickle=False` kwarg at 32 `np.load(...)` callsites in lob-model-trainer**
+- `src/lobtrainer/data/dataset.py` (8 sites incl. multi-line L601 + L667)
+- `src/lobtrainer/training/simple_trainer.py` (4 sites)
+- `src/lobtrainer/analysis/stat_rigor/{ci.py, pairwise.py}` (4 sites)
+- `src/lobtrainer/{export/raw_features.py:75, data/bundle.py:204, data/normalization.py:1273}` (3 sites)
+- `tests/{test_tlob_integration.py, test_signal_export.py, test_simple_trainer.py}` (11 sites)
+- `scripts/validate_export.py` (6 sites) + `scripts/analysis/*` (10 sites)
+- `scripts/archive/*` SKIPPED per hft-rules §4 fossil discipline
+
+**Added — `tests/test_security/test_np_load_allow_pickle_false.py`** (NEW 133 LOC AST regression-lock test)
+- Walks `src/`, `tests/`, `scripts/` (excluding `scripts/archive`) and asserts every `np.load(` callsite has `allow_pickle=False` (nested-paren-aware)
+- Sibling `test_no_aliased_numpy_load_imports` defends against `from numpy import load as _l` aliases
+- Mirrors FIND-110 closure pattern from `lob-backtester/tests/test_security/`
+
+**Rationale** (per hft-rules §8): `np.load()` accepts pickled Python objects in `.npy` files; trainer reads externally-produced NPYs + manifests with `data_dir` paths → malicious manifest pointing at hostile dir = pickle code execution at trainer launch (CVE-class hazard). Closes the trainer surface of the RCE class previously closed only in lob-backtester.
+
+**Validation**: 55 existing `test_simple_trainer.py + test_signal_export.py` tests pass; 0 regressions.
+
 ### DESIGN-1 PyTorch Determinism Contract (2026-05-10)
 
 **Shipped — closes 6 reproducibility findings + 4 same-session LATENT bug fixes**

@@ -205,8 +205,8 @@ class TestSignalFileContract:
         np.save(tmp_path / "labels.npy", np.random.randint(0, 3, n).astype(np.int32))
 
         # Verify contract
-        prices = np.load(tmp_path / "prices.npy")
-        preds = np.load(tmp_path / "predictions.npy")
+        prices = np.load(tmp_path / "prices.npy", allow_pickle=False)
+        preds = np.load(tmp_path / "predictions.npy", allow_pickle=False)
         assert prices.shape == (n,)
         assert prices.dtype == np.float64
         assert preds.dtype == np.int32
@@ -219,8 +219,8 @@ class TestSignalFileContract:
         np.save(tmp_path / "prices.npy", np.random.rand(n).astype(np.float64) + 100)
         np.save(tmp_path / "predicted_returns.npy", np.random.randn(n).astype(np.float64) * 5)
 
-        prices = np.load(tmp_path / "prices.npy")
-        returns = np.load(tmp_path / "predicted_returns.npy")
+        prices = np.load(tmp_path / "prices.npy", allow_pickle=False)
+        returns = np.load(tmp_path / "predicted_returns.npy", allow_pickle=False)
         assert prices.shape == returns.shape
         assert returns.dtype == np.float64
         assert np.isfinite(returns).all()
@@ -230,7 +230,7 @@ class TestSignalFileContract:
         n, h = 100, 3
         np.save(tmp_path / "predicted_returns.npy",
                 np.random.randn(n, h).astype(np.float64))
-        returns = np.load(tmp_path / "predicted_returns.npy")
+        returns = np.load(tmp_path / "predicted_returns.npy", allow_pickle=False)
         assert returns.shape == (n, h)
         assert returns.dtype == np.float64
 
@@ -243,7 +243,7 @@ class TestSignalFileContract:
         np.save(tmp_path / "labels.npy", np.ones(n, dtype=np.int32))
 
         files = ["prices.npy", "predictions.npy", "spreads.npy", "labels.npy"]
-        shapes = [np.load(tmp_path / f).shape[0] for f in files]
+        shapes = [np.load(tmp_path / f, allow_pickle=False).shape[0] for f in files]
         assert len(set(shapes)) == 1, f"Shape mismatch: {dict(zip(files, shapes))}"
 
 

@@ -587,10 +587,10 @@ def load_day_data(
     effective_mmap = mmap_mode if mmap_mode else ('r' if lazy else None)
     
     # Load data (potentially memory-mapped)
-    raw_data = np.load(data_file, mmap_mode=effective_mmap)
+    raw_data = np.load(data_file, mmap_mode=effective_mmap, allow_pickle=False)
 
     if has_classification_labels:
-        labels = np.load(labels_path, mmap_mode=effective_mmap)
+        labels = np.load(labels_path, mmap_mode=effective_mmap, allow_pickle=False)
         if not lazy:
             labels = labels.astype(np.int64)
     else:
@@ -599,7 +599,7 @@ def load_day_data(
     regression_labels = None
     if has_regression_labels:
         regression_labels = np.load(
-            Path(regression_labels_path), mmap_mode=effective_mmap
+            Path(regression_labels_path), mmap_mode=effective_mmap, allow_pickle=False
         )
         if not lazy:
             regression_labels = regression_labels.astype(np.float64)
@@ -665,7 +665,7 @@ def load_day_data(
 
     if use_forward_prices:
         forward_prices_data = np.load(
-            forward_prices_path, mmap_mode=effective_mmap
+            forward_prices_path, mmap_mode=effective_mmap, allow_pickle=False
         )
         if not lazy:
             forward_prices_data = forward_prices_data.astype(np.float64)
@@ -1736,7 +1736,7 @@ def get_dataset_info(data_dir: Union[str, Path]) -> Dict:
     metadata_path = split_dir / f"{date}_metadata.json"
     
     # Load labels to check shape
-    labels = np.load(label_path)
+    labels = np.load(label_path, allow_pickle=False)
     
     # Load metadata if available
     metadata = None
@@ -1756,10 +1756,10 @@ def get_dataset_info(data_dir: Union[str, Path]) -> Dict:
     
     # Get feature count
     if export_format == 'aligned':
-        data = np.load(first_file)
+        data = np.load(first_file, allow_pickle=False)
         feature_count = data.shape[2] if len(data.shape) == 3 else data.shape[1]
     else:
-        data = np.load(first_file)
+        data = np.load(first_file, allow_pickle=False)
         feature_count = data.shape[1]
     
     # Multi-horizon info

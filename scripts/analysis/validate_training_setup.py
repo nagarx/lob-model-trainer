@@ -87,7 +87,7 @@ def validate_label_values(data_dir: Path, expected_horizons: list) -> None:
         raise FileNotFoundError("No label files found")
     
     # Check first file
-    labels = np.load(label_files[0])
+    labels = np.load(label_files[0], allow_pickle=False)
     print(f"✓ Loaded labels from: {label_files[0].name}")
     print(f"✓ Labels shape: {labels.shape}")
     print(f"✓ Labels dtype: {labels.dtype}")

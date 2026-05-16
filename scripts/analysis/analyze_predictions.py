@@ -60,8 +60,8 @@ def main():
     first_val_file = sorted(val_dir.glob("*_sequences.npy"))[0]
     first_val_labels = sorted(val_dir.glob("*_labels.npy"))[0]
     
-    sequences = np.load(first_val_file)[:500]
-    labels = np.load(first_val_labels)[:500]
+    sequences = np.load(first_val_file, allow_pickle=False)[:500]
+    labels = np.load(first_val_labels, allow_pickle=False)[:500]
     
     print(f"\nLoaded {len(sequences)} validation samples for analysis")
     

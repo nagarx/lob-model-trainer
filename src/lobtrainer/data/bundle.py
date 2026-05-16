@@ -201,7 +201,7 @@ def _load_source_day(
         return None
 
     file_date = seq_path.stem.replace("_sequences", "")
-    sequences = np.load(seq_path).astype(np.float64)
+    sequences = np.load(seq_path, allow_pickle=False).astype(np.float64)
     features = sequences[:, -1, :]
 
     # Load metadata

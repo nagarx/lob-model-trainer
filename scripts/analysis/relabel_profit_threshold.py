@@ -124,7 +124,7 @@ def process_split(
         if not seq_file.exists():
             continue
 
-        seqs = np.load(seq_file)
+        seqs = np.load(seq_file, allow_pickle=False)
         prices = seqs[:, -1, MID_PRICE_INDEX].astype(np.float64)
 
         labels = compute_profit_labels(

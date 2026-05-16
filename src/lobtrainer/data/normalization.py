@@ -1270,7 +1270,7 @@ def compute_hybrid_stats_streaming(
         if file_idx % log_interval == 0 or file_idx == total_files - 1:
             logger.info(f"  Processing file {file_idx + 1}/{total_files}...")
 
-        raw = np.load(seq_file, mmap_mode='r')
+        raw = np.load(seq_file, mmap_mode='r', allow_pickle=False)
         data = raw.reshape(-1, raw.shape[-1]) if raw.ndim == 3 else raw
 
         # LOB prices

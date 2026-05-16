@@ -250,8 +250,8 @@ def _load_paired_signals_from_dir(
                 f"+ regression_labels.npy + signal_metadata.json."
             )
 
-    predicted_full = np.load(pred_path)
-    labels_full = np.load(labels_path)
+    predicted_full = np.load(pred_path, allow_pickle=False)
+    labels_full = np.load(labels_path, allow_pickle=False)
     with open(metadata_path, "r") as f:
         metadata = json.load(f)
 

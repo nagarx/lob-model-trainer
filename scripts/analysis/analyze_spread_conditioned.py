@@ -77,7 +77,7 @@ def collect_with_spread(
 
     raw_spreads_per_day = []
     for day_file in day_files:
-        seqs = np.load(day_file, mmap_mode='r')
+        seqs = np.load(day_file, mmap_mode='r', allow_pickle=False)
         spread_bps = seqs[:, -1, SPREAD_BPS_INDEX]
         raw_spreads_per_day.append(spread_bps)
 

@@ -408,7 +408,7 @@ class TestTLOBWithData:
         if not seq_files:
             pytest.skip("No sequence files found")
         
-        sequences = np.load(seq_files[0])[:8]  # First 8 samples
+        sequences = np.load(seq_files[0], allow_pickle=False)[:8]  # First 8 samples
         x = torch.from_numpy(sequences).float()
         
         config = ModelConfig(model_type=ModelType.TLOB, input_size=98)
