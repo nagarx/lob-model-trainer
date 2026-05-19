@@ -1,0 +1,171 @@
+# =============================================================================
+# R-20 — HMHP-R Cascading Decoder Architecture-Axis Test on v3p0 (PRODUCTION)
+# =============================================================================
+#
+# PURPOSE: Test HMHP-R (cascading multi-horizon regressor with confirmation)
+#   architectural lift vs TLOB Stage 2 baseline on the SAME e5_timebased_60s_v3p0
+#   corpus. Stage 6 (2026-05-05) validated HMHP-R end-to-end at 20-epoch scale
+#   (test_h10_ic=0.3561 vs TLOB Stage 2's 0.3747); R-20 runs production-scale
+#   (100 epochs / patience 15) for direct R-17a/R-19 protocol parity.
+#
+# CONTROL DISCIPLINE: Single-variable A/B at the ARCHITECTURAL-CLASS axis.
+#   model_type=hmhp_regression (cascading decoders [H10, H60, H300] +
+#   ConfirmationModule + RegressionConfirmationModule + agreement_ratio.npy
+#   output) vs TLOB (encoder + flatten + single-horizon head). Loss policy
+#   (Huber regression), corpus (e5_timebased_60s_v3p0), training schedule
+#   (epochs=100, patience=15, batch=64, lr=1e-4, cosine scheduler, seed=42),
+#   num_workers=0 — IDENTICAL to R-17a/R-19 production parameters.
+#
+# CYCLE 12 CONTEXT (2026-05-19 NIGHT post Cycle 11 hygiene + R-19 multi-seed):
+#   - Wave 1A (HMHP architectural readiness) + Wave 2F (R-20 refute pivot) +
+#     Wave 2H (HMHP-R substrate verification) converged on this design:
+#       (a) HMHP×TB single-horizon INFEASIBLE (HMHPConfig N>=2 validator +
+#           TB v3p0 single-horizon labels + Tuple return + lessons #1440+#1450
+#           "structurally misaligned")
+#       (b) HMHP-R × regression on v3p0 multi-horizon corpus IS feasible
+#           (Stage-6-validated infrastructure; ModelOutput-compatible;
+#           Phase Y composer ground-truth functional)
+#       (c) e5_timebased_60s_v3p0 corpus has train/val/test splits ready
+#           (128feat regression corpus is test/-only — blocks alternative
+#           framing)
+#   - Pre-impl design Agent X APPROVE-PROCEED 2026-05-19 NIGHT with refined
+#     gate design
+#
+# HYPERPARAMETER CHOICES (Stage 6 + production-scale overrides):
+#   - hmhp_encoder_hidden_dim: 64 (Stage 6 default; TLOB-based encoder)
+#   - hmhp_encoder_num_layers: 2 (Stage 6 default)
+#   - hmhp_horizons: [10, 60, 300] (matches regression_labels.npy [N, 3])
+#   - hmhp_loss_weights: H10=0.50 / H60=0.25 / H300=0.15 / consistency=0.10
+#       (H10-primary weighting; Stage 6 exact)
+#   - hmhp_pool_mode: "mean" (Phase S legacy preservation; Stage 6 + Phase S
+#       inherited from `hmhp_cascade_regression.yaml:30`)
+#   - hmhp_primary_horizon_idx: 0 (EXPLICIT; #PY-43/#PY-57/N4 dormant-bug
+#       avoidance; horizons[0]==10 semantically correct for H10-primary)
+#   - hmhp_use_confirmation: true (Stage 6 default; cross-horizon agreement
+#       signal → agreement_ratio.npy emitted at signal export)
+#   - dropout: 0.1 (paper-canonical regularization for production scale)
+#
+# CLASS-IMBALANCE POLICY: N/A (regression task; no class-imbalance).
+#   Huber loss handles heavy-tailed regression residuals.
+#
+# PRE-REGISTERED H1-H5 GATES (per hft-rules §13 — LOCKED PRE-RUN):
+#   - H1 PRIMARY — Architectural lift at H10 (vs TLOB Stage 2 baseline 0.3747):
+#       H1.a: test_h10_ic > 0.30 (Stage 6 floor; HMHP-R produces signal)
+#       H1.b: test_h10_ic > 0.3247 (within 5pp of TLOB Stage 2; PARTIAL-LIFT)
+#       H1.c: test_h10_ic > 0.3747 (CLEAR LIFT over TLOB Stage 2)
+#   - H2 BASELINE — Multi-horizon signal capture:
+#       H2.a: test_h60_ic > 0.10 (Stage 6 was 0.1408)
+#       H2.b: test_h300_ic > 0.05 (Stage 6 was 0.0820)
+#   - H3 ARCHITECTURAL INVARIANT (Phase Y composer correctness):
+#       H3.a: compatibility_fingerprint matches Stage 6's
+#         `cdd723ae5024b877683ed55e55a30c49e882e77260156ddb69ea192e6c05998b`
+#         (same corpus + window + normalization + horizons)
+#       H3.b: model_config_hash OBSERVATIONAL (epochs/patience may rotate mch
+#         per `_LOSS_TUNING_KEYS` semantics at `compatibility.py:86` —
+#         document empirically; NOT abort criterion)
+#       H3.c: experiment_provenance_hash populated (non-null; Phase Y end-to-end)
+#   - H4 CONFIRMATION MODULE (HMHP-R unique architectural feature):
+#       H4.a: agreement_ratio.npy emitted at signal export (file exists)
+#       H4.b: mean(agreement_ratio) ∈ [0.4, 0.9] (non-degenerate)
+#       H4.c: std(agreement_ratio) > 0.05 (non-constant)
+#   - H5 COST GATE (informational; POST-HF-1 IV=0.25 cost model):
+#       Document OptRet @ deep_itm_1.4bps + WinRate; NOT a binding gate
+#       (cost-floor + architecture-axis orthogonal per Lesson #106)
+#
+# DECISION MATRIX (outcome-agnostic; LOCKED PRE-RUN):
+#   - GO-CLEAR-LIFT: H1.c + H2 + H3 + H4 PASS
+#     → HMHP-R architecturally superior; close TLOB-direction; pivot to
+#       HMHP-R multi-seed N=3 + R-21 axis tests
+#   - GO-COMPETITIVE: H1.b + H2 + H3 + H4 PASS
+#     → HMHP-R competitive within 5pp; multi-seed N=3 follow-up triggered
+#   - PARTIAL-LIFT: H1.a + H2 + H3 PASS, but H1.b FAIL
+#     → HMHP-R signal real but underperforms TLOB; pivot decision deferred
+#       to multi-seed characterization
+#   - REFUTE: H1.a FAIL (test_h10_ic ≤ 0.30)
+#     → HMHP-R cannot recover Stage 6 floor at production scale; close
+#       architecture-axis cleanly
+#   - ABORT: H3.a FAIL OR H4.a FAIL
+#     → Composer regression OR ConfirmationModule wire-up bug; investigate
+#       BEFORE issuing scientific verdict
+#
+# COMPARISON ARTIFACT: TLOB Stage 2 best.pt at
+#   outputs/experiments/nvda_e5_60s_huber_nocvml/checkpoints/best.pt
+# (HMHP-R Stage 6 ref: nvda_first_hmhp_r_v3p0/checkpoints/best.pt).
+# Single-seed=42 matches R-17a + R-19 + Stage 6 protocol.
+#
+# COMPUTE BUDGET: HMHP-R 169,239 params (Stage 6 verified). Batch size 64
+#   inherited from base. Epochs=100 hard cap; early-stop patience=15
+#   typically converges at epoch 12-30. Wall-clock estimate: ~45-90 min on
+#   M1 Pro MPS with num_workers=0 + cache_in_memory=true.
+#
+# PROVENANCE: Cloned from Stage 6 `nvda_first_hmhp_r_v3p0.yaml`; only
+# train.* fields scaled to production. Same _base composition, same
+# model.* hmhp_* fields, same data.* configuration. Pre-impl Agent X
+# APPROVE-PROCEED 2026-05-19 NIGHT.
+# =============================================================================
+
+_base:
+  - "../bases/models/hmhp_cascade_regression.yaml"
+  - "../bases/datasets/nvda_e5_60s.yaml"
+  - "../bases/labels/regression_huber.yaml"
+  - "../bases/train/regression_default.yaml"
+
+name: R20_HMHP_R_V3p0_H10_Primary
+description: |
+  R-20 — HMHP-R cascading decoder architecture-axis test on v3p0 (PRODUCTION).
+  Tests cascading multi-horizon regressor with ConfirmationModule against TLOB
+  Stage 2 baseline (test_h10_ic=0.3747) at production scale (100 epochs).
+  Stage 6 (2026-05-05) validated infrastructure at 20-epoch scale; R-20 scales
+  to R-17a/R-19 protocol parity. Pre-registered H1-H5 gates locked PRE-RUN.
+
+output_dir: outputs/experiments/r20_hmhp_r_v3p0_h10_primary
+log_level: INFO
+
+# FeatureSet registry reference (Phase Y composer requirement; closes
+# feature_set_content_hash gap that would otherwise skip experiment_provenance_hash
+# composition). Same PRODUCT as nvda_r19_tb_v3p0_98feat_v1 (indices 0-97,
+# SFC=98, cv=3.0) → same content_hash 122fe5cbfb657bf91... by canonical_hash SSoT.
+data:
+  feature_set: "nvda_short_term_98_src98_v1"
+
+tags:
+  - r20
+  - hmhp
+  - hmhp_r
+  - nvda
+  - regression
+  - h10
+  - 60s
+  - huber
+  - v3p0
+  - cascading-decoder
+  - confirmation-module
+  - architecture-ablation
+  - tlob-stage-2-comparison
+  - production
+
+# Per-child overrides: HMHP-R requires hmhp_horizons + hmhp_loss_weights
+# explicit per-experiment (Stage 6 precedent; not in base bare config)
+model:
+  hmhp_horizons: [10, 60, 300]   # matches v3p0 regression_labels.npy [N, 3]
+  hmhp_primary_horizon_idx: 0    # H10 primary (idx 0); EXPLICIT per Phase 3
+                                 # design Agent X anti-drift item — avoids
+                                 # #PY-43/#PY-57/N4 dormant-bug horizons[0]
+                                 # hardcoded paths AT primary_horizon_idx=0
+                                 # semantic safety (closed in code per
+                                 # Phase 1b.1 commit 83ab54c verification)
+  hmhp_loss_weights:             # H10-primary weighting (Stage 6 exact)
+    H10: 0.50
+    H60: 0.25
+    H300: 0.15
+    consistency: 0.10            # cross-horizon consistency loss
+
+train:
+  # Production-scale overrides for R-17a/R-19 protocol parity:
+  epochs: 100                    # OVERRIDE Stage 6's 20 (production scale)
+  early_stopping_patience: 15    # OVERRIDE Stage 6's 8 (production scale)
+  seed: 42                       # EXPLICIT (matches R-17a + R-19 + Stage 6
+                                 # protocol; reproducibility lock)
+  # num_workers=0 inherited from base regression_default.yaml + OOM-on-fork
+  # guard with cache_in_memory=true (R-19 precedent at cycle10_r19_multi_seed.yaml:373)
+  num_workers: 0

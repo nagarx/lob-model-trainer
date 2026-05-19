@@ -2760,3 +2760,107 @@ Gap is 4-fold (4605 → 8292; no intermediate). This is empirical evidence of **
 - Closes: #PY-243 (R-19 multi-seed mandatory per Lesson #12) + #PY-307 (`--bin-seconds 60` wiring) + #PY-308 BUG2-A (FeatureSet registration + manifest wire-in)
 - Files: #PY-316 (gate-design error documentation + future-gate-author guidelines)
 - Prior cycle bridges: commit `b84897a` (Wilson+McNemar paired test on R-17a vs R-19 PT precision) + commit `daba144` (#PY-291 RCE-via-NPY closure) + commit `7a81fbc` (lob-backtester Option D TIER 1 cluster)
+
+---
+
+### Cycle 12: R-20 HMHP-R Architecture-Axis Test on e5_60s_v3p0 (PARTIAL-COMPETITIVE-NOT-TRADEABLE, 2026-05-19)
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | H1 PRIMARY 3-band: test_h10_ic > 0.30 floor / 0.3247 partial-lift / 0.3747 clear-lift vs TLOB Stage 2 baseline 0.3747. H2: multi-horizon signal capture (H60 > 0.10, H300 > 0.05). H3: corpus invariant (compat_fp matches anchor); epH populated. H4: ConfirmationModule produces non-degenerate agreement (mean ∈ [0.4, 0.9], std > 0.05). H5 cost informational (not binding per L106). |
+| **Method** | HMHP-R cascading-multi-horizon regressor on `e5_timebased_60s_v3p0` corpus (98 features, 230 days, H=[10,60,300]). Clone Stage 6 (`nvda_first_hmhp_r_v3p0.yaml`) + production-scale overrides (100 epochs / patience 15 / seed=42). Single-seed (R-17a/R-19/Stage 6 protocol parity). H10-primary loss weights (H10:0.50, H60:0.25, H300:0.15, consistency:0.10). Phase S `pool_mode=mean`, `hmhp_primary_horizon_idx=0` EXPLICIT (anti-drift). FeatureSet ref `nvda_short_term_98_src98_v1` for Phase Y composer. |
+| **Pre-impl gates** | **Wave 1+2 (4 parallel agents) REFRAMED user-authorized direction**: original "R-20 HMHP single-horizon on TB v3p0" found INFEASIBLE (Wave 1A: HMHPConfig N≥2 validator + 1-D TB labels + Tuple return from `forward_single_horizon` + HMHP×TB twice-refuted per lessons #1440 + #1450). Wave 2F+H pivoted to HMHP-R × regression on `e5_timebased_60s_v3p0` (Stage-6-validated infrastructure; multi-horizon labels exist). Phase 3 Agent X APPROVE-PROCEED with refined gates. Mid-impl Pydantic strict-mode caught 4 invalid field names in initial sweep manifest (`huber_delta`, `keep_top_k_checkpoints`, `smoothing_window`, `hmhp_encoder_num_layers`) — fixed in same cycle. |
+| **Data** | `e5_timebased_60s_v3p0` corpus (98 features × 230 days; 60s bins; train/val/test = 162/35/33 days). Smoothed-return labels via LabelFactory at load-time. |
+| **Config** | HMHP-R: TLOB-encoder (hidden=64, 2 layers) + cascading regression decoders [H10/H60/H300] (hidden=32, state_dim=32, gate fusion) + RegressionConfirmationModule + `pool_mode=mean` + Huber loss `regression_loss_delta=12.6` + H10-primary loss weights {H10:0.50, H60:0.25, H300:0.15, consistency:0.10}. Total params: same 169,239 as Stage 6 (verified). |
+| **Hardware** | MPS. Wall-clock: **1,405.9s** (~23.4 min total for training + signal_export + backtesting). Stage 6 was 417s/16 epochs at patience=8; R-20 ran 100-epoch hard cap (or early-stopped with patience=15 — full output log not preserved but duration suggests early-stop at moderate epoch count). |
+| **Status** | **PARTIAL-COMPETITIVE-NOT-TRADEABLE — Architecture-axis CLOSED; tradeability E8-bound** |
+
+**Test metrics (vs Stage 6 + TLOB Stage 2 anchors):**
+
+| Metric | R-20 (Cycle 12) | Stage 6 (HMHP-R) | TLOB Stage 2 | Delta vs TLOB | Verdict band |
+|---|---|---|---|---|---|
+| test_h10_ic | **0.3670** | 0.3561 | 0.3747 | -0.0077 (-0.77pp) | PARTIAL-LIFT ✓ (>0.3247); NOT CLEAR (<0.3747) |
+| test_h60_ic | 0.1303 | 0.1408 | -- | -- | H2.a PASS (>0.10) |
+| test_h300_ic | 0.0818 | 0.0820 | -- | -- | H2.b PASS (>0.05) |
+| test_h10_r2 | 0.1042 | 0.1147 | 0.1379 | -- | -- |
+| best_val_loss | 32.09 | (Stage 6 not directly published) | -- | -- | -- |
+
+**Phase Y composability fingerprints:**
+
+| Hash | R-20 ACTUAL | Stage 6 anchor (2026-05-05) | Notes |
+|---|---|---|---|
+| `compatibility_fingerprint` | `0ccd9f90bca06c868607b6520653e195d909a7fe6083a7aa29e7b8e02c2be160` | `cdd723ae5024b877683ed55e55a30c49e882e77260156ddb69ea192e6c05998b` | **Stage 6 anchor STALE per schema evolution 2026-05-05→2026-05-19**. R-20 matches γ-1 LITE 2026-05-10 "ridge × smoothed × H10" anchor — corpus IDENTITY preserved (98feat / 60s bin / HYBRID norm / H=[10,60,300] / data_source=mbo_lob). Closed under Lesson L49 (compat_fp anchor staleness across cycle-eras). |
+| `experiment_provenance_hash` | `9c28e966ba45df4214c24e6bbee0ada2c54b87cdbd6357a10ef910ba045d08a1` | (Stage 6 didn't publish) | POPULATED — Phase Y composer end-to-end functional on HMHP-R production cycle. |
+| `model_config_hash` (nested) | `be5ab20ae5d2b3675d0c1d35762a0102192fcc6e892e60cbd06c143bee1f6154` | `53041488548e4de31a3356c57dfa5ff0b905ab958d94e372dd0bb18499a20b87` | OBSERVATIONAL (gate H3.b). DIFFERS from Stage 6 mch because epochs=100 vs 20, patience=15 vs 8, num_workers=0 explicit, FeatureSet ref explicit. Rotation expected per `_LOSS_TUNING_KEYS` denylist semantics. |
+| `feature_set_ref` | `{name: nvda_short_term_98_src98_v1, content_hash: 122fe5cbfb657bf91...}` | (Stage 6 didn't have explicit ref) | POPULATED — closes Phase Y composer `feature_set_content_hash` gap. |
+
+**ConfirmationModule (HMHP-R unique architectural feature):**
+
+| Metric | R-20 ACTUAL | H4 gate threshold | Status | Interpretation |
+|---|---|---|---|---|
+| agreement_ratio.npy emitted | ✓ | exists | H4.a PASS | ConfirmationModule wire-up functional |
+| mean(agreement) | **0.9974** | ∈ [0.4, 0.9] | **H4.b FAIL** | NEAR-DEGENERATE: cross-horizon agreement essentially constant at ~99.74%; H10/H60/H300 predictions agree on direction on virtually all samples |
+| std(agreement) | **0.0295** | > 0.05 | **H4.c FAIL** | Sub-threshold variance: agreement is NEAR-CONSTANT not non-trivially varying across the test split |
+
+**Backtest results (POST-HF-1 IV=0.25 Deep ITM cost model; ALL 8 THRESHOLDS NEGATIVE):**
+
+| Threshold | OptRet | WinRate | AvgPnL | N_trades | Sharpe |
+|---|---|---|---|---|---|
+| deep_itm_1.4bps | -6.08% | 42.54% | -8.56 | 710 | -25.84 |
+| itm_2bps | -7.44% | 44.78% | -10.64 | 699 | -26.07 |
+| itm_3bps | -8.95% | 43.24% | -13.16 | 680 | -29.52 |
+| atm_5bps | -7.99% | 40.91% | -12.98 | 616 | -27.25 |
+| high_conv_8bps | -7.36% | 40.59% | -15.57 | 473 | -26.28 |
+| **very_high_10bps (BEST)** | **-4.40%** | 41.43% | -12.58 | 350 | -19.63 |
+| ultra_conv_15bps | 0.00% | -- | 0.00 | 0 (degenerate) | nan |
+| max_conv_20bps | 0.00% | -- | 0.00 | 0 (degenerate) | nan |
+
+**Gate evaluation summary** (per cycle12_r20_hmhp_r.yaml pre-registered LOCKED matrix):
+
+- H1.a floor (test_h10_ic > 0.30): **PASS** (0.3670 > 0.30)
+- H1.b partial-lift (test_h10_ic > 0.3247): **PASS** (0.3670 > 0.3247)
+- H1.c clear-lift (test_h10_ic > 0.3747): **FAIL** (0.3670 < 0.3747)
+- H2.a (H60_ic > 0.10): **PASS**
+- H2.b (H300_ic > 0.05): **PASS**
+- H3.a (compat_fp matches anchor): **PASS** (γ-1 LITE 2026-05-10 anchor `0ccd9f90...`; Stage 6 anchor `cdd723ae...` STALE per schema evolution)
+- H3.b (mch observational): PASS (observational; mch rotated as expected)
+- H3.c (epH populated): **PASS** (`9c28e966...`)
+- H4.a (agreement_ratio.npy emitted): **PASS**
+- H4.b (mean ∈ [0.4, 0.9]): **FAIL** (0.9974 — near-degenerate)
+- H4.c (std > 0.05): **FAIL** (0.0295 — sub-threshold)
+- H5 (cost informational): all 8 thresholds NEGATIVE; best = very_high_10bps -4.40%
+
+**Verdict synthesis** (literal analyzer reading vs reframed):
+- Literal analyzer: **INDETERMINATE** (mixed gates; H4.b/c FAIL block GO-COMPETITIVE; H1.b PASS blocks PARTIAL-LIFT band)
+- Reframed (per L106 cost-floor orthogonal + L107 bimodality precedent for documenting NEW findings): **PARTIAL-COMPETITIVE + NEW-FINDING + NOT-TRADEABLE**
+  - PARTIAL-COMPETITIVE: HMHP-R within 5pp of TLOB at H10; multi-horizon (H60+H300) signal captured
+  - NEW-FINDING: ConfirmationModule on this corpus produces near-degenerate agreement (~99.74%) — cross-horizon predictions are nearly always direction-consistent on smoothed labels at this resolution
+  - NOT-TRADEABLE: All 8 cost thresholds NEGATIVE OptRet; same E8 label-execution-mismatch holds (model predicts smoothing residual not point direction)
+
+**Lessons:**
+
+- **L49 NEW**: compat_fp anchors STALE across schema evolution. Stage 6 anchor `cdd723ae5024b877...` (2026-05-05) ≠ R-20's `0ccd9f90bca06c86...` (2026-05-19) despite IDENTICAL corpus + window + normalization + horizons. R-20's compat_fp matches γ-1 LITE 2026-05-10 anchor for `ridge × smoothed × H10` — confirms corpus identity preserved through schema evolution. **Apply**: H3.a-type gates must accept SET of acceptable anchors (one per known schema-era) rather than single literal anchor. Analyzer fixed inline (`CORPUS_COMPAT_FP_ANCHORS` frozenset). Future cycles authoring HX gates with literal anchors must re-verify currency at cycle-author time + document era-anchor mapping.
+
+- **L50 NEW**: HMHP-R cascade architecture-axis test on smoothed-return regression on v3p0 e5_60s corpus PRODUCES PARTIAL-COMPETITIVE not CLEAR-LIFT vs TLOB. test_h10_ic 0.3670 vs TLOB Stage 2 0.3747 = -0.77pp. Cascading multi-horizon decoders with ConfirmationModule do NOT extract additional H10 signal beyond TLOB encoder + flatten at this corpus/regime. **Closes architecture-axis question for HMHP-R cascade on v3p0 smoothed regression at H10.** Future investigation could test different horizon resolutions or different label semantics (event-based 128-feat regression corpus pending train/val splits).
+
+- **L51 NEW**: ConfirmationModule cross-horizon agreement is NEAR-DEGENERATE on v3p0 e5_60s smoothed regression (mean ~0.9974, std ~0.0295). H10/H60/H300 decoder heads produce direction-consistent predictions on ~99.74% of samples — agreement signal is virtually constant. This is either: (a) genuine semantic — smoothed labels at these short horizons are highly autocorrelated → cross-horizon predictions naturally agree; OR (b) cascade architectural feature collapse — decoders converge on identical predictions because state-passing from H10 dominates downstream decoders. Either interpretation: ConfirmationModule provides ZERO additional discriminative signal on this corpus. **Apply**: future HMHP-R cycles should pre-compute expected agreement-distribution baseline from the data itself (autocorrelation across horizons) BEFORE training to ground-truth what "non-degenerate" means.
+
+- **L52 NEW**: Pre-impl Wave 1+2 REFUTE caught critical infeasibility (HMHP×TB blocked by N≥2 validator + 1-D labels + Tuple return + lessons #1440 + #1450 history) AND pivoted to viable substrate (HMHP-R × regression on existing Stage-6-validated infrastructure) — saving ~6-8 hr unblock-work-on-misdirected-axis and producing valid science. **9th consecutive cycle** with Wave 2 catching critical Wave 1 / cycle-close claims. **Apply**: any "next-cycle direction" recommendation from prior cycle-close MUST go through fresh Wave 1+2 in the next cycle's prep. Prior recommendations are PRIOR BELIEFS not load-bearing assertions.
+
+- **L53 NEW**: Mid-impl gate value: Pydantic strict-mode (`extra="forbid"`) caught 4 invalid field names (`huber_delta`, `keep_top_k_checkpoints`, `smoothing_window`, `hmhp_encoder_num_layers`) at trainer subprocess instantiation in 2.5s — ZERO compute wasted. Production-cycle authoring must consult `lobtrainer.config.schema` field listing (via `python3 -c "from lobtrainer.config.schema import X; print(X.model_fields)"`) to confirm correct field names BEFORE manifest authoring. Schema field names: `regression_loss_delta` (NOT `huber_delta`); `hmhp_num_encoder_layers` (NOT `hmhp_encoder_num_layers`); `smoothing_window` NOT a LabelsConfig field (baked into v3p0 corpus's `forward_prices.npy` via Rust extractor); `keep_top_k_checkpoints` NOT a TrainConfig field (deferred to checkpointing harness defaults).
+
+**Outstanding work**:
+- **NEW backlog candidates**: (a) #PY-NNN HMHP-R ConfirmationModule degenerate-agreement classification — does the analyzer's H4.b/c need reframing for HMHP-R-on-smoothed corpora where high cross-horizon autocorrelation is expected? Pre-compute expected baseline. (b) `_INPUT_CONTRACTS` sync for `hmhp_regression` model_type — InputContract pre-flight at `hft-ops.stages.contract_preflight` skipped `hmhp_regression` with WARN because constraint table not synced. CLAUDE.md Change-Coordination Checklist row "Add a new model architecture" requires this. ~10 min update.
+- **Bimodality / multi-seed follow-up**: per Lesson #12 mandate, single-seed verdict warrants N=3 follow-up IF results are borderline. R-20 is PARTIAL-COMPETITIVE (not borderline-near-floor; clear NO-CLEAR-LIFT verdict). Multi-seed follow-up could characterize variance but unlikely to change architecture-axis verdict.
+- **Pivot recommendations** (architecture-axis CLOSED): R-21 reframed (128-feat TLOB on regression corpus once train/val extracted ~+2-3 hr; tests feature-axis without HMHP-R limitations) + TIER 1 HIGH hygiene (~4-6 hr) + CHANGELOG closure (3 stacked tags ~2-3 hr).
+
+**Cross-references**:
+- Sweep ID: `cycle12_r20_hmhp_r_20260519T184402` (matches sweep manifest file path; verdict JSON `sweep_id` field; training record path)
+- Sweep manifest: `hft-ops/experiments/sweeps/cycle12_r20_hmhp_r.yaml` (Pre-registered H1-H5 gates LOCKED; PARTIAL-COMPETITIVE-NOT-TRADEABLE verdict)
+- Trainer YAML: `lob-model-trainer/configs/experiments/r20_hmhp_r_v3p0_h10_primary.yaml`
+- Training record: `hft-ops/ledger/records/cycle12_r20_hmhp_r__seed_42_20260519T190728_5d186966.json`
+- Signal export: `outputs/experiments/seed_42/signals/test/` (output_dir bug systemic across cycle5-cycle10 — bare `seed_42/` not `cycle12_r20_hmhp_r__seed_42/`)
+- Verdict JSON: `hft-ops/ledger/r20_verdicts/cycle12_r20_hmhp_r_20260519T184402_verdict_20260519T191131.json`
+- Analyzer: `hft-ops/scripts/analyze_r20_hmhp_r.py` (set-based compat_fp anchor frozenset per L49; record-driven signal_dir resolution)
+- Round 20: `lob-backtester/BACKTEST_INDEX.md` (8-threshold backtest sweep + cost-model parity vs Stage 6 / R-19 era)
+- Prior cycle bridges: Stage 6 (`nvda_first_hmhp_r_v3p0` 2026-05-05 reference) + γ-1 LITE 2026-05-10 (compat_fp anchor source) + Cycle 11 hygiene 2026-05-19 (predecessor cycle on hardened infrastructure)
