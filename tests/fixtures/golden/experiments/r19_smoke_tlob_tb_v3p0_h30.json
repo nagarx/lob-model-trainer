@@ -1,0 +1,70 @@
+{
+  "resolved": {
+    "data": {
+      "cache_in_memory": true,
+      "data_dir": "../data/exports/nvda_v3p0_tb_pt40_sl20_h30",
+      "feature_count": 98,
+      "labeling_strategy": "triple_barrier",
+      "labels": {
+        "source": "precomputed",
+        "task": "classification"
+      },
+      "normalization": {
+        "clip_value": 10.0,
+        "eps": 1e-08,
+        "exclude_features": [
+          93
+        ],
+        "strategy": "hybrid"
+      },
+      "num_classes": 3,
+      "sequence": {
+        "stride": 1,
+        "window_size": 20
+      }
+    },
+    "description": "R-19 SMOKE \u2014 3-epoch TLOB on TB v3p0 corpus. Pre-impl validation that\nTLOB classification path + num_heads=1 produces sane class distribution\nbefore launching production 100-epoch cycle.\n",
+    "log_level": "INFO",
+    "model": {
+      "dropout": 0.1,
+      "input_size": 98,
+      "model_type": "tlob",
+      "num_classes": 3,
+      "tlob_dataset_type": "nvda",
+      "tlob_hidden_dim": 40,
+      "tlob_mlp_expansion": 4.0,
+      "tlob_num_heads": 1,
+      "tlob_num_layers": 4,
+      "tlob_use_bin": true,
+      "tlob_use_sinusoidal_pe": true
+    },
+    "name": "r19_smoke_tlob_tb_v3p0_h30",
+    "output_dir": "outputs/experiments/r19_smoke_tlob_tb_v3p0_h30",
+    "tags": [
+      "r19",
+      "smoke",
+      "tlob",
+      "triple-barrier",
+      "tb-v3p0",
+      "pre-impl"
+    ],
+    "train": {
+      "batch_size": 64,
+      "early_stopping_patience": 100,
+      "epochs": 3,
+      "focal_gamma": 2.0,
+      "gradient_clip_norm": 1.0,
+      "learning_rate": 0.0001,
+      "loss_type": "focal",
+      "mixed_precision": false,
+      "num_workers": 0,
+      "pin_memory": true,
+      "scheduler": "cosine",
+      "seed": 42,
+      "task_type": "multiclass",
+      "use_class_weights": true,
+      "weight_decay": 1e-05
+    }
+  },
+  "status": "ok"
+}
