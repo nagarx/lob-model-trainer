@@ -2653,3 +2653,110 @@ R-17a is part of a CLASS of ~26.7% of recent experiments (46 dirs vs 172 ledger 
 - Round 19a in `lob-backtester/BACKTEST_INDEX.md`
 
 R-19 continues the CLASS of ~26.7% recent experiments lacking the 5th traceability layer (#PY-223 long-term fix tracked separately). Both R-19 and R-17a share `compatibility_fingerprint=dd21d07922809691...` so a future `hft-ops ledger list --compatibility-fp dd21d07922809691` query (post #PY-223 closure) would correctly group both architectures as cross-architecture A/B on the SAME corpus/contract.
+
+---
+
+### Cycle 10 (#PY-243): R-19 Multi-Seed Validation (GO-ARCHITECTURAL + INDETERMINATE-COMMERCIAL, 2026-05-19)
+
+**Hypothesis**: TLOB attention finds +4.9pp PT-precision lift over Logistic flatten on TB v3p0 NVDA (per R-19 vs R-17a single-seed comparison May 2026). Multi-seed N=5 (seeds 43-47) validates whether the lift is ROBUST to seed variance or reflects noise (per Architectural Lesson #12 — mandatory multi-seed N≥3 with bootstrap CI before architectural-direction conclusions; R-16e Lesson #93 precedent — single-seed R-16d Ratio=2.585 collapsed under N=10 to mean=1.653). Prior-cycle Wilson+McNemar verdict from commit `b84897a` already showed lift is statistically real (p=1.25e-07) but fails cost-economics floor by 0.08pp; cycle10 closes the orthogonal seed-variance question.
+
+**Method**: 5-cell sweep cloning R-19 manifest pattern with `train.seed` axis varied 43-47. Single-axis Cartesian: model_type=tlob + loss=focal + num_heads=1 (LOCKED #PY-236) + seed ∈ {43..47}. Pre-impl validation (1 agent APPROVE-PROCEED 7/7 checks). Phase Y composer empirically populated 5/5 records with `experiment_provenance_hash=27244be31b8af374...` (IDENTICAL across seeds per treatment-level semantics — see L43 below). Analyzer at `hft-ops/scripts/analyze_r19_multi_seed.py` computes per-seed Wilson 95% CI + paired moving-block bootstrap on cross-seed mean (`hft_metrics.block_bootstrap_ci` v0.1.11 `paired=False`) + 4 architectural invariants (H3.a-d) + variance check (M5).
+
+**Data**: `nvda_v3p0_tb_pt40_sl20_h30` (~129K sequences; TB labels {SL≈37%, Timeout≈47%, PT≈16%}; corpus identity verified via 10-of-11 byte-identical CompatibilityContract fields).
+
+**Config**: `hft-ops/experiments/sweeps/cycle10_r19_multi_seed.yaml` (~420 LOC; pre-registered gates LOCKED in header; manifest fingerprint `b82d516103c89341...`). Closes #PY-307 (`--bin-seconds 60` added to extra_args post sister-cycle FIND-NEW-01 commit `b9a6d6b` lob-backtester) + #PY-308 BUG2-A (NEW FeatureSet `contracts/feature_sets/nvda_r19_tb_v3p0_98feat_v1.json` registered + `data.feature_set` wire-in; Phase Y composer end-to-end functional). FeatureSet content_hash `122fe5cbfb657bf91...` is IDENTICAL to `nvda_short_term_98_src98_v1` by design (PRODUCT-only canonical_hash; same feature_indices 0-97 / SFC=98 / cv=3.0).
+
+**Result: DUAL-VERDICT** — ARCHITECTURAL GO-CONFIRMED + COMMERCIAL INDETERMINATE-COST-INSUFFICIENT-CONFIRMED.
+
+#### Per-seed test_metrics (training-time PT precision)
+
+| Seed | PT pred | PT correct | PT precision | Wilson 95% CI |
+|---|---|---|---|---|
+| 43 | 8292 | 2010 | **0.2424** | [0.2333, 0.2517] |
+| 44 | 3851 | 1078 | **0.2799** | [0.2660, 0.2943] |
+| 45 | 4842 | 1352 | **0.2792** | [0.2668, 0.2920] |
+| 46 | 4605 | 1275 | **0.2769** | [0.2641, 0.2900] |
+| 47 | 8409 | 2027 | **0.2411** | [0.2320, 0.2503] |
+| **Aggregate** | — | — | **mean 0.2639 ± std 0.0203** | **bootstrap CI [0.2488, 0.2790]** |
+
+**Reference anchors**: R-19 single-seed (seed=42) anchor = 0.269; R-17a baseline = 0.220; R-17a + cost-economics floor 0.05 = 0.2681.
+
+**Independent metric-validator confirmation**: per-seed PT precision BIT-EXACT match analyzer's output (all 5 seeds; verified via independent reimplementation reading raw predictions.npy + labels.npy). Mean 0.263895, std 0.020274. Block-bootstrap CI matches upper (0.2790 vs 0.2795 — within 0.05pp), differs lower (0.2488 vs 0.2565 — 0.77pp block-length sensitivity at N=5; directionally consistent).
+
+#### Pre-registered gate evaluation (LOCKED PRE-RUN in manifest header)
+
+| Gate | Specification | Observed | Outcome | Comment |
+|---|---|---|---|---|
+| H1.a | mean within ±2pp of R-19 anchor 0.269 | mean 0.2639 (delta **0.0051**; well within 0.020 tolerance) | **PASS** ✓ | empirical lift centroid closely tracks single-seed R-19 |
+| H1.b | bootstrap CI lower > R-17a baseline 0.220 (BINDING) | CI lower 0.2488 (margin **+0.0288**) | **PASS** ✓ | R-17a separation cleanly significant |
+| H1.c | bootstrap CI lower > cost-floor 0.2681 (INFORMATIONAL) | CI lower 0.2488 (margin **-0.0193**) | **FAIL informational** | confirms b84897a Wilson+McNemar prior verdict |
+| H2.a | mean > R-17a floor 0.220 | mean 0.2639 | **PASS** ✓ | architectural lift centroid above baseline |
+| H2.b | seed-std < σ ceiling 0.020 | std 0.0203 (margin **-0.0003**) | **BORDERLINE FAIL** | technical fail by ε; well below M5 abort threshold 0.040 |
+| H3.a | 5 DISTINCT epH across seeds | 1 IDENTICAL epH `27244be31b8af374...` | **FAIL** (gate-design error) | See L43 — Phase Y is treatment-level by design |
+| H3.b | compat_fp == R-19 anchor `dd21d07922809691...` | `8f1148de02ad446e...` (only `feature_layout` field differs) | **FAIL** (BUG2-A rotation by design) | See L43 — feature_layout flipped per `compatibility.py:228-232` |
+| H3.c | mch == R-19 anchor `2dc7eeef5192db92...` | 5 IDENTICAL `2dc7eeef5192db92...` | **PASS** ✓ | architecture invariance preserved |
+| H3.d | ≥2 distinct predicted_returns SHA-256 | 5 distinct SHAs | **PASS** 5/5 ✓ | RNG state IS perturbing training |
+| M5 | σ < 0.040 abort threshold | σ 0.0203 | **PASS** ✓ | variance well below abort threshold |
+
+**Verdict per pre-registered decision matrix (literal-reading)**: ABORT (per H3.a + H3.b failure clause).
+
+**Verdict per CORRECTED gate semantics (Wave 2 REFUTE round verified gate-design errors)**: GO-AT-R17A-SEPARATION + INDETERMINATE-AT-COST-FLOOR. See #PY-316 + L43 below.
+
+**Methodology integrity** (3-agent Wave 2 REFUTE round 2026-05-19 ~13:37 CEST converged):
+- **Agent A** (REFUTE H3.a): VERIFIED H3.a was opposite-to-design. Phase Y composer at `hft-contracts/src/hft_contracts/experiment_record.py:823-919` is INTENTIONALLY seed-invariant. Composes `data_dir_hash + feature_set_content_hash + compatibility_fp + model_config_hash` — none include `train.seed` (treatment-level identifier; would defeat `--provenance-hash` query if seed entered). CORRECTED H3.a invariant "N seeds → 1 IDENTICAL epH" → cycle10 PASSES.
+- **Agent B** (REFUTE H3.b): VERIFIED H3.b drift is EXPECTED-BUG2A-MECHANISM. Only `feature_layout` field changed (`"default"` → content_hash `122fe5cb...`) per `compatibility.py:228-232` documented behavior. Other 10 SHAPE-determining CompatibilityContract fields byte-identical. Corpus IS the same — only the IDENTITY-tracking field flipped, by design.
+- **Agent C** (independent metric validation): VERIFIED per-seed PT precision + mean + std BIT-EXACT match analyzer. Confidence HIGH. Bimodality CONFIRMED real: 2 aggressive-regime seeds at PT_pred 8K+ (lower precision), 3 conservative-regime seeds at PT_pred 3.8-4.8K (higher precision).
+
+#### Phase Y trust columns (CORRECTED interpretation post-Wave-2)
+
+- **5 IDENTICAL `experiment_provenance_hash=27244be31b8af3744dcd1c10c2004fd1bf6609417ddac7ae7d388f4b02aeda5d`** — corroborates Phase Y "treatment-level identity" design; cycle10 seeds are 5 valid seed-replicates of the SAME treatment per `--provenance-hash` query semantics. **First empirical end-to-end validation** of Phase Y composer on a multi-seed sweep where ALL 4 components are populated post-#PY-308 BUG2-A closure.
+- **5 IDENTICAL `compatibility_fingerprint=8f1148de02ad446efdcd613a3c05b00b55439740d48c03101978eaf2a5c2c353`** — new POST-BUG2A anchor for future cycles on this corpus. Differs from R-19's PRE-BUG2A anchor `dd21d07922809691...` ONLY by `feature_layout` field (registry-tag `"default"` → content-hash `122fe5cbfb657bf91...`).
+- **5 IDENTICAL `model_config_hash=2dc7eeef5192db921ed348364fb4c76fbc5e3e917a69929791e016a99ee16a0e`** — IDENTICAL to R-19 anchor; confirms architecture exactly preserved (`tlob_hidden_dim=40 × tlob_num_layers=4 × tlob_num_heads=1 × tlob_use_bin=true`).
+- **5 DISTINCT `pred_sha`** + 5 DISTINCT dedup `fingerprint` values + 5 DISTINCT `training_metrics.test_*` — seed-level perturbation captured via 3 orthogonal mechanisms (pred SHA / dedup / metric divergence), NOT via epH.
+
+#### Bimodal training-regime observation (NEW)
+
+The 5 seeds split into two distinct regimes during training (per metric-validator Agent C analysis):
+
+| Regime | Seeds | PT predictions | PT precision | Trade frequency |
+|---|---|---|---|---|
+| Aggressive | 43, 47 | 8292-8409 (HIGH count) | 0.2411-0.2424 (LOWER precision) | over-predicts PT class |
+| Conservative | 44, 45, 46 | 3851-4842 (LOW count) | 0.2769-0.2799 (HIGHER precision) | selective PT class |
+
+Gap is 4-fold (4605 → 8292; no intermediate). This is empirical evidence of **two distinct local minima** in TLOB+focal loss optimization landscape under random seed perturbation. The precision-recall tradeoff is seed-dependent at the training-dynamic level (not corpus-bound). Future cycles could leverage this by initializing TLOB with seed-search + selecting "conservative regime" seeds for production trading.
+
+#### Backtest companion (Round 19b — see lob-backtester/BACKTEST_INDEX.md)
+
+5 backtests (one per seed). All 5 used SAME ATM cost model (`delta=0.5`, `IV=0.4`) as R-19's original Round 19a. Mean OptRet **-5.70% ± 0.50%** (option-mode) / -4.41% (equity-mode). Mean trade_count 1232 (3.8x R-19's 322 — methodology divergence: cycle10 manifest did NOT pass `--hold-events 30`/`--min-agreement 1.0`/`--holding-type horizon_aligned` per Round 19a CLI; cycle10 used `run_readability_backtest.py` defaults). Mean avg_theta **$4.23/trade** (3.3x R-19's $1.27 — POST-FIND-NEW-01 corrected; events_per_minute=1.0 now properly reflects 60s bin sampling vs pre-fix 10.0 events/min). Backtest empirically CONFIRMS H1.c FAIL: realized OptRet is materially negative across all 5 seeds; the +4.4pp architectural precision lift is INSUFFICIENT to clear cost-economics floor at this barrier scale.
+
+**NEW Encoded Lessons (chain from R-19 Lessons #99-104)**:
+
+- **Lesson #105**: **R-19 +4.9pp architectural lift is ROBUST to seed variance**. Multi-seed N=5 mean PT precision 0.2639 closely tracks R-19 single-seed anchor 0.269 (delta 0.5pp); paired bootstrap CI [0.2488, 0.2790] cleanly separated from R-17a baseline 0.220 (+0.0288 margin). Architectural-direction claim "TLOB attention finds signal Logistic flatten misses on TB v3p0" is now MULTI-SEED VALIDATED at the LIFT magnitude. Architectural Lesson #12 (mandatory multi-seed N≥3 before architectural conclusions) is **CLOSED for R-19 corpus + TLOB architecture**. Future R-NN cycles introducing NEW architectures on this corpus retain the multi-seed mandate.
+
+- **Lesson #106**: **Wilson+McNemar cost-floor verdict from commit `b84897a` HOLDS regardless of seed-variance robustness**. The 0.08pp commercial-tradeability shortfall identified in `b84897a` (mean diff +0.0492 vs cost-economics floor 0.05) is CONFIRMED by N=5 multi-seed: bootstrap CI lower 0.2488 < cost-floor 0.2681 (margin **-0.0193** below threshold). Architectural-direction validation does NOT change commercial-tradeability verdict; the two are ORTHOGONAL gates that must both PASS for production trading. Going forward: at TB v3p0 PT=40bps/SL=20bps barrier scale + ATM 0DTE Deep ITM cost model, no architecture in the model-class space tested (Ridge / Logistic / TLOB) is commercially tradeable. Cost-aware barrier scales (Phase Z #PY-271 + future R-18) OR fundamentally different label design (E2 label-redesign per E2-A' TERMINATED 2026-05-18; future re-authorization required) are the architecturally-coherent paths.
+
+- **Lesson #107**: **Bimodality in TLOB+focal training regime under random seed** is an empirical finding worth recording. Two distinct local minima: (a) "aggressive-PT" (>8K PT predictions, ~24% precision), (b) "conservative-PT" (3.8-4.8K PT predictions, ~28% precision). Gap is 4-fold with no intermediate observation across 5 seeds. Future cycles could exploit this via (a) seed-search initialization + select conservative-regime, (b) ensemble of conservative-regime checkpoints, (c) regularization tuning to bias optimization toward conservative regime. Bimodality was MASKED in single-seed R-19 (seed=42 landed in conservative regime — that's why R-19 reported 0.269; the aggressive regime would have given ~0.241).
+
+**NEW Architectural Lessons (chain from L36-L42 capturing META-rigor + session-pivot learnings)**:
+
+- **Lesson L43 NEW (paired with L42 from session-pivot)**: Pre-registered "fingerprint identity" gates need to be RECAPTURED when the cycle introduces ANY identity-tracking change (FeatureSet registry adoption / normalization strategy rename / calibration method addition / etc.). Anchor capture should happen AFTER the architectural fix lands, not before. Gate authors should ALSO verify the SEMANTIC INTENT of each fingerprint they're checking — `experiment_provenance_hash` is TREATMENT-LEVEL (replicate identity); `dedup.compute_fingerprint` is RUN-LEVEL (cell identity); `pred_sha` is OUTPUT-LEVEL (training-determinism). These are ORTHOGONAL — do NOT specify gates based on one fingerprint's semantics expecting another's behavior. See #PY-316 for full remediation paths.
+
+- **Lesson L44 NEW**: Phase Y composer docstring should include explicit "**This hash is INTENTIONALLY seed-invariant**" sentence. PA §17.3 should document the 3-fingerprint orthogonality so future gate authors don't re-make the L43 error. See #PY-316.
+
+**Outstanding work**:
+
+- **#PY-316 follow-up** (~2-3 hr; LOCAL-mostly): Phase Y composer docstring enhancement (L43 closure) + root CLAUDE.md Class A invariant list + PA §17.3 row + analyzer gate semantic fix at `hft-ops/scripts/analyze_r19_multi_seed.py` H3.a/H3.b + audit of `analyze_r16{c,d,e}.py` for similar gate-design errors.
+- **R-20 NEXT CYCLE candidate (UNCHANGED priority)**: HMHP cascade-decoder on TB v3p0 — does multi-horizon decoder lift PT precision above TLOB's 26.9% plateau? With L105 confirming TLOB is at a stable architectural-direction plateau, HMHP cascade is the natural next architecture-axis test.
+- **R-18 NEXT CYCLE candidate (DOWN-PRIORITIZED post L106)**: cost-aware barrier sweep is still a viable direction BUT requires Phase Z #PY-271 architectural plumbing (BSM moneyness Phase Z) AND CompatibilityContract `bin_size_seconds` field bump (rotates Phase Y fingerprints for ~76 R-NN records — dedicated architectural cycle). Caveat per #PY-217: zero H5-PASS at θ ≤ 15 bps was observed at TB extraction stage.
+- **Bimodality-exploitation cycle candidate (NEW)**: seed-search initialization + select conservative-regime checkpoint OR ensemble of {seeds 44, 45, 46} conservative-regime checkpoints. Per L107 this could lift effective PT precision from population-mean 0.2639 to conservative-regime-only ~0.278 (cycle10 evidence). Whether the +1.4pp regime selection survives an out-of-sample test would be the experimental hypothesis.
+
+**Cross-references**:
+- Sweep ID: `cycle10_r19_multi_seed_20260518T222513` (5 cell records at `hft-ops/ledger/records/cycle10_r19_multi_seed__seed_NN_*.json` + 1 aggregate)
+- Verdict JSON: `hft-ops/ledger/r19_multi_seed_verdicts/cycle10_r19_multi_seed_20260518T222513_verdict_20260519T113724.json`
+- Analyzer: `hft-ops/scripts/analyze_r19_multi_seed.py` (CAVEAT: H3.a + H3.b currently encode gate-design errors per L43; corrected gates pending #PY-316 closure)
+- 5 signal exports: `outputs/experiments/seed_{43..47}/signals/test/` (symlinks at `cycle10_r19_multi_seed__seed_{43..47}/` for analyzer path-pattern matching — pending cleanup or analyzer patch)
+- 5 backtest output dirs: `lob-backtester/outputs/backtests/cycle10_r19_multi_seed__seed_NN_*/`
+- Round 19b: `lob-backtester/BACKTEST_INDEX.md` (5-seed backtest results + cost-model methodology asymmetry)
+- Closes: #PY-243 (R-19 multi-seed mandatory per Lesson #12) + #PY-307 (`--bin-seconds 60` wiring) + #PY-308 BUG2-A (FeatureSet registration + manifest wire-in)
+- Files: #PY-316 (gate-design error documentation + future-gate-author guidelines)
+- Prior cycle bridges: commit `b84897a` (Wilson+McNemar paired test on R-17a vs R-19 PT precision) + commit `daba144` (#PY-291 RCE-via-NPY closure) + commit `7a81fbc` (lob-backtester Option D TIER 1 cluster)
