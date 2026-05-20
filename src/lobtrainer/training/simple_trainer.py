@@ -52,13 +52,22 @@ from lobtrainer.data.dataset import _validate_day_metadata
 
 logger = logging.getLogger(__name__)
 
-try:
-    from hft_contracts import SIGNAL_PRICE_FEATURE_INDEX as MID_PRICE_IDX
-    from hft_contracts import SIGNAL_SPREAD_FEATURE_INDEX as SPREAD_BPS_IDX
-except ImportError:
-    MID_PRICE_IDX = 40
-    SPREAD_BPS_IDX = 42
-
+# #PY-339 closure (2026-05-21; Cycle A-rev): deleted silent ``except ImportError``
+# fallback that hardcoded ``MID_PRICE_IDX = 40`` + ``SPREAD_BPS_IDX = 42``.
+# Pre-fix the fallback was DEAD CODE (hft-contracts is pinned dep; symbols exist
+# since Phase Q.6.5 at hft_contracts/_generated.py:481+484, re-exported via
+# __init__.py:96-97 + 231-232). When dep resolution silently failed (editable
+# install drift / pin mismatch / partial install / circular import during
+# testing), the fallback substituted hardcoded constants instead of failing
+# loud — DOUBLE violation of hft-rules §0 (no hardcoded indices; reuse-first
+# SSoT) + §8 (never silently drop/clamp/fix without diagnostics). Per §5
+# fail-fast, ImportError now propagates so operators see the real upstream
+# dep gap instead of silently consuming wrong indices. Regression test at
+# tests/test_security/test_no_silent_import_error_fallback_py339.py uses
+# AST walk (FIND-110 pattern from lob-backtester) to lock the invariant
+# source-level.
+from hft_contracts import SIGNAL_PRICE_FEATURE_INDEX as MID_PRICE_IDX
+from hft_contracts import SIGNAL_SPREAD_FEATURE_INDEX as SPREAD_BPS_IDX
 from hft_contracts import SCHEMA_VERSION as _CONTRACT_SCHEMA_VERSION
 
 
