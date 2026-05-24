@@ -425,8 +425,8 @@ class ExperimentResult:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         
-        with open(path, 'w') as f:
-            json.dump(self.to_dict(), f, indent=2)
+        from hft_contracts.atomic_io import atomic_write_json
+        atomic_write_json(path, self.to_dict())
     
     @classmethod
     def load(cls, path: Union[str, Path]) -> "ExperimentResult":

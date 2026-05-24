@@ -427,7 +427,7 @@ def train_command(args: argparse.Namespace) -> int:
                 manifest_exp_name = manifest_data.get("experiment", {}).get("name", "unknown")
                 ledger_path = manifest_path.parent.parent / "ledger" / "runs"
                 ledger_path.mkdir(parents=True, exist_ok=True)
-                import json as _json
+                from hft_contracts.atomic_io import atomic_write_json
                 record = {
                     "experiment_name": manifest_exp_name,
                     "stage": "training",
@@ -439,8 +439,7 @@ def train_command(args: argparse.Namespace) -> int:
                     "manifest": str(manifest_path),
                 }
                 record_path = ledger_path / f"{manifest_exp_name}_training.json"
-                with open(record_path, "w") as f:
-                    _json.dump(record, f, indent=2, default=str)
+                atomic_write_json(record_path, record)
                 logger.info(f"Updated hft-ops ledger: {record_path}")
         except Exception as e:
             logger.warning(f"Failed to update hft-ops ledger (non-fatal): {e}")

@@ -94,8 +94,8 @@ class ExperimentRegistry:
     
     def _save_index(self) -> None:
         """Save index to disk."""
-        with open(self._index_path, 'w') as f:
-            json.dump(self._index, f, indent=2)
+        from hft_contracts.atomic_io import atomic_write_json
+        atomic_write_json(self._index_path, self._index)
     
     def register(self, result: ExperimentResult) -> str:
         """

@@ -1,0 +1,67 @@
+# =============================================================================
+# FeatureSet Integration Test — 148-feat corpus × TemporalRidge × nvda_148feat_v3p0_v1
+# =============================================================================
+#
+# Purpose: ARCHITECTURAL VALIDATION (not new science). Exercises Phase 4
+# FeatureSet resolver end-to-end on the evaluator-derived 148-feat artifact.
+#
+# Validates:
+#   1. feature_set_resolver loads nvda_148feat_v3p0_v1.json + verifies content_hash
+#   2. 148 -> 95 feature slicing at dataloader (sequences[:,  :, indices_95])
+#   3. CompatibilityContract embeds feature_set_ref in signal_metadata
+#   4. signal_metadata.json propagates feature_set_ref.{name, content_hash}
+#   5. Phase Y experiment_provenance_hash composability
+#
+# Expected: IC ~ 0.33 (smoothed H10 baseline on MBO data); exact value not goal.
+# Success: pipeline completes + signal_metadata.json has feature_set_ref.name =
+#   "nvda_148feat_v3p0_v1" + non-null compatibility_fingerprint.
+# =============================================================================
+
+name: FeatureSet_Integration_148feat_Ridge
+description: |
+  Phase 4 FeatureSet integration test — first CONSUMER of the evaluator-derived
+  nvda_148feat_v3p0_v1 artifact (#PY-9 closure 2026-05-23). Validates the
+  architectural chain FeatureSet -> Training -> Signal -> Phase Y.
+  NOT a science experiment; expected IC is the smoothed-regression baseline.
+
+data:
+  data_dir: "../data/exports/nvda_xnas_148feat_regression_fwd_prices_v3p0"
+  feature_count: 148
+  feature_set: nvda_148feat_v3p0_v1
+  labeling_strategy: regression
+  horizon_idx: 0
+
+  sequence:
+    window_size: 100
+    stride: 10
+
+model:
+  model_type: temporal_ridge
+  input_size: 95  # 148 - 53 excluded by FeatureSet (95 selected)
+  params:
+    alpha: 1.0
+    features:
+      signal_indices: [85, 84, 86, 56, 45]
+      top_k_signals: 3
+      rolling_windows: [3, 5, 10]
+      include_volatility: true
+      include_momentum: true
+
+train:
+  task_type: regression
+  loss_type: huber
+  seed: 42
+
+output_dir: outputs/experiments/featureset_integration_148feat_ridge
+log_level: INFO
+
+tags:
+  - integration-test
+  - featureset
+  - nvda_148feat_v3p0_v1
+  - temporal-ridge
+  - regression
+  - 148-features
+  - h10
+  - v3p0
+  - architectural-validation
