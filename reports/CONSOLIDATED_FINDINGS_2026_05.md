@@ -127,6 +127,8 @@ All trained on `e5_timebased_60s_v3p0` (NVDA XNAS, 230 days post Phase O Cycle 1
 
 Source: `BACKTESTER_AUDIT_PLAN.md` (now at `lob-backtester/BACKTESTER_AUDIT_PLAN.md`), E1 experiment, P0 validation report.
 
+**Wiki references (theory backbone consulted):** hft-wiki `theory:order_flow_imbalance_family` consolidates the Cont/Kukanov/Stoikov 2014 OFI + Xu/Gould/Howison 2019 MLOFI + Kolm/Turiel/Westray 2023 DOFI lineage with 3 verbatim Cont equations + page_refs; the entry's anti-drift caveat block documents this finding (concurrent r=0.577 vs predictive r<0.006) as the canonical refutation of any naive predictive-OFI claim.
+
 ### Finding 1b: MBO Features HAVE Point-Return Signal at H=60 (Cross-Sectional Only) — E13
 
 E8 concluded "0/67 features have IC > 0.05 for point returns" testing only H=10. E13 expanded to all 8 horizons and found:
@@ -158,6 +160,8 @@ E8 concluded "0/67 features have IC > 0.05 for point returns" testing only H=10.
 
 Ridge destroys 86% of spread_bps's within-day signal. **However** (E13 Phase 9): At the 4 traded bins/day cadence, IC collapses to ~0 and DA=48%; quintile spread inverts. **Result: spread_bps is NOT tradeable**, confirming cross-sectional ≠ temporal.
 
+**Wiki references:** hft-wiki `theory:order_flow_imbalance_family` (the Cont 2014 lineage's price-impact-decay literature — Bouchaud et al. 2004 sister-citation in the entry's body — predicts the OFI sign-reversal observed here over 60-minute horizons).
+
 ### Finding 2: Signal Is Structural (Smoothed Labels)
 
 Walk-forward IC stability: 8.07 (mean IC / std IC); 0/158 fold regime shifts; per-day test R² all 35 days positive (range [0.331, 0.546], CV=0.077). E13 spread_bps: positive IC ALL 26 weeks; sign flip rate 1-2% (UP/DOWN days).
@@ -180,6 +184,8 @@ Post-Phase-O R13 HMHP-R IC=0.356 < R9 TLOB IC=0.375 (Δ=-0.019, same direction b
 
 Reason: persistence dominates H60 (R²=0.78) and H300 (R²=0.957); shared encoder pulled toward persistence-matching rather than innovation-capturing.
 
+**Wiki references:** hft-wiki `theory:tlob_dual_attention` (Berti & Kasneci 2025 dual-attention transformer — the load-bearing architecture for HMHP-R encoder); `theory:bin_bilinear_normalization` (Tran et al. ICPR 2020 BiN — the load-bearing per-feature normalization layer fronting TLOB's input).
+
 ### Finding 5: Model Predictions Are Conservative
 
 Target std 4.686 bps, prediction std 3.096 bps (ratio 0.66). Prediction range [-27.7, +32.3] vs target [-91.6, +159.8]. Residual mean -0.023 (zero bias), ACF(1) 0.069. **Pattern reproduced on v3p0**: Stage 5 calibration computed scale_factor=3.174× (pred std 8.72 → target std 27.68 bps).
@@ -198,6 +204,8 @@ OFI concurrent IC=0.73-0.86; predictive IC=0.00-0.03. Smoothed return label past
 
 Source: `hft-feature-evaluator/reports/UNIVERSALITY_STUDY_2026_04.md`.
 
+**Wiki references:** hft-wiki `theory:order_flow_imbalance_family` (the universality of zero predictive IC at 60s cadence across all 10 stocks is the canonical refutation locked in the entry's body); `theory:dcor_szekely_2007` (E13 Path 2 non-linear independence screening — Szekely-Rizzo-Bakirov 2007 — yielded 0/89 features for cross-stock subset, confirming linear-IC=0 is not hiding a non-linear signal).
+
 ### Finding 8: Extreme Event Tail-Conditional Returns Are Marginal (E16)
 
 5 features × 3 percentiles × 2 tails × 6 horizons × 10 stocks × 2 splits = 3,600 tests with per-day block bootstrap CIs.
@@ -208,6 +216,8 @@ Source: `hft-feature-evaluator/reports/UNIVERSALITY_STUDY_2026_04.md`.
 
 **Implication**: rare-event signal escape hatch substantially closed. Aggregate IC=0 not hiding tradeable tail effects.
 
+**Wiki references:** hft-wiki `theory:vpin_easley_toxicity` (Easley/López de Prado/O'Hara 2012 VPIN — the load-bearing theoretical framework for extreme-event toxicity measurement; pipeline anchor XNAS=0.298 vs ARCX=0.079 contextualizes the per-stock variation reported above).
+
 ### Complete Evidence Stack (Updated 2026-05-05)
 
 | Escape Hatch | Experiment | Result | Status |
@@ -217,6 +227,8 @@ Source: `hft-feature-evaluator/reports/UNIVERSALITY_STUDY_2026_04.md`.
 | Transfer entropy | E13 Path 3b | 0 pairs | **CLOSED** |
 | Regime-conditional IC | E13 Path 4 | 86/89 pass but cross-sectional only | **CLOSED** (E13 Phase 9) |
 | Deep learning on smoothed | REG-01 to E6, R9-R13 | R²=0.46 / IC=0.375 reproduces; DA on point returns ≤ 49% | **CLOSED** (E8 + R9 reproduces) |
+
+**Wiki references for Evidence Stack:** Non-linear independence screening (E13 Path 2 row): hft-wiki `theory:dcor_szekely_2007` (Szekely-Rizzo-Bakirov 2007 distance correlation, Theorem 3(i) iff-independence characterization). Regime-conditional IC (E13 Path 4 row): hft-wiki `theory:bocpd_adams_mackay_2007` (Adams-MacKay 2007 Bayesian Online Changepoint Detection — sister paradigm to CUSUM for regime-shift identification; sleeper status disclosed in entry body). Deep learning on smoothed (REG-01 to R13 row): hft-wiki `theory:tlob_dual_attention` (TLOB IS the architecture that captures the smoothing-residual artifact per E8 root-cause analysis).
 | ARCX + fine-grained | E3 | 0/93 IC>0.05 | **CLOSED** |
 | Off-exchange | E9, E12, E14 | Bootstrap CIs cross zero OOS | **CLOSED** |
 | Long-horizon morning→afternoon | E15 | In-sample artifact | **CLOSED** |
