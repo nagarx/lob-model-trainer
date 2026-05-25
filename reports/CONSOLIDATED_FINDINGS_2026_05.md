@@ -1,9 +1,9 @@
 # Consolidated Experiment Findings -- May 2026
 
-**Purpose:** Single authoritative reference for all regression experiment results, validated findings, anti-patterns, architectural hardening shipped, and strategic lessons through 2026-05-05. This document is the starting point for any future experiment design and supersedes `CONSOLIDATED_FINDINGS_2026_03.md` (last updated 2026-04-08, did not reflect R9-R15 / Phase Y / Phase Z / Stage 8 / 4-agent post-compact audit).
+**Purpose:** Single authoritative reference for all regression experiment results, validated findings, anti-patterns, architectural hardening shipped, and strategic lessons through 2026-05-25. This document is the starting point for any future experiment design and supersedes `CONSOLIDATED_FINDINGS_2026_03.md` (last updated 2026-04-08, did not reflect R9-R15 / Phase Y / Phase Z / Stage 8 / 4-agent post-compact audit).
 
-**Last updated:** 2026-05-05 (post-compact 7-agent investigation)
-**Validation status:** Quantitative metrics through E16 + Universality Study independently verified prior to 2026-04-08. **NEW (post-Phase-O cycle):** R9-R15 metrics empirically reproduced via canonical Phase Q.6.5.B chain on v3p0 baseline corpus. Phase Y producer-side validated with bit-exact `model_config_hash=de47c0ef49abc0ef...` between Phase X.1 v2 checkpoint sidecar and Phase Y `signal_metadata.json`. **CRITICAL CAVEAT (#PY-8):** R9-R15 metrics are single-point estimates without bootstrap CIs; rankings are NOT statistically validated.
+**Last updated:** 2026-05-25 (statistical rigor update: R16-R20 experiments added + first bootstrap CIs on 8 experiments). Previously: 2026-05-05 (post-compact 7-agent investigation).
+**Validation status:** Quantitative metrics through E16 + Universality Study independently verified prior to 2026-04-08. R9-R15 metrics empirically reproduced via canonical Phase Q.6.5.B chain on v3p0 baseline corpus. Phase Y producer-side validated with bit-exact `model_config_hash=de47c0ef49abc0ef...`. **NEW (2026-05-25):** 8 regression experiments now have 95% block-bootstrap CIs (§8). R16a-R20 experiment results added to §1. **KEY STATISTICAL FINDING:** TLOB, HMHP-R, TLOB+CVML, and TemporalRidge have OVERLAPPING 95% CIs — no model is statistically distinguishable at the 95% level on this corpus.
 
 > **Reading order**: this file is the up-to-date narrative reference. For ground-truth ledger entries, see `lob-model-trainer/EXPERIMENT_INDEX.md` and `lob-backtester/BACKTEST_INDEX.md`. For session-state and recommended next actions, see `NEW_SESSION_HANDOFF_2026_05_05.md`. For deferred items, see `PHASE_P_BACKLOG.md`. For 8 active forensic-audit bugs that may invalidate prior results, see `lob-model-trainer/reports/TRAINING_PIPELINE_FORENSIC_AUDIT_2026_04_26.md`.
 
@@ -13,7 +13,7 @@
 
 | Section | Topic |
 |---|---|
-| 1 | Experiment inventory (E1-E16 + R8-R15 + Phase Q.6.5 Stages 1-8 — full table) |
+| 1 | Experiment inventory (E1-E16 + R8-R20 + Phase Q.6.5 Stages 1-8 — full table) |
 | 2 | Validated technical findings (Findings 1-8, preserved from 2026-03) |
 | 3 | Feature signal hierarchy (smoothed return, lagged behavior, regime conditioning) |
 | 4 | Configuration reference (best-of TLOB, IBKR cost calibration, Huber δ table) |
@@ -65,7 +65,29 @@ All trained on `e5_timebased_60s_v3p0` (NVDA XNAS, 230 days post Phase O Cycle 1
 
 **Cross-stage observation (challenges "higher IC → better P&L"):** TemporalGradBoost has the LOWEST headline IC (0.2842) of any non-failure stage but the BEST OptRet (-0.04% essentially break-even). Phase Y composability LOCKED across 5 axes (data / architectural / loss-tuning / horizons-set / calibration) by R9-R13 fingerprint discrimination. **However**, ALL R9-R15 results are SAMPLE-OF-1 single-point estimates. See §8 (Statistical Rigor Caveat).
 
-### 1.3 Analytical Baselines (Test Set, pre-Phase-O 50,724 samples; v3p0 8,085 samples)
+### 1.3 Post-R15 Experiments (R16a-R20, 2026-05-09 to 2026-05-19)
+
+All trained on `e5_timebased_60s_v3p0` unless noted. Triple-Barrier (TB) experiments use `nvda_v3p0_tb_pt40_sl20_h30` corpus.
+
+| R# | Model | Label Type | Key Metrics | Best OptRet | Verdict | Key Lesson |
+|----|-------|-----------|-------------|-------------|---------|------------|
+| R-16a | Ridge+TLOB × point/peak (2×2 sweep) | point/peak H60 | Ridge×peak best +2.84% (single-seed) | +2.84% | PRELIMINARY | Outlier-driven: top 7 trades = 123% of return |
+| **R-16c** | Same 4 arms × 10 seeds (36 cells) | point/peak H60 | 0/32 sig positive; 11/32 sig negative | ~0% | **REFUTE** | R-16a's +2.84% rigorously refuted via multi-seed bootstrap |
+| R-16d | Ridge+TLOB × point/smooth × H10/H60/H300 | 12 cells | Ridge×smooth H10 IC=0.329; point IC peaks at H60 (0.147) | negative | **INDETERMINATE** | Horizon-decay is LABEL-CONDITIONAL: smooth decays monotonically, point peaks at H60 |
+| R-16e | Ridge+TLOB × point/smooth, 10 seeds, H60 | H60 matched | Ridge×point CI=(-0.047%, +0.031%) crosses zero | borderline | **INDETERMINATE** | E8 mismatch confirmed STRUCTURAL. Ridge RNG-free defeats seed-extension. |
+| **R-17a** | LogisticLOB (5,883 params) | TB classification | Acc=0.501, PT prec=22.0% | -1.26% | **REFUTE** | First execution-aligned classification. PT precision plateau at 22%. |
+| **R-19** | TLOB compact (130K params) | TB classification | Acc=0.508, PT prec=26.9% (+4.9pp) | -3.11% | **REFUTE-ARCH-LIFT** | TLOB lifts PT precision but INSUFFICIENT for profitability (needs 35.7%). |
+| R-19 multi-seed | TLOB, 5 seeds (43-47) | TB classification | Mean PT prec=0.264 ± 0.020 | -5.70% | **GO-ARCH + INDET-COMMERCIAL** | +4.9pp lift ROBUST to seed variance. Bimodal training discovered. |
+| **R-20** | HMHP-R cascade (169K) | smoothed regression | test_h10_ic=0.3670 (-0.77pp vs TLOB) | -4.40% | **PARTIAL-NOT-TRADEABLE** | HMHP-R does NOT outperform TLOB. Architecture-axis CLOSED. |
+
+**Key conclusions from R16-R20:**
+1. **No directional alpha exists** on the smoothed-label axis (R-16c rigorous multi-seed refutation).
+2. **E8 label-execution mismatch is STRUCTURAL** (R-16d/R-16e confirm it's not a hold-period artifact).
+3. **Triple-Barrier classification is the first execution-aligned approach** but PT precision (22-27%) is below the 35.7% breakeven threshold.
+4. **TLOB lifts architectural capacity** (+4.9pp PT precision over Logistic) but the lift is insufficient for profitability at current cost floors.
+5. **HMHP-R cascade offers no additional H10 signal** beyond TLOB (R-20 architecture-axis closure).
+
+### 1.4 Analytical Baselines (Test Set, pre-Phase-O 50,724 samples; v3p0 8,085 samples)
 
 | Baseline | H10 R² | H10 IC | H10 DA | Notes |
 |----------|--------|--------|--------|-------|
@@ -588,28 +610,39 @@ All 5 CIs GREEN. All working trees clean. ZERO regressions cumulative across 12 
 
 ---
 
-## 8. Statistical-Rigor Caveat (NEW — #PY-8)
+## 8. Statistical-Rigor Results (UPDATED 2026-05-25 — #PY-8 partially closed)
 
-**The R9-R15 ranking shown in §1.2 is a single-point-estimate ordering. It is NOT statistically validated.**
+### 8.1 Bootstrap CIs on 8 Regression Experiments (NEW 2026-05-25)
 
-Empirical state on 2026-05-05 (per NEW_SESSION_HANDOFF §2.2 7-agent investigation):
+First-ever 95% block-bootstrap CIs computed on all experiments with available signal exports. Method: `block_bootstrap_ci` from `hft-metrics` SSoT, block_length = ceil(n^(1/3)) per Politis-Romano (1994), n_bootstraps=10000, seed=42.
 
-- **ZERO bootstrap CIs**, ZERO walk-forward variance, ZERO cross-fold validation, ZERO permutation tests, ZERO null-distribution comparisons applied to R9-R15.
-- `BACKTEST_INDEX.md:715` already qualitatively flags R10's "+0.56% likely within sampling noise".
-- `BACKTEST_INDEX.md:508` already flags R14's -0.04% as "Sample-of-1 test-split result. Walk-forward bootstrap + out-of-sample replication required".
-- All `hft-metrics` primitives EXIST and are tested + import-ready: `block_bootstrap_ci`, `block_permutation`, `pairwise_paired_bootstrap_compare`, `purged_kfold_split`, `compare_sweep_statistical`. **UNUSED on R9-R15**.
-- `hft-ops sweep compare` adapter SHIPPED (Phase V.B.4b) but NEVER RUN on R9-R15.
-- Phase Y composability filters BUILT (`hft-ops ledger list --provenance-hash`) but UNAPPLIED.
+| Experiment | n_samples | IC [95% CI] | DA [95% CI] | R2 [95% CI] |
+|---|---|---|---|---|
+| **TLOB (R9 equiv)** | 8,085 | **0.3747** [0.3474, 0.4021] | 0.6419 [0.6298, 0.6539] | 0.1379 [0.1174, 0.1561] |
+| E5 pre-Phase-O TLOB | 8,337 | 0.3800 [0.3538, 0.4064] | 0.6403 [0.6277, 0.6529] | 0.1239 [0.1081, 0.1374] |
+| HMHP-R cascade | 8,085 | 0.3561 [0.3294, 0.3820] | 0.6302 [0.6174, 0.6424] | 0.1147 [0.0973, 0.1296] |
+| TLOB+CVML | 8,085 | 0.3464 [0.3180, 0.3749] | 0.6294 [0.6165, 0.6419] | 0.1164 [0.0910, 0.1381] |
+| TemporalRidge | 8,085 | 0.3289 [0.3004, 0.3577] | 0.6206 [0.6082, 0.6332] | 0.1037 [0.0640, 0.1366] |
+| TemporalGradBoost | 8,085 | 0.2843 [0.2440, 0.3241] | 0.5948 [0.5760, 0.6133] | 0.0797 [0.0427, 0.1127] |
+| **GMADL (neg control)** | 8,085 | **-0.0054** [-0.0298, 0.0187] | 0.5014 [0.4718, 0.5315] | -0.0013 [-0.0112, -0.0000] |
+| 128-feat event-based | 50,724 | 0.6766 [0.6715, 0.6815] | 0.7494 [0.7458, 0.7529] | 0.4642 [0.4341, 0.4862] |
 
-**Decisive precedent**: E15 long-horizon study had ACF=−0.27 driven 43% by April 8-9 outlier alone. Universality Study showed 14/280 BH FDR pass = exactly 5.0% null FPR. The team has documented precedent for why single-point estimates mislead.
+### 8.2 Key Statistical Findings
 
-**Implications:**
-- R10's +0.56% likely sampling noise.
-- R14's -0.04% sample-of-1 — could easily flip sign on bootstrap.
-- R13's IC=0.356 vs R9's IC=0.375 (Δ=−0.019) may be statistically indistinguishable.
-- Without bootstrap CIs, EVERY "ranking" of R9-R15 is suspect.
+1. **TLOB, HMHP-R, TLOB+CVML, and TemporalRidge have OVERLAPPING 95% CIs on IC.** No model is statistically distinguishable from the others at the 95% level. The IC CI width is ~0.05-0.08 for n=8,085 samples — any experiment expecting < 0.05 IC improvement cannot produce a statistically meaningful result on this corpus.
 
-**Critical structural blocker for paired bootstrap on R9-R14 IC**: `compare_sweep_statistical` at `hft-ops/src/hft_ops/ledger/statistical_compare.py:362-383` raises `ValueError` when `regression_labels_sha256` differs across child records. R9 horizons `[10,20,50,100,200]` vs R12+R13 horizons `[10,60,300]` produce different label tensor SHA → fail-loud on first invocation. **Requires Stage-8-style re-export-then-pair before paired bootstrap is even possible** (per NEW_SESSION_HANDOFF §8.2 Day 4-6 step 3a).
+2. **GMADL mean-collapse CONFIRMED** — IC CI crosses zero [-0.0298, 0.0187]. DA CI includes 0.50 (random). This is the first rigorous confirmation of the GMADL failure mode.
+
+3. **TemporalGradBoost is marginally distinguishable** — its IC CI upper bound (0.3241) barely overlaps with TLOB's lower bound (0.3474). A paired test would likely reject equality.
+
+4. **128-feature event-based has very tight CIs** (n=50,724 vs n=8,085) — confirms high IC is REAL for smoothed labels, but this model predicts the smoothing residual, not tradeable returns (E8 root cause).
+
+### 8.3 Remaining Gaps
+
+- **R16-R20 classification experiments** (R-17a, R-19) use `predictions.npy` not `predicted_returns.npy` — the regression CI tool cannot compute CIs for classification signals. A classification-specific CI module is needed.
+- **R9-R16 sweep experiments** lack stored signal exports — CIs cannot be computed retroactively without re-export from checkpoints.
+- **Paired pairwise bootstrap** (`hft-ops sweep compare`) still blocked by `regression_labels_sha256` mismatch across R9 vs R12/R13 horizon sets.
+- CI artifacts saved at: `outputs/experiments/{experiment}/test_metrics_ci_v1.json` (8 total: 6 existing + 2 NEW this session).
 
 ---
 
