@@ -277,7 +277,7 @@ class TestComputePermutationImportance:
         artifact = compute_permutation_importance(
             X=X, y=y, feature_names=names, feature_indices=idxs,
             predict_fn=predict_fn, metric_fn=_pearson_metric, config=cfg,
-            feature_set_ref={"name": "test_v1", "content_hash": "h" * 64},
+            feature_set_ref={"name": "test_v1", "content_hash": "a" * 64},
             experiment_id="exp_test",
             fingerprint="f" * 64,
             model_type="synthetic",
