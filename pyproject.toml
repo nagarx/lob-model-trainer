@@ -52,7 +52,7 @@ dependencies = [
     "hft-metrics>=0.1.11",
 
     # Model architectures (local: pip install -e ../lob-models)
-    "lob-models",
+    "lob-models>=0.5.0",
     
     # Core ML
     "torch>=2.0",
