@@ -198,8 +198,13 @@ class BaselineReport:
             "Per-Class F1 (Model):",
         ]
         
-        for pc in self.model_metrics.per_class:
-            lines.append(f"  {pc.name:>6}: {pc.f1:.3f}")
+        for cls_id, f1_val in sorted(self.model_metrics.per_class_f1.items()):
+            name = (
+                self.model_metrics.class_names[cls_id]
+                if cls_id < len(self.model_metrics.class_names)
+                else f"class_{cls_id}"
+            )
+            lines.append(f"  {name:>6}: {f1_val:.3f}")
         
         lines.append("")
         

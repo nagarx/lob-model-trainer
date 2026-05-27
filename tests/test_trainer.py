@@ -632,14 +632,11 @@ class TestModelFactory:
         assert hasattr(model, 'gru')
     
     def test_create_model_unknown_type(self):
-        """Test that unknown model type raises error."""
-        from lobtrainer.models import create_model
+        """Test that reserved model type raises at config construction (fail-fast)."""
         from lobtrainer.config import ModelConfig, ModelType
-        
-        config = ModelConfig(model_type=ModelType.TRANSFORMER)
 
-        with pytest.raises(ValueError, match="Unknown model"):
-            create_model(config)
+        with pytest.raises(ValueError, match="TRANSFORMER is reserved"):
+            ModelConfig(model_type=ModelType.TRANSFORMER)
 
 
 if __name__ == "__main__":

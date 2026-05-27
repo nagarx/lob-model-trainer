@@ -105,7 +105,7 @@ class RegressionStrategy(TrainingStrategy):
         all_preds = []
         all_targets = []
 
-        for features, labels in loader:
+        for features, labels, *_ in loader:
             features = features.to(self.device)
             regression_target = labels.to(self.device).float()
 
@@ -155,7 +155,7 @@ class RegressionStrategy(TrainingStrategy):
         all_preds = []
         all_targets = []
 
-        for features, labels in loader:
+        for features, labels, *_ in loader:
             features = features.to(self.device)
             output = model(features)
 

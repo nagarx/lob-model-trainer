@@ -1159,7 +1159,7 @@ class DataConfig(SafeBaseModel):
         # - 98: Full feature set (extended)
         # - 116: Full + experimental features (no MLOFI)
         # - 128: Full + all experimental including MLOFI (Kolm 2023)
-        VALID_FEATURE_COUNTS = {40, 48, 76, 98, 116, 128}
+        VALID_FEATURE_COUNTS = {40, 48, 76, 98, 116, 128, 148}
 
         if self.feature_count < 1:
             raise ValueError(
@@ -1420,7 +1420,7 @@ class ModelConfig(SafeBaseModel):
     """Whether HMHP classification uses dual regression heads."""
 
     # DeepLOB-specific (needed by data pipeline)
-    deeplob_mode: str = "benchmark"
+    deeplob_mode: DeepLOBMode = DeepLOBMode.BENCHMARK
     """DeepLOB mode: 'benchmark' (40 LOB features) or 'extended' (all features)."""
 
     # =========================================================================
@@ -1554,6 +1554,14 @@ class ModelConfig(SafeBaseModel):
             return ModelType(v)
         return v
 
+    @field_validator("deeplob_mode", mode="before")
+    @classmethod
+    def _coerce_deeplob_mode_string(cls, v: Any) -> Any:
+        """Accept YAML string input (e.g. ``deeplob_mode: "benchmark"``) under strict=True."""
+        if isinstance(v, str):
+            return DeepLOBMode(v)
+        return v
+
     @field_validator("hmhp_horizons", mode="before")
     @classmethod
     def _coerce_hmhp_horizons(cls, v: Any) -> Any:
@@ -1596,7 +1604,14 @@ class ModelConfig(SafeBaseModel):
         frozen=True. Uses ``object.__setattr__(self, "params", ...)`` —
         same pattern as DataConfig's T9 labels auto-derivation.
         """
-        # Validate core fields that stay on ModelConfig
+        # Fail-fast on reserved-but-unimplemented model types.
+        if self.model_type == ModelType.TRANSFORMER:
+            raise ValueError(
+                f"ModelType.TRANSFORMER is reserved for future use and "
+                f"cannot be dispatched. Available types: "
+                f"{sorted(mt.value for mt in ModelType if mt != ModelType.TRANSFORMER)}"
+            )
+
         # T13: allow input_size=0 as sentinel for auto-derivation
         # (resolved in ExperimentConfig._validate_all)
         if self.input_size < 0:
@@ -1606,8 +1621,48 @@ class ModelConfig(SafeBaseModel):
             )
         if self.num_classes < 2:
             raise ValueError(f"num_classes must be >= 2, got {self.num_classes}")
+
+        # Audit 2026-05-27: systematic isfinite guards per SafeBaseModel
+        # contract (base.py:44-46). strict=True does NOT reject NaN/Inf.
+        if not math.isfinite(self.dropout):
+            raise ValueError(
+                f"dropout must be finite (not NaN/Inf), got {self.dropout!r}"
+            )
         if self.dropout < 0 or self.dropout > 1:
             raise ValueError(f"dropout must be in [0, 1], got {self.dropout}")
+        if not math.isfinite(self.regression_loss_delta):
+            raise ValueError(
+                f"regression_loss_delta must be finite (not NaN/Inf), "
+                f"got {self.regression_loss_delta!r}"
+            )
+        if not math.isfinite(self.tlob_mlp_expansion):
+            raise ValueError(
+                f"tlob_mlp_expansion must be finite (not NaN/Inf), "
+                f"got {self.tlob_mlp_expansion!r}"
+            )
+        if not math.isfinite(self.mlplob_mlp_expansion):
+            raise ValueError(
+                f"mlplob_mlp_expansion must be finite (not NaN/Inf), "
+                f"got {self.mlplob_mlp_expansion!r}"
+            )
+        if not math.isfinite(self.mlplob_bin_eps):
+            raise ValueError(
+                f"mlplob_bin_eps must be finite (not NaN/Inf), "
+                f"got {self.mlplob_bin_eps!r}"
+            )
+        if not math.isfinite(self.mlplob_bin_init_gamma):
+            raise ValueError(
+                f"mlplob_bin_init_gamma must be finite (not NaN/Inf), "
+                f"got {self.mlplob_bin_init_gamma!r}"
+            )
+        if not math.isfinite(self.gmadl_a):
+            raise ValueError(
+                f"gmadl_a must be finite (not NaN/Inf), got {self.gmadl_a!r}"
+            )
+        if not math.isfinite(self.gmadl_b):
+            raise ValueError(
+                f"gmadl_b must be finite (not NaN/Inf), got {self.gmadl_b!r}"
+            )
 
         # Auto-migrate legacy flat fields into params dict if params is empty.
         # This ensures old YAML configs (with flat tlob_hidden_dim etc.) work
@@ -1676,7 +1731,7 @@ class ModelConfig(SafeBaseModel):
 
         elif mt == "deeplob":
             return {
-                "mode": self.deeplob_mode if isinstance(self.deeplob_mode, str) else self.deeplob_mode.value,
+                "mode": self.deeplob_mode.value,
                 "feature_layout": "grouped",
                 "num_levels": self.deeplob_num_levels,
                 "num_classes": self.num_classes,
@@ -1998,6 +2053,36 @@ class TrainConfig(SafeBaseModel):
             )
         if self.learning_rate <= 0:
             raise ValueError(f"learning_rate must be > 0, got {self.learning_rate}")
+        # Audit 2026-05-27: isfinite guards for uncovered float fields.
+        if not math.isfinite(self.weight_decay):
+            raise ValueError(
+                f"weight_decay must be finite (not NaN/Inf), "
+                f"got {self.weight_decay!r}"
+            )
+        if self.weight_decay < 0:
+            raise ValueError(
+                f"weight_decay must be >= 0, got {self.weight_decay}"
+            )
+        if self.gradient_clip_norm is not None:
+            if not math.isfinite(self.gradient_clip_norm):
+                raise ValueError(
+                    f"gradient_clip_norm must be finite (not NaN/Inf), "
+                    f"got {self.gradient_clip_norm!r}"
+                )
+            if self.gradient_clip_norm <= 0:
+                raise ValueError(
+                    f"gradient_clip_norm must be > 0 (or None to disable), "
+                    f"got {self.gradient_clip_norm}"
+                )
+        if not math.isfinite(self.scheduler_gamma):
+            raise ValueError(
+                f"scheduler_gamma must be finite (not NaN/Inf), "
+                f"got {self.scheduler_gamma!r}"
+            )
+        if self.scheduler_gamma <= 0 or self.scheduler_gamma > 1:
+            raise ValueError(
+                f"scheduler_gamma must be in (0, 1], got {self.scheduler_gamma}"
+            )
         if self.epochs < 1:
             raise ValueError(f"epochs must be >= 1, got {self.epochs}")
         if not math.isfinite(self.focal_gamma):
@@ -2615,9 +2700,10 @@ class ExperimentConfig(SafeBaseModel):
           ``from_yaml``, not ``from_dict`` — resolved BEFORE the dict
           reaches here).
         - ``_normalize_config_types`` YAML-quirk preprocessing (scientific
-          notation strings → float; "true"/"false" strings → bool;
-          integer strings → int). Applied BEFORE ``model_validate`` so
-          strict mode sees pre-normalized values.
+          notation strings → float only; str→bool and str→int branches
+          removed Audit 2026-05-27 — conflicted with strict=True).
+          Applied BEFORE ``model_validate`` so strict mode sees
+          pre-normalized values.
 
         Gains from Pydantic-native construction:
 
@@ -2768,23 +2854,16 @@ def _normalize_config_types(data: dict) -> dict:
         elif isinstance(value, list):
             return [_normalize_value(v) for v in value]
         elif isinstance(value, str):
-            # Check if string looks like scientific notation
             if SCIENTIFIC_NOTATION_PATTERN.match(value):
                 try:
                     return float(value)
                 except ValueError:
                     return value
-            # Check if string is "true"/"false" (YAML boolean edge cases)
-            if value.lower() == 'true':
-                return True
-            if value.lower() == 'false':
-                return False
-            # Check if string is a plain integer
-            if value.isdigit() or (value.startswith('-') and value[1:].isdigit()):
-                try:
-                    return int(value)
-                except ValueError:
-                    return value
+            # str→int and str→bool branches REMOVED (Audit 2026-05-27):
+            # PyYAML safe_load already parses unquoted true/false → bool
+            # and unquoted 42 → int. The blanket coercion conflicted with
+            # Pydantic strict=True — e.g., name: "123" would become int(123)
+            # and be rejected by the str field validator.
             return value
         else:
             return value

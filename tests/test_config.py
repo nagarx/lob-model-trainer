@@ -2218,6 +2218,119 @@ class TestModelConfigPydantic:
 # =============================================================================
 
 
+class TestAudit20260527CoverageGaps:
+    """Audit 2026-05-27 Batch 2 regression locks — isfinite guards on 11 new
+    fields, DeepLOBMode string coercion, VALID_FEATURE_COUNTS 148,
+    _normalize_config_types narrowing.
+    """
+
+    # --- ModelConfig isfinite guards (8 fields) ----------------------------
+
+    @pytest.mark.parametrize("field,value", [
+        ("dropout", float("nan")),
+        ("dropout", float("inf")),
+        ("regression_loss_delta", float("nan")),
+        ("tlob_mlp_expansion", float("nan")),
+        ("mlplob_mlp_expansion", float("inf")),
+        ("mlplob_bin_eps", float("nan")),
+        ("mlplob_bin_init_gamma", float("nan")),
+        ("gmadl_a", float("inf")),
+        ("gmadl_b", float("nan")),
+    ])
+    def test_model_config_nan_inf_rejected(self, field, value):
+        """NaN/Inf on ModelConfig float fields must be rejected (A.5 contract)."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="finite"):
+            ModelConfig(**{field: value})
+
+    # --- TrainConfig isfinite guards (3 fields) ----------------------------
+
+    @pytest.mark.parametrize("field,value", [
+        ("weight_decay", float("nan")),
+        ("weight_decay", float("inf")),
+        ("gradient_clip_norm", float("nan")),
+        ("scheduler_gamma", float("nan")),
+        ("scheduler_gamma", float("inf")),
+    ])
+    def test_train_config_nan_inf_rejected(self, field, value):
+        """NaN/Inf on TrainConfig float fields must be rejected."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="finite"):
+            TrainConfig(**{field: value})
+
+    def test_train_config_weight_decay_negative_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="weight_decay"):
+            TrainConfig(weight_decay=-0.01)
+
+    def test_train_config_gradient_clip_norm_zero_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="gradient_clip_norm"):
+            TrainConfig(gradient_clip_norm=0.0)
+
+    def test_train_config_scheduler_gamma_above_one_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="scheduler_gamma"):
+            TrainConfig(scheduler_gamma=1.5)
+
+    def test_train_config_scheduler_gamma_one_allowed(self):
+        """gamma=1.0 means 'no decay' — valid per PyTorch StepLR API."""
+        cfg = TrainConfig(scheduler_gamma=1.0)
+        assert cfg.scheduler_gamma == 1.0
+
+    # --- DeepLOBMode enum coercion -----------------------------------------
+
+    def test_deeplob_mode_string_coerced_to_enum(self):
+        """YAML passes string; field_validator coerces to DeepLOBMode."""
+        from lobtrainer.config.schema import DeepLOBMode
+        cfg = ModelConfig(deeplob_mode="benchmark")
+        assert cfg.deeplob_mode == DeepLOBMode.BENCHMARK
+        assert isinstance(cfg.deeplob_mode, DeepLOBMode)
+
+    def test_deeplob_mode_extended_string_accepted(self):
+        from lobtrainer.config.schema import DeepLOBMode
+        cfg = ModelConfig(deeplob_mode="extended")
+        assert cfg.deeplob_mode == DeepLOBMode.EXTENDED
+
+    def test_deeplob_mode_invalid_string_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises((ValidationError, ValueError)):
+            ModelConfig(deeplob_mode="invalid_mode")
+
+    def test_deeplob_mode_serializes_as_string(self):
+        """model_dump(mode='json') must emit string, not enum repr."""
+        cfg = ModelConfig(deeplob_mode="benchmark")
+        dumped = cfg.model_dump(mode="json")
+        assert dumped["deeplob_mode"] == "benchmark"
+        assert isinstance(dumped["deeplob_mode"], str)
+
+    # --- VALID_FEATURE_COUNTS 148 ------------------------------------------
+
+    def test_feature_count_148_no_warning(self):
+        """148 (full experimental including Kolm OF) is a standard config."""
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            DataConfig(feature_count=148)
+
+    # --- _normalize_config_types narrowing ----------------------------------
+
+    def test_normalize_preserves_string_fields(self):
+        """String values that look like integers must NOT be coerced to int.
+        Regression lock for Audit 2026-05-27 str→int removal."""
+        cfg = ExperimentConfig.from_dict({
+            "name": "123",
+            "description": "experiment_true",
+            "tags": ["v1", "2026"],
+            "data": {"feature_count": 98},
+            "model": {"model_type": "tlob", "input_size": 98, "num_classes": 3},
+        })
+        assert cfg.name == "123"
+        assert isinstance(cfg.name, str)
+        assert "2026" in cfg.tags
+        assert isinstance(cfg.tags[0], str)
+
+
 class TestPydanticHardeningCoverageGaps:
     """A.5.3f.1 post-audit regression locks — 3 coverage gaps identified
     by 3-agent audit (pickle, deepcopy, Enum serialization).

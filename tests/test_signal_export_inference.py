@@ -83,6 +83,7 @@ def _make_exporter(model, strategy):
     mock_trainer.model = model
     mock_trainer.device = DEVICE
     mock_trainer.strategy = strategy
+    mock_trainer.config.data.labels.validate_primary_horizon_idx_for.return_value = 0
     return SignalExporter(mock_trainer)
 
 

@@ -193,11 +193,20 @@ class SignalExporter:
             metadata=metadata,
         )
 
+    _VALIDATED_NUMERIC_KEYS = frozenset({
+        "predicted_returns",
+        "agreement_ratio",
+        "confirmation_score",
+    })
+
     @torch.no_grad()
     def _run_inference(self, loader) -> Dict[str, Any]:
         """Run model inference and collect per-sample outputs.
 
         Dispatches on strategy type to extract the correct ModelOutput fields.
+        After dispatch, validates ALL float arrays at this single boundary
+        (defense-in-depth: per-method guards also exist, but this boundary
+        catches any gap — e.g., pre-fix _infer_hmhp_classification had none).
         """
         from lobtrainer.training.strategies.classification import ClassificationStrategy
         from lobtrainer.training.strategies.regression import RegressionStrategy
@@ -221,6 +230,20 @@ class SignalExporter:
             result.update(self._infer_classification(model, device, loader))
         else:
             raise ValueError(f"Unknown strategy type: {type(strategy).__name__}")
+
+        from hft_contracts.validation import assert_finite_array
+        for key in self._VALIDATED_NUMERIC_KEYS:
+            arr = result.get(key)
+            if arr is not None:
+                assert_finite_array(
+                    arr,
+                    name=f"SignalExporter._run_inference.{key}",
+                    extra_diagnostic=(
+                        f"Non-finite values in inference output '{key}'. "
+                        f"Investigate model numerical stability "
+                        f"(loss divergence, BiN/normalization init, etc.)."
+                    ),
+                )
 
         return result
 
@@ -334,6 +357,8 @@ class SignalExporter:
         all_agreement = []
         all_confidence = []
 
+        labels_cfg = resolve_labels_config(self._trainer.config)
+
         for batch_data in loader:
             if len(batch_data) == 3:
                 features, label_dict, _ = batch_data
@@ -346,9 +371,11 @@ class SignalExporter:
             preds = output.logits.argmax(dim=1).cpu().numpy()
             all_preds.append(preds)
 
-            # Primary horizon labels
-            first_h = sorted(label_dict.keys())[0]
-            all_labels.append(label_dict[first_h].numpy())
+            sorted_horizons = sorted(label_dict.keys())
+            primary_idx = labels_cfg.validate_primary_horizon_idx_for(
+                len(sorted_horizons)
+            )
+            all_labels.append(label_dict[sorted_horizons[primary_idx]].numpy())
 
             # Agreement (always populated by HMHP)
             if output.agreement is not None:

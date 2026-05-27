@@ -359,11 +359,22 @@ class PermutationImportanceCallback(Callback):
         # trainer configs (e.g. MagicMock) or partially-constructed
         # trainer.config (no .data attribute yet) don't escape as
         # unhandled TypeError and kill the post-training callback.
-        # Log the fallback reason via logger.info so fallback activations
-        # are traceable (hft-rules §8 "never silently drop").
+        # Audit 2026-05-27: upgraded from ``or 0`` to SSoT
+        # ``validate_primary_horizon_idx_for`` — bounds-checks against
+        # actual eval data shape. ValueError from the validator propagates
+        # to the outer on_train_end try/except (correct: real config
+        # errors should be loud, unlike mocked-config AttributeError
+        # which falls back to 0).
         try:
-            primary_idx = (
-                resolve_labels_config(trainer.config).primary_horizon_idx or 0
+            labels_cfg = resolve_labels_config(trainer.config)
+            if labels_cfg.horizons is not None and len(labels_cfg.horizons) > 0:
+                n_horizons = len(labels_cfg.horizons)
+            elif y_eval.ndim > 1 and y_eval.shape[-1] > 1:
+                n_horizons = y_eval.shape[-1]
+            else:
+                n_horizons = 1
+            primary_idx = labels_cfg.validate_primary_horizon_idx_for(
+                n_horizons
             )
         except (AttributeError, TypeError) as exc:
             # Pre-T9 config without LabelsConfig, or trainer.config is

@@ -239,7 +239,10 @@ class CVTrainer:
             # Evaluate on fold's val set
             val_metrics = trainer.evaluate("val")
             if not isinstance(val_metrics, dict):
-                val_metrics = {"val_metric": float(val_metrics)}
+                if hasattr(val_metrics, "to_dict"):
+                    val_metrics = val_metrics.to_dict()
+                else:
+                    val_metrics = {"val_metric": float(val_metrics)}
 
             train_loss = trainer.state.history[-1] if trainer.state.history else {}
             if isinstance(train_loss, dict):

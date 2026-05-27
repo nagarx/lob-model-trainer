@@ -172,21 +172,14 @@ class TestBaselineReport:
     @pytest.fixture
     def mock_metrics(self):
         """Create mock ClassificationMetrics."""
-        # Create per-class mocks with proper string names
-        per_class = []
-        for name, f1 in [("Down", 0.65), ("Stable", 0.80), ("Up", 0.65)]:
-            pc = MagicMock()
-            pc.name = name  # Ensure name is a string, not MagicMock
-            pc.f1 = f1
-            per_class.append(pc)
-        
         return MagicMock(
             accuracy=0.75,
             macro_f1=0.70,
             macro_precision=0.72,
             macro_recall=0.68,
-            per_class=per_class,
-            to_dict=lambda: {"accuracy": 0.75, "macro_f1": 0.70}
+            per_class_f1={0: 0.65, 1: 0.80, 2: 0.65},
+            class_names=["Down", "Stable", "Up"],
+            to_dict=lambda: {"accuracy": 0.75, "macro_f1": 0.70},
         )
     
     @pytest.fixture
@@ -249,10 +242,14 @@ class TestBaselineReport:
         )
         
         summary = report.summary()
-        
+
         assert "TestModel" in summary
         assert "test" in summary.lower()
         assert "1000" in summary
+        assert "Down" in summary
+        assert "Stable" in summary
+        assert "0.650" in summary
+        assert "0.800" in summary
     
     def test_to_dict(self, mock_metrics, mock_prior_metrics, mock_prev_metrics):
         """to_dict should return all fields."""

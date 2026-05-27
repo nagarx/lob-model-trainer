@@ -244,7 +244,7 @@ class ClassificationStrategy(TrainingStrategy):
         all_preds = []
         all_labels = []
 
-        for features, labels in loader:
+        for features, labels, *_ in loader:
             features = features.to(self.device)
             labels = labels.to(self.device)
 
@@ -323,7 +323,7 @@ class ClassificationStrategy(TrainingStrategy):
         all_predictions = []
         all_labels = []
 
-        for features, labels in loader:
+        for features, labels, *_ in loader:
             features = features.to(self.device)
             output = model(features)
             logits = output.logits
