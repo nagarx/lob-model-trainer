@@ -18,6 +18,61 @@
 
 ---
 
+## Per-Entry Template (Post-Cycle-11)
+
+<!-- Cycle 11 Option δ Phase 1 implementation 2026-05-27 — #PY-NEW-CONSUMPTION-ENFORCEMENT -->
+
+**REQUIRED post-Cycle-11**: every NEW R-NN entry MUST include a `**Wiki consultation**` block citing relevant `theory:` / `synthesis:` / `FINDING-` IDs from `hft-wiki`. Grandfathered pre-Cycle-11 entries (R1-R20 + all P0/E/F1/Phase Q.6.5 / Cycle 10-12) are EXEMPT (validator skips with INFO).
+
+Template format (markdown-table-respecting):
+
+```markdown
+### R-NN — Experiment Title (verdict, YYYY-MM-DD)
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | <statement> |
+| **Method** | <one-paragraph> |
+| **Data** | <corpus> |
+| **Config** | <YAML path + key params> |
+| **Wiki consultation** | See dedicated block below (REQUIRED post-Cycle-11) |
+| **Status** | <Completed / Failed / Cancelled> |
+
+**Wiki consultation** (REQUIRED — list `theory:` / `synthesis:` / `FINDING-` IDs reviewed before running):
+- `theory:<slug>` — <one-line justification, ≥ 20 chars>
+- `synthesis:<slug>` — <one-line justification>
+- `FINDING-NNN-<slug>` — <known anti-pattern context>
+
+— OR explicit negative-result fallback:
+
+- **None applicable** — queried `hft-wiki list theory --tag=<X>` returned 0 matches against this experiment's substance scope `<X>`.
+
+**Results**: ... (existing block format unchanged)
+**Lesson**: ... (existing block format unchanged)
+```
+
+**Discovery workflow** (run BEFORE designing the experiment):
+
+```bash
+cd /Users/knight/code_local/HFT-pipeline-v2/hft-wiki
+python3 scripts/cli.py list theory --tag=<X>    # X ∈ {feature_evaluation, regression_losses, microstructure, stat_methods, afml, dl_architectures, regime_detection, off_exchange, lob_architecture, books_foundational, operator_synthesis}
+python3 scripts/cli.py list finding --polarity=negative --status=validated,refuted
+python3 scripts/cli.py show theory:<slug>
+```
+
+**Soft validator** (run BEFORE commit):
+
+```bash
+cd lob-model-trainer
+python3 scripts/check_experiment_index_completeness.py
+```
+
+WARN-not-ERROR (exit 0). Use `--strict` to escalate. Full discipline + worked examples in `CONTRIBUTING.md` + `../hft-wiki/playbooks/record-experiment-result.md`.
+
+**Why this exists**: Cycle 11 implementation of Option δ Phase 1 (#PY-NEW-CONSUMPTION-ENFORCEMENT closure attempt) after 6 consecutive cycles of 0% organic wiki consumption in this ledger. Cycle 12 + Cycle 13 = HARD-ESCALATION CHECKPOINT; if both ship < 20% organic citations, TIER 1 escalation triggers.
+
+---
+
 ## Validation Experiments
 
 ### P0: Label-Execution Mismatch Validation (2026-03-17)
