@@ -1944,7 +1944,8 @@ class TrainConfig(SafeBaseModel):
     """Random seed for reproducibility."""
     
     mixed_precision: bool = False
-    """Use automatic mixed precision (AMP) for faster training."""
+    """Automatic mixed precision (AMP). NOT IMPLEMENTED — reserved for future use.
+    Setting to True raises ValueError (hft-rules §5 fail-fast)."""
     
     use_class_weights: bool = True
     """
@@ -2044,6 +2045,11 @@ class TrainConfig(SafeBaseModel):
         isfinite gates catch it). Cross-field task_type ↔ loss_type
         compatibility check uses the ClassVar frozensets.
         """
+        if self.mixed_precision:
+            raise ValueError(
+                "mixed_precision=True is not implemented. AMP support is "
+                "reserved for future use. Set mixed_precision: false."
+            )
         if self.batch_size < 1:
             raise ValueError(f"batch_size must be >= 1, got {self.batch_size}")
         if not math.isfinite(self.learning_rate):
