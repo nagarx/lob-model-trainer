@@ -238,7 +238,7 @@ Source: `hft-feature-evaluator/reports/UNIVERSALITY_STUDY_2026_04.md`.
 
 **Implication**: rare-event signal escape hatch substantially closed. Aggregate IC=0 not hiding tradeable tail effects.
 
-**Wiki references:** hft-wiki `theory:vpin_easley_toxicity` (Easley/López de Prado/O'Hara 2012 VPIN — the load-bearing theoretical framework for extreme-event toxicity measurement; pipeline anchor XNAS=0.298 vs ARCX=0.079 contextualizes the per-stock variation reported above).
+**Wiki references:** hft-wiki `theory:vpin_easley_toxicity` (Easley/López de Prado/O'Hara 2012 VPIN — the load-bearing theoretical framework for extreme-event toxicity measurement; pipeline anchor XNAS=0.298 vs ARCX=0.079 contextualizes the per-stock variation reported above). **Cycle 9 backfill 2026-05-26**: hft-wiki `theory:block_bootstrap_kunsch_politis_romano` — the per-day block-bootstrap CIs used for the 3,600 tests above are the canonical moving-block-bootstrap of Künsch 1989 / Politis-Romano 1994 (`block_bootstrap_ci` SSoT in `hft-metrics`); a documented anti-drift caveat is that `b ≥ n` triggers a fail-loud degenerate-null guard per hft-rules §8 (Phase 8C-α Agent-A H2 closure at `bootstrap.py:96-130`), which would otherwise let callers report `p=0` or CI-width=0 against a non-existent null distribution.
 
 ### Complete Evidence Stack (Updated 2026-05-05)
 
@@ -615,6 +615,8 @@ All 5 CIs GREEN. All working trees clean. ZERO regressions cumulative across 12 
 ### 8.1 Bootstrap CIs on 8 Regression Experiments (NEW 2026-05-25)
 
 First-ever 95% block-bootstrap CIs computed on all experiments with available signal exports. Method: `block_bootstrap_ci` from `hft-metrics` SSoT, block_length = ceil(n^(1/3)) per Politis-Romano (1994), n_bootstraps=10000, seed=42.
+
+**Wiki reference (theory backbone, Cycle 9 backfill 2026-05-26):** hft-wiki `theory:block_bootstrap_kunsch_politis_romano` consolidates Künsch 1989 + Politis-Romano 1994 + Davison-Hinkley 1997 + Hall-Horowitz-Jing 1995 + Good 2005 with 7 verbatim key_equations + 8 explicit `assumptions[]` + 12-consumer pipeline anchor (consumed transitively via `lob-model-trainer/src/lobtrainer/analysis/stat_rigor/ci.py`, which is among the 12 verified consumers). The `block_length = ceil(n^(1/3))` choice above is the Politis-Romano 1994 §4.2 general rule; the entry also documents Hall-Horowitz-Jing 1995 Theorem 2.1 statistic-specific rate `b ≈ 2 n^(1/5)` for variance-of-the-mean estimators that would yield slightly tighter CIs for the mean-of-IC bootstrap. The 4th return-tuple position `n_nonfinite_replaced` (v0.1.9 Cluster Z extension) is the diagnostic counter distinguishing clean bootstrap (count = 0) from degenerate-CI-collapse-to-point-mass (count = B) per hft-rules §8. **Wiki reference (statistical primitives consumed):** hft-wiki `theory:welford_running_variance` is the canonical streaming-statistics primitive that produces the per-experiment running mean/variance the bootstrap then CIs.
 
 | Experiment | n_samples | IC [95% CI] | DA [95% CI] | R2 [95% CI] |
 |---|---|---|---|---|
