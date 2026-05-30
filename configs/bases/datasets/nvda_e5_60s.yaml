@@ -10,9 +10,11 @@ _partial: true
 data:
   # v3p0 baseline (Phase O Cycle 1, 2026-05-04): re-extracted with v0.2.1
   # binaries; schema_version=3.0; idx 97=0.0 RESERVED; +21% data on 164/233
-  # days from session-Clear handling fix (B.2). Pre-Phase-O archive at
-  # ../data/exports/e5_timebased_60s/ is read-only and FAILS strict
-  # validators (schema_version="2.2") per hft-contracts validation.py:115-120.
+  # days from session-Clear handling fix (B.2). The bare
+  # ../data/exports/e5_timebased_60s/ is POLLUTED (mixed schema {2.2,3.0} +
+  # mixed commit {b5e746d,c5e9d64} — NOT uniformly 2.2; verified 2026-05-29) and
+  # FAILS both validate_export_contract (validation.py:115-120) and the dir-level
+  # validate_export_dir (8 violations). Use _v3p0 only.
   data_dir: "../data/exports/e5_timebased_60s_v3p0"
   feature_count: 98
   sequence:
