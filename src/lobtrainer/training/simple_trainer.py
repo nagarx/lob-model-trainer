@@ -49,6 +49,7 @@ from lobmodels.models.simple import (
     TemporalGradBoostConfig,
 )
 from lobtrainer.data.dataset import _validate_day_metadata
+from lobtrainer.training.label_warnings import warn_if_smoothed_return
 
 logger = logging.getLogger(__name__)
 
@@ -609,6 +610,15 @@ class SimpleModelTrainer:
         ``trainer.train()`` directly without an explicit setup, so the
         sklearn path must auto-setup to be a drop-in replacement.
         """
+        # Phase 3b (E8 run-entry nudge): warn once per run when training on the
+        # smoothed_return label — not the tradeable point return (FINDING-001).
+        # The legacy flat-keyword constructor leaves self.config=None (see
+        # __init__), so guard the read — same pattern as save()'s rt_string.
+        if (
+            self.config is not None
+            and getattr(self.config.data, "labels", None) is not None
+        ):
+            warn_if_smoothed_return(self.config.data.labels.return_type)
         # Auto-setup if not already done (matches Trainer.train at
         # trainer.py:797). Idempotent: setup() reloads data each call,
         # so we guard via the populated-model check.
@@ -652,6 +662,25 @@ class SimpleModelTrainer:
         if split == "test":
             y_pred = self.model.predict(self._X_test)
             self.test_metrics = _compute_metrics(self._y_test, y_pred)
+            # Phase 3c (E8 point-return-DA tripwire): augment with the point-return
+            # scalars the post_training_gate consumes (FINDING-001). Observation
+            # tier — log + swallow; a diagnostic must never kill the run. Returns
+            # None (no-op) on classification / missing forward_prices. Keys are
+            # unprefixed; save() prepends 'test_' -> test_point_return_*.
+            try:
+                from lobtrainer.training.point_return_da import (
+                    compute_point_return_da_scalars,
+                )
+
+                _scalars = compute_point_return_da_scalars(
+                    self.data_dir, y_pred, primary_horizon_idx=self.horizon_idx
+                )
+                if _scalars:
+                    self.test_metrics.update(_scalars)
+            except Exception as _exc:  # observation tier — never kill the run
+                logger.warning(
+                    "E8 point-return-DA tripwire skipped (sklearn path): %s", _exc
+                )
             return self.test_metrics
         elif split == "val":
             # If train() already ran, return cached val_metrics; else compute.

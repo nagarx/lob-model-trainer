@@ -100,6 +100,22 @@ class TestModelConfig:
         with pytest.raises(ValueError, match="dropout must be in"):
             ModelConfig(dropout=-0.1)
 
+    def test_invalid_regression_loss_type_raises(self):
+        """3d: regression_loss_type outside {huber, mse, gmadl} rejected by the Literal.
+
+        Mirrors the lob-models config tightening (Phase 3d); the shared loss
+        dispatcher (TLOB/DeepLOB/MLPLOB) supports exactly these three. The HMHP-R
+        `heteroscedastic` loss is the SEPARATE `hmhp_regression_loss_type` field.
+        """
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="regression_loss_type"):
+            ModelConfig(regression_loss_type="not_a_loss")
+
+    def test_valid_regression_loss_types_accepted(self):
+        """3d: the three supported shared-dispatch losses construct cleanly."""
+        for lt in ("huber", "mse", "gmadl"):
+            ModelConfig(regression_loss_type=lt)  # must not raise
+
 
 class TestTrainConfig:
     """Test TrainConfig."""

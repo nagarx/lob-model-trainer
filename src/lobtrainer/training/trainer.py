@@ -57,6 +57,7 @@ from lobtrainer.training.callbacks import (
     MetricLogger,
 )
 from lobtrainer.training.metrics import ClassificationMetrics
+from lobtrainer.training.label_warnings import warn_if_smoothed_return
 from lobtrainer.training.simple_trainer import SimpleModelTrainer
 from lobtrainer.training.strategy import TrainingStrategy, create_strategy
 from lobtrainer.utils.reproducibility import (
@@ -964,6 +965,9 @@ class Trainer:
         Raises:
             ValueError: If no training data available
         """
+        # Phase 3b (E8 run-entry nudge): warn once per run when training on the
+        # smoothed_return label — not the tradeable point return (FINDING-001).
+        warn_if_smoothed_return(self.config.data.labels.return_type)
         # Phase X.1 v2 post-validation fix (Agent 1 Q6 2026-05-04):
         # Wrap entire body in try/finally so the `_resumed_from_checkpoint`
         # flag-reset is unconditional, even when setup() / config-access

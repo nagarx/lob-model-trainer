@@ -278,6 +278,52 @@ def _dump_test_metrics(
     return output_path
 
 
+def _augment_with_point_return_da(metrics: Any, trainer: Any) -> None:
+    """Phase 3c: augment a regression test-metrics dict (in place) with the E8
+    point-return-DA tripwire scalars the post_training_gate consumes (FINDING-001).
+
+    Recomputes the test predictions in loader order (the test loader is
+    unshuffled), re-derives point returns from the test split's forward_prices,
+    and adds `point_return_da` / `point_return_n` / `point_return_rho1`
+    (unprefixed — `_dump_test_metrics` prepends `test_`). Observation tier: log +
+    swallow any error; a diagnostic must never kill the run. No-op unless
+    `metrics` is a dict (regression) and the export carries forward_prices.
+    """
+    if not isinstance(metrics, dict):
+        return  # classification (ClassificationMetrics object) — not applicable
+    try:
+        import numpy as np
+
+        from lobtrainer.training.point_return_da import (
+            compute_point_return_da_scalars,
+        )
+
+        test_loader = trainer.get_loader("test")
+        if test_loader is None or trainer.model is None:
+            return
+        device = next(trainer.model.parameters()).device
+        preds = []
+        for batch in test_loader:
+            features = batch[0].to(device)
+            preds.append(
+                np.asarray(trainer._strategy.predict(trainer.model, features)).ravel()
+            )
+        if not preds:
+            return
+        y_pred = np.concatenate(preds)
+        scalars = compute_point_return_da_scalars(
+            trainer.config.data.data_dir,
+            y_pred,
+            primary_horizon_idx=trainer.config.data.labels.primary_horizon_idx,
+        )
+        if scalars:
+            metrics.update(scalars)
+    except Exception as exc:  # observation tier — never kill the run
+        logger.warning(
+            "E8 point-return-DA tripwire skipped (PyTorch path): %s", exc
+        )
+
+
 def _safe_summary(metrics: Any) -> str:
     """Best-effort string rendering of evaluate() result.
 
@@ -468,6 +514,7 @@ def main():
             try:
                 metrics = trainer.evaluate(split)
                 if split == 'test':
+                    _augment_with_point_return_da(metrics, trainer)
                     written = _dump_test_metrics(metrics, output_dir)
                     if written is not None:
                         logger.info(f"Saved test metrics to {written}")
@@ -504,6 +551,7 @@ def main():
             metrics = trainer.evaluate(split)
             if split == 'test':
                 test_metrics_for_ledger = metrics
+                _augment_with_point_return_da(metrics, trainer)
                 written = _dump_test_metrics(metrics, output_dir)
                 if written is not None:
                     logger.info(f"Saved test metrics to {written}")

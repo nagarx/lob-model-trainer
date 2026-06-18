@@ -589,7 +589,9 @@ class ModelType(str, Enum):
     """Logistic regression baseline."""
     
     XGBOOST = "xgboost"
-    """XGBoost classifier. NOT in ModelRegistry — use scripts/analysis/train_xgboost_baseline.py directly."""
+    """XGBoost classifier baseline. NOT in the ModelRegistry and NOT dispatched by
+    create_strategy — selecting it via the normal trainer path will fail; train it
+    via scripts/analysis/train_xgboost_baseline.py directly (C8, hft-rules §5/§11)."""
 
     LSTM = "lstm"
     """LSTM sequence model."""
@@ -1434,7 +1436,7 @@ class ModelConfig(SafeBaseModel):
     num_layers: int = 2
     dropout: float = 0.2
     task_type: str = "classification"
-    regression_loss_type: str = "huber"
+    regression_loss_type: Literal["huber", "mse", "gmadl"] = "huber"
     regression_loss_delta: float = 10.0
 
     # LSTM/GRU legacy
