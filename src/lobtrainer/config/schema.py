@@ -323,7 +323,12 @@ class LabelsConfig(SafeBaseModel):
         {"auto", "precomputed", "forward_prices"}
     )
     _VALID_RETURN_TYPES: ClassVar[frozenset[str]] = frozenset(
-        {"smoothed_return", "point_return", "mean_return", "peak_return"}
+        # forward_realized_variance: a DIRECTIONLESS 2nd-moment target (bps²) — the
+        # FINDING-052/054 forward-variance lane. Computed Python-side at load time from
+        # forward_prices via LabelFactory.forward_realized_variance (hft-contracts >= 2.9.0);
+        # NOT a return. Use task="regression"; train on log1p+Huber (variance is fat-tailed).
+        {"smoothed_return", "point_return", "mean_return", "peak_return",
+         "forward_realized_variance"}
     )
     _VALID_TASKS: ClassVar[frozenset[str]] = frozenset(
         {"auto", "regression", "classification"}

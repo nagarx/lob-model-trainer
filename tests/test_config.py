@@ -365,8 +365,21 @@ class TestLabelsConfigPydantic:
         assert "auto" in LabelsConfig._VALID_SOURCES
         assert "forward_prices" in LabelsConfig._VALID_SOURCES
         assert "smoothed_return" in LabelsConfig._VALID_RETURN_TYPES
+        assert "forward_realized_variance" in LabelsConfig._VALID_RETURN_TYPES  # v2.9.0 variance lane
         assert "classification" in LabelsConfig._VALID_TASKS
         assert "concurrent_overlap" in LabelsConfig._VALID_SAMPLE_WEIGHTS
+
+    def test_forward_realized_variance_return_type_accepted_and_bogus_rejected(self):
+        """The forward_realized_variance 2nd-moment return_type (v2.9.0, the FINDING-052/054 variance
+        lane through the trainer) constructs; an unknown return_type still raises ValidationError."""
+        from lobtrainer.config.schema import LabelsConfig
+
+        c = LabelsConfig(source="forward_prices", return_type="forward_realized_variance",
+                         task="regression", horizons=(10, 60, 300))
+        assert c.return_type == "forward_realized_variance"
+        with pytest.raises(Exception):  # pydantic ValidationError on an unknown return_type
+            LabelsConfig(source="forward_prices", return_type="bogus_type",
+                         task="regression", horizons=(10,))
 
     def test_label_strategy_hash_real_pydantic_parity(self):
         """Byte-identity lock against the A.5.1 frozen fixture.
