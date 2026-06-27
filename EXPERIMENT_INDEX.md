@@ -91,14 +91,14 @@ WARN-not-ERROR (exit 0). Use `--strict` to escalate. Full discipline + worked ex
 
 | Metric | Claimed | Validated | Delta |
 |---|---|---|---|
-| Pearson r (smoothed vs point labels) | 0.24 | **0.640** | +0.40 |
-| P(point > 0 \| smoothed > 0) | 55.8% | **69.7%** | +13.9pp |
+| Pearson r (smoothed vs point labels) | 0.24 | **0.642** | +0.40 |
+| P(point > 0 \| smoothed > 0) | 55.8% | **69.3%** | +13.5pp |
 | P(point > 0 \| \|smoothed\| > 5 bps) | — | **87.9%** | — |
-| P(point > 0 \| \|smoothed\| > 10 bps) | — | **92.2%** | — |
+| P(point > 0 \| \|smoothed\| > 10 bps) | — | **93.5%** | — |
 
 **Lesson**: The original r=0.24 was likely computed from misaligned data (two exports with different event_count sampling). The `forward_prices` approach guarantees alignment by computing both label types from the same mid-price trajectories. The label-execution mismatch is SMALLER than originally diagnosed — the primary bottleneck is cost structure, not label misalignment.
 
-**Caveat**: This measures label-to-label correlation, not model prediction vs execution. Effective execution r ≈ 0.640 × sqrt(0.464) ≈ 0.436.
+**Caveat**: This measures label-to-label correlation, not model prediction vs execution. Effective execution r ≈ 0.642 × sqrt(0.464) ≈ 0.437.
 
 ### E1: Deep ITM Backtest (2026-03-17)
 
@@ -2919,3 +2919,54 @@ Gap is 4-fold (4605 → 8292; no intermediate). This is empirical evidence of **
 - Analyzer: `hft-ops/scripts/analyze_r20_hmhp_r.py` (set-based compat_fp anchor frozenset per L49; record-driven signal_dir resolution)
 - Round 20: `lob-backtester/BACKTEST_INDEX.md` (8-threshold backtest sweep + cost-model parity vs Stage 6 / R-19 era)
 - Prior cycle bridges: Stage 6 (`nvda_first_hmhp_r_v3p0` 2026-05-05 reference) + γ-1 LITE 2026-05-10 (compat_fp anchor source) + Cycle 11 hygiene 2026-05-19 (predecessor cycle on hardened infrastructure)
+
+---
+
+### E17: Off-Exchange Realized-Volatility Predictability (Signal Discovery, 2026-05-29)
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | The 34 BASIC off-exchange features forward-predict NVDA 60s realized VOLATILITY (return magnitude), incrementally over (a) the intraday-seasonality U-shape and (b) trailing-vol persistence — a NEW target axis, distinct from the directional/point-return prediction closed by E9-E16. |
+| **Method** | Confound-corrected within-position-across-day Spearman IC on the existing BASIC export (no re-extraction). Target: realized vol RV(t,h)=sqrt(Σ log-ret²) from the 61-col forward-price trajectory. Four ICs per (feature,horizon): raw within-day (confounded), across-day permutation-null (confound floor), within-position de-seasonalized (de-confounded), incremental-over-persistence (partial Spearman controlling trailing RV). h ∈ {10,30,60}. DECISIVE day-level control: re-ran incremental controlling for a strong CAUSAL day-level vol regime (expanding-day RV, ρ 0.65→0.98 with full-day RV) AND the hindsight full-day RV simultaneously. Validated by 3 independent adversarial agents (code-correctness recomputation, day-regime-collapse test, strategic/monetization). |
+| **Data** | `data/exports/basic_nvda_60s/` (off_exchange_1.0, schema 1.0, 233 days, N=308/day, 0 NaN; train 166d/51,128 seq, val 32d, test 35d). Bit-identical to pre-fix (config_hash unchanged `0d80f6fd...`). 27 live features (excluded 18,19 dead-zero + 29,30,33 constant + 31,32 deterministic clock). |
+| **Infrastructure** | Exploratory (hft-rules §4 line 299 exempt). `scripts/pilot_basic_vol_ic.py` + `scripts/day_regime_collapse_test.py` + `scripts/day_regime_diagnostics.py` (all headed DATA PREP UTILITY). Independent metric validation: vectorized rank-Pearson IC cross-checked vs `scipy.stats.spearmanr` AND `hft_metrics.ic.spearman_ic` (exact match). |
+| **Output** | `outputs/pilot_basic_vol_ic_results.json` + `outputs/pilot_basic_vol_ic_report.md` |
+| **Wiki consultation** | See block below (REQUIRED post-Cycle-11). |
+| **Status** | **COMPLETE — signal GENUINE but TEXTBOOK + UNMONETIZABLE. Off-exchange MAGNITUDE axis CLOSED for trading.** |
+
+**Wiki consultation** (theory/findings reviewed before running):
+- `FINDING-002-ofi-zero-predictive` — concurrent-vs-forward gate is target-agnostic; motivated the permutation-null + within-position de-seasonalization to avoid contemporaneous leakage.
+- `FINDING-004-cross-sectional-vs-temporal-tradeability` — cross-sectional IC ≠ temporal tradeability; methodology-class, fully applied (within-day IC is cross-sectional; between-day is what matters).
+- `synthesis:feature_evaluation_5_path_framework` — Path-1 IC + concurrent/forward decomposition + persistence/baseline-gate methodology followed.
+- `theory:block_bootstrap_kunsch_politis_romano` — block bootstrap CI for the autocorrelated vol target.
+- `theory:dcor_szekely_2007` + `theory:huber_loss_robust_regression` — non-monotone-dependence + heavy-tail cautions (deferred; Phase 2 not reached).
+- NOTE: realized-vol / Bipower (BNS 2004) has NO wiki theory entry (documented 4-cycle hidden-gap); RV formula verified independently against the Andersen-Bollerslev standard.
+- E8 / `FINDING-001` / `FINDING-008` confirmed NON-applicable (those are directional; magnitude is a different target).
+
+**Results:**
+
+| Metric | Value |
+|---|---|
+| Realized-vol persistence (trailing→future within-position IC), train | 0.737 (h10) / 0.830 (h30) / 0.842 (h60); OOS-stable (val 0.62/0.79/0.80, test 0.71/0.82/0.83) |
+| total_volume / trade_count forward IC (within-position, de-confounded), train | +0.57 to +0.62 |
+| spread_bps forward IC (within-position, de-confounded), train | +0.64 (h10) / +0.70 (h30) / +0.72 (h60) |
+| Incremental over SHORT trailing-RV (pilot) | spread_bps +0.29–0.32; total_volume +0.19–0.23; trade_count +0.16–0.19; subpenny −0.16 to −0.18 |
+| Incremental over STRONG day-level control (trailing + expanding-day + hindsight full-day RV) | total_volume +0.14–0.17; trade_count +0.15–0.16; spread_bps +0.10–0.20; subpenny −0.07 to −0.11 (block-bootstrap 95% CIs clear of zero) |
+| Parametric log-spec robustness | volume/trade_count +0.25 (robust); spread_bps +0.07–0.11 (modest); subpenny ≈0 (collapses → day-regime proxy) |
+| Anti-artifact signature | incremental survival STRENGTHENS late-session (a weak control would weaken late) |
+| Day-level co-movement (daily feat-mean ↔ day total RV, N=166) | volume +0.836, trade_count +0.744, spread_bps +0.743, subpenny −0.644 |
+| Overnight (today feat → next-day RV, controlling today's RV) | spread_bps +0.32, subpenny −0.26 (genuine); volume/trade_count ≈0 (persistence only) |
+| Pilot gate pass rate | 37/81 (feature,horizon) cells |
+
+**Lessons:**
+
+- **Lesson 50**: NVDA 60s realized vol IS forward-predictable — the magnitude axis is alive where the directional axis (E9-E16) is dead. Vol is highly persistent (trailing→future IC 0.84 at h60 = HAR-RV baseline), and total_volume + trade_count add GENUINE incremental forward prediction that survives even the strongest causal day-level vol control (+0.15, CIs clear of zero, survival strengthens late-session). spread_bps is genuine but modest; subpenny_intensity is mostly a day-regime/overnight proxy (collapses parametrically). REAL and rigorously validated (3 adversarial agents), not an artifact.
+- **Lesson 51**: But it is the TEXTBOOK volume-volatility relation (Clark 1973, Karpoff 1987) + HAR-RV vol clustering (Engle/Bollerslev/Corsi) — a data-integrity SANITY CHECK confirming the BASIC features are sound, NOT a novel edge. Sharp contrast with the directional-IC≈0 result: these features are volatility/contemporaneous proxies, not directional predictors. IC=0.84 persistence is a baseline, not alpha.
+- **Lesson 52**: NOT MONETIZABLE with current infrastructure. Vol prediction requires realized-VS-implied (straddles/variance), but no per-bin implied-vol series exists (OPRA = 8 days, aggregate-only) and the backtester is directional-0DTE-ATM-only (no straddle/variance/vega path). Realized-vol predictability ≠ realized-vs-implied edge, and the volume/activity/spread→vol pattern is the most-priced intraday signal in the options market. Phase 2 (build IV alignment + vol backtester) is negative-EV against a strong "already priced" prior. **Apply**: do NOT re-slice a dead dataset onto a trivially-autocorrelated target (vol) hoping for tradeability — finding correlation with vol after failing with returns is regression to a known stylized fact, not progress. Off-exchange MAGNITUDE axis CLOSED for trading; both directional + magnitude axes for NVDA 60s off-exchange are now characterized.
+- **Lesson 53**: Methodological — the across-day PERMUTATION NULL (random day-pairing) is the correct significance benchmark for within-day feature↔vol IC; a naive per-day-IC + across-day-bootstrap does NOT remove the intraday-seasonality U-shape (~75-80% of raw within-day IC survives random day-pairing). E12's IC(|return|)≈0.10-0.19 was largely this confound. Future within-day-IC vol discovery MUST use the permutation null + within-position de-seasonalization + a CAUSAL DAY-LEVEL vol control (short trailing windows are insufficient).
+
+**Cross-references**:
+- Pilot: `scripts/pilot_basic_vol_ic.py`; collapse-test: `scripts/day_regime_collapse_test.py`; diagnostics: `scripts/day_regime_diagnostics.py`; results: `outputs/pilot_basic_vol_ic_results.json` + `outputs/pilot_basic_vol_ic_report.md`
+- Prior context: E12 (off-exchange directional; in-sample IC(|ret|) diagnostic now explained as confound), E13 Lesson 26 (MBO spread purely directional, IC(spread,|ret|)=−0.082 — note RV ≠ |single return|), E14 (off-exchange gate-check), E16 (extreme events)
+- Monetization wall: `data/OPRA/NVDA/cmbp1_2025-11-13_to_2025-11-25/` (8 days, aggregate IV only), `lob-backtester/src/lobbacktest/engine/zero_dte.py` (directional-0DTE-ATM only)
+- Consolidated: `reports/CONSOLIDATED_FINDINGS_2026_05.md`

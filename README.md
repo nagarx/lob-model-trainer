@@ -3,7 +3,9 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0%2B-orange.svg)](https://pytorch.org/)
 
-Machine learning experimentation for limit order book price prediction — the training plane of a multi-repo HFT pipeline.
+Machine learning experimentation for short-term price prediction — the training plane of the multi-repo **intraday trading research pipeline** (origin: HFT microstructure).
+
+> **Pipeline scope (2026-06-02).** This module is part of an **intraday trading research pipeline** — an experiment-first platform for discovering and validating *any* profitable **intraday** trading edge (no overnight positions), across approach classes (microstructure/HFT, scalping, intraday momentum, intraday statistical arbitrage, …) and instruments (equities, futures, same-day options). The pipeline *originated* as a high-frequency NVDA MBO/LOB microstructure system — that origin explains the "HFT" / "LOB" / "MBO" naming here — and that microstructure-direction program is now one (largely-closed) track among many. **Names are historical; the mission is general.** This module's role: the Python training engine — data loaders, training loops, purged-CV, train-only normalization, callbacks, signal export, and ExperimentSpec orchestration; trains single-asset models at any intraday horizon (cross-sectional / panel training + ranking losses are a build per register §9). For the full mission + approach taxonomy + capability-readiness boundary, see root `CLAUDE.md` §Research Scope & Charter (+ `CROSS_ASSET_OFI_FINDINGS_AND_ISSUES_2026_06_01.md` §9).
 
 **Version**: 0.7.1 | **Schema**: 3.0 (Phase G G.6.A bump per CLAUDE.md root rule: any modification to stable features 0-97 = MAJOR) | **Tests**: 1432 (1367 passed + 65 skipped)
 

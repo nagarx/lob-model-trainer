@@ -1,0 +1,48 @@
+# R-21: TLOB mean_return regression at H300 (5-hour horizon)
+#
+# Hypothesis: At H300, 32/98 features have IC > 0.05 against mean_return labels
+# (IC scan 2026-05-27). This is the FIRST horizon where the tradeable label
+# component shows learnable signal. E8 label-execution mismatch only applies
+# at H10/H60; at H300 the tradeable return IS predictable (point_return
+# max IC = 0.078, mean_return max IC = 0.085).
+#
+# Key design decisions:
+# - return_type: mean_return (anchored to entry price, NOT past-smoothed average)
+# - primary_horizon_idx: 2 (H300 = 300 bins × 60s = 5 hours)
+# - regression_loss_delta: 52.0 (calibrated from H300 MAD=38.93, delta=1.345*MAD=52.4)
+# - Architecture: TLOB compact (same as R-9..R-15 for comparability)
+#
+# Expected outcome:
+# - If test IC > 0.05 and DA > 50%: mean_return at H300 is viable → proceed to backtest
+# - If test IC < 0.05: feature signal at H300 was train-overfit → close H300 axis
+#
+# Cost note: 5-hour hold is incompatible with 0DTE options (theta decay too large).
+# Stock-level backtest or multi-day options required. This experiment validates
+# SIGNAL, not EXECUTION. Execution strategy is a separate decision gated on results.
+
+_base:
+  - "../bases/models/tlob_compact_regression.yaml"
+  - "../bases/datasets/nvda_e5_60s.yaml"
+  - "../bases/labels/regression_huber.yaml"
+  - "../bases/train/regression_default.yaml"
+
+name: r21_tlob_mean_return_h300_v3p0
+description: "R-21: TLOB mean_return H300 — first tradeable-label horizon with learnable signal"
+tags:
+  - r21
+  - nvda
+  - regression
+  - mean_return
+  - h300
+  - v3p0
+  - label_axis_test
+
+output_dir: "outputs/experiments/r21_tlob_mean_return_h300_v3p0"
+
+data:
+  labels:
+    return_type: mean_return
+    primary_horizon_idx: 2
+
+model:
+  regression_loss_delta: 52.0

@@ -138,12 +138,12 @@ All trained on `e5_timebased_60s_v3p0` unless noted. Triple-Barrier (TB) experim
 
 | Metric | Value |
 |---|---|
-| Pearson r (label-to-label, k=10, H=10) | **0.640** |
-| P(point > 0 \| smoothed > 0) | **69.7%** |
-| P(point > 0 \| \|smoothed\| > 5 bps) | **87.9%** (114K samples) |
-| P(point > 0 \| \|smoothed\| > 10 bps) | **92.2%** (17K samples) |
+| Pearson r (label-to-label, k=10, H=10) | **0.642** |
+| P(point > 0 \| smoothed > 0) | **69.3%** |
+| P(point > 0 \| \|smoothed\| > 5 bps) | **87.9%** (11,203 samples) |
+| P(point > 0 \| \|smoothed\| > 10 bps) | **93.5%** (1,552 samples) |
 
-**Critical caveat:** This is LABEL-to-LABEL correlation, not model-to-execution. Effective execution correlation ≈ 0.640 × √R² ≈ 0.436.
+**Critical caveat:** This is LABEL-to-LABEL correlation, not model-to-execution. Effective execution correlation ≈ 0.642 × √R² ≈ 0.437.
 
 **E1 critical finding (2026-03-17):** Despite REG-01 R²=0.464 on smoothed labels, the model's predictions have **r=0.013** with consecutive-sequence price returns — essentially zero. The model approximates the smoothed-average FORMULA, not future price movements. Training on `point_return` labels is required to force prediction of actual price movements.
 
@@ -240,6 +240,20 @@ Source: `hft-feature-evaluator/reports/UNIVERSALITY_STUDY_2026_04.md`.
 
 **Wiki references:** hft-wiki `theory:vpin_easley_toxicity` (Easley/López de Prado/O'Hara 2012 VPIN — the load-bearing theoretical framework for extreme-event toxicity measurement; pipeline anchor XNAS=0.298 vs ARCX=0.079 contextualizes the per-stock variation reported above). **Cycle 9 backfill 2026-05-26**: hft-wiki `theory:block_bootstrap_kunsch_politis_romano` — the per-day block-bootstrap CIs used for the 3,600 tests above are the canonical moving-block-bootstrap of Künsch 1989 / Politis-Romano 1994 (`block_bootstrap_ci` SSoT in `hft-metrics`); a documented anti-drift caveat is that `b ≥ n` triggers a fail-loud degenerate-null guard per hft-rules §8 (Phase 8C-α Agent-A H2 closure at `bootstrap.py:96-130`), which would otherwise let callers report `p=0` or CI-width=0 against a non-existent null distribution.
 
+### Finding 9: Off-Exchange Features Predict Realized VOLATILITY — Genuine, but Textbook + Unmonetizable (E17, 2026-05-29)
+
+A confound-corrected signal-discovery pilot (across-day permutation null + within-position de-seasonalization + incremental-over-persistence, validated by 3 independent adversarial agents) on the existing `basic_nvda_60s` export (no re-extraction; bit-identical to pre-fix) found the MAGNITUDE axis is alive where the directional axis (Findings 1/7, E9-E16) is dead:
+- **Realized vol is highly persistent**: trailing→future within-position IC = 0.74/0.83/0.84 at h=10/30/60 (HAR-RV baseline), OOS-stable.
+- **total_volume + trade_count genuinely forward-predict vol** incrementally even under the strongest causal day-level vol control (expanding-day + hindsight full-day RV): +0.15, block-bootstrap CIs clear of zero, survival STRENGTHENS late-session (anti-artifact signature). spread_bps modest (+0.10–0.20); subpenny_intensity collapses parametrically (day-regime/overnight proxy).
+
+**But this is NOT a tradeable edge:**
+- It is the textbook **volume-volatility relation** (Clark 1973, Karpoff 1987) + **HAR-RV vol clustering** (Engle/Bollerslev/Corsi) → a data-integrity SANITY CHECK confirming the BASIC features are sound, not a discovery. These features are *volatility/contemporaneous proxies, not directional predictors* — the sharp contrast with the directional-IC≈0 result.
+- **Unmonetizable with current infra**: vol prediction needs realized-VS-implied (straddles/variance), but there is no per-bin implied-vol series (OPRA = 8 days, aggregate-only) and the backtester is directional-0DTE-ATM-only. Realized-vol predictability ≠ realized-vs-implied edge, and the pattern is the most-priced intraday signal in the options market.
+
+**Implication**: off-exchange MAGNITUDE axis CLOSED for trading. Both directional + magnitude axes for NVDA 60s off-exchange are now characterized. (Re Finding 1b / E13 Lesson 26 "spread purely directional, IC(spread,|ret|)=−0.082": that used |single forward return| at H60; integrated realized vol RV(t,h) is a cleaner, different vol estimator, so E17's positive RV result does not contradict Lesson 26.)
+
+**Wiki references:** `FINDING-002-ofi-zero-predictive` + `FINDING-004-cross-sectional-vs-temporal-tradeability` (target-agnostic concurrent-vs-forward / cross-sectional-vs-temporal gates motivated the permutation null + day-level control); `synthesis:feature_evaluation_5_path_framework` (Path-1 IC + concurrent/forward decomposition methodology); `theory:block_bootstrap_kunsch_politis_romano` (autocorrelated-target CIs). Bipower realized-vol (BNS 2004) has NO wiki entry (4-cycle hidden-gap; RV formula independently verified vs Andersen-Bollerslev). Full detail: `EXPERIMENT_INDEX.md` E17.
+
 ### Complete Evidence Stack (Updated 2026-05-05)
 
 | Escape Hatch | Experiment | Result | Status |
@@ -258,6 +272,7 @@ Source: `hft-feature-evaluator/reports/UNIVERSALITY_STUDY_2026_04.md`.
 | Extreme events at tails | E16 | 15 FDR-survive but unstable | **CLOSED** |
 | Shorter cadence (30s, 15s, 5s) | Profiler multi-scale | lag-1 r < 0.006 at ALL scales | **CLOSED** |
 | **Architectural variants on v3p0** | R9-R13 | TLOB / TLOB+CVML / HMHP-R / GradBoost: best OptRet -0.04% (sample-of-1) | **NEW POST-PHASE-O — pending statistical rigor (§8)** |
+| **Off-exchange MAGNITUDE (realized vol)** | E17 | Vol IS forward-predictable (volume/trade_count incremental +0.15, persistence IC 0.84) but textbook (volume-volatility / HAR-RV) + unmonetizable (no IV series, no vol backtester) | **CLOSED for trading (2026-05-29)** — see Finding 9 |
 
 ---
 
@@ -546,6 +561,8 @@ Key lessons cited frequently:
 | Don't run paired bootstrap on R9-R14 IC without re-pairing first | NEW_SESSION_HANDOFF §8.1.2 | `compare_sweep_statistical` raises `ValueError` when `regression_labels_sha256` differs across child records. R9-R14 horizons vary ([10,20,50,100,200] for R9 vs [10,60,300] for R12+R13) → different label tensor shape → different SHA → fail-loud. Requires Stage-8-style re-export-then-pair FIRST. |
 | Don't run permutation-importance on a loaded checkpoint without authoring a new script | NEW_SESSION_HANDOFF §8.1.3 | `PermutationImportanceCallback.on_train_end` requires fully-constructed Trainer. Loaded checkpoint requires NEW `scripts/analysis/permutation_importance_from_checkpoint.py` (~2 hr). Phase 8C-α infrastructure shipped + tested; never used on R9-R15. |
 | Don't launch Phase 4 ablation as parallel 4-way MPS | NEW_SESSION_HANDOFF §8.2 | "4-parallel TLOB on MPS" unsubstantiated. Serialize. ~30 min × 12 configs (TLOB v3p0 + TemporalRidge + GradBoost) × point_return × H={1,2,5,10}. |
+| Don't re-slice a dead dataset onto a trivially-autocorrelated target (realized vol) hoping for tradeability | E17 / Lesson 52 | Vol is ~95% "tomorrow ≈ today" (persistence IC 0.84 = HAR baseline). Finding feature↔vol correlation after failing feature↔return is regression to a known stylized fact (volume-volatility, Clark 1973), not progress. Realized-vol predictability ≠ realized-vs-implied edge, and the pattern is already priced. Needs IV-aligned series + vol backtester (neither exists) before it's even testable as a trade. |
+| Don't trust a within-day feature↔vol IC without an across-day permutation null + day-level vol control | E17 / Lesson 53 | ~75-80% of raw within-day IC survives RANDOM day-pairing (it's the intraday-seasonality U-shape, not prediction). A naive per-day-IC + across-day-bootstrap does NOT remove it. E12's IC(\|return\|)≈0.10-0.19 was largely this confound. Use permutation null + within-position de-seasonalization + a CAUSAL day-level (expanding-day RV) control; short trailing windows are insufficient. |
 
 ---
 

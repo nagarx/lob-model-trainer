@@ -1,5 +1,7 @@
 # LOB-Model-Trainer: Codebase Technical Reference
 
+> **Pipeline scope (2026-06-02).** This module is part of an **intraday trading research pipeline** — an experiment-first platform for discovering and validating *any* profitable **intraday** trading edge (no overnight positions), across approach classes (microstructure/HFT, scalping, intraday momentum, intraday statistical arbitrage, …) and instruments (equities, futures, same-day options). The pipeline *originated* as a high-frequency NVDA MBO/LOB microstructure system — that origin explains the "HFT" / "LOB" / "MBO" naming here — and that microstructure-direction program is now one (largely-closed) track among many. **Names are historical; the mission is general.** This module's role: the Python training engine — data loaders, training loops, purged-CV, train-only normalization, callbacks, signal export, and ExperimentSpec orchestration; trains single-asset models at any intraday horizon (cross-sectional / panel training + ranking losses are a build per register §9). For the full mission + approach taxonomy + capability-readiness boundary, see root `CLAUDE.md` §Research Scope & Charter (+ `CROSS_ASSET_OFI_FINDINGS_AND_ISSUES_2026_06_01.md` §9).
+
 > **Version**: 0.7.0 (Phase A.5 Scope D v2 Pydantic migration — 2026-04-25)  
 > **Schema**: 3.0 (Phase G G.6.A bump 2.2 → 3.0 MAJOR per CLAUDE.md root rule: any modification to stable features 0-97 = BREAKING; via `hft-contracts` package, v2.3.0 runtime dep)  
 > **Tests**: 1434 collected (1369 passed + 65 skipped) — Phase A.5 Scope D v2 adds 9 Pydantic-migration commits (A.5.3a-i) + 3 post-audit commits (A.5.7a-c): SafeBaseModel base class with `_canonical_form()` SSoT + `__pydantic_init_subclass__` auto-registry (`config/base.py`); parametric pickle/deepcopy/partial-base-rejection tests over auto-registry; full `Trainer.setup() + SignalExporter.export()` integration test in `tests/test_signal_exporter_integration.py` (`@pytest.mark.integration`); `LabelsConfig.validate_primary_horizon_idx_for()` bounds-validation method; `CalibrationContext` TypedDict.  
@@ -57,7 +59,7 @@
 
 ### Purpose
 
-Python library for training and evaluating ML models on LOB (Limit Order Book) data for price movement prediction. Designed for HFT research with emphasis on:
+Python library for training and evaluating ML models on LOB (Limit Order Book) data for price movement prediction. Built for intraday trading research (origin: HFT microstructure) with emphasis on:
 
 - **Modularity**: Clean separation between data, models, and training
 - **Reproducibility**: Explicit seed management and configuration-driven experiments

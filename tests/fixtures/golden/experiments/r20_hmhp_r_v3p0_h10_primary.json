@@ -1,0 +1,89 @@
+{
+  "resolved": {
+    "data": {
+      "data_dir": "../data/exports/e5_timebased_60s_v3p0",
+      "feature_count": 98,
+      "feature_set": "nvda_short_term_98_src98_v1",
+      "horizon_idx": 0,
+      "labeling_strategy": "regression",
+      "normalization": {
+        "clip_value": 10.0,
+        "eps": 1e-08,
+        "exclude_features": [
+          93
+        ],
+        "strategy": "hybrid"
+      },
+      "num_classes": 3,
+      "sequence": {
+        "stride": 1,
+        "window_size": 20
+      }
+    },
+    "description": "R-20 \u2014 HMHP-R cascading decoder architecture-axis test on v3p0 (PRODUCTION).\nTests cascading multi-horizon regressor with ConfirmationModule against TLOB\nStage 2 baseline (test_h10_ic=0.3747) at production scale (100 epochs).\nStage 6 (2026-05-05) validated infrastructure at 20-epoch scale; R-20 scales\nto R-17a/R-19 protocol parity. Pre-registered H1-H5 gates locked PRE-RUN.\n",
+    "log_level": "INFO",
+    "model": {
+      "dropout": 0.1,
+      "hmhp_cascade_mode": "full",
+      "hmhp_decoder_hidden_dim": 32,
+      "hmhp_encoder_hidden_dim": 64,
+      "hmhp_encoder_type": "tlob",
+      "hmhp_horizons": [
+        10,
+        60,
+        300
+      ],
+      "hmhp_loss_weights": {
+        "H10": 0.5,
+        "H300": 0.15,
+        "H60": 0.25,
+        "consistency": 0.1
+      },
+      "hmhp_num_encoder_layers": 2,
+      "hmhp_pool_mode": "mean",
+      "hmhp_primary_horizon_idx": 0,
+      "hmhp_regression_loss_type": "huber",
+      "hmhp_state_dim": 32,
+      "hmhp_state_fusion": "gate",
+      "hmhp_use_confirmation": true,
+      "input_size": 98,
+      "model_type": "hmhp_regression",
+      "num_classes": 3
+    },
+    "name": "R20_HMHP_R_V3p0_H10_Primary",
+    "output_dir": "outputs/experiments/r20_hmhp_r_v3p0_h10_primary",
+    "tags": [
+      "r20",
+      "hmhp",
+      "hmhp_r",
+      "nvda",
+      "regression",
+      "h10",
+      "60s",
+      "huber",
+      "v3p0",
+      "cascading-decoder",
+      "confirmation-module",
+      "architecture-ablation",
+      "tlob-stage-2-comparison",
+      "production"
+    ],
+    "train": {
+      "batch_size": 128,
+      "early_stopping_patience": 15,
+      "epochs": 100,
+      "gradient_clip_norm": 1.0,
+      "learning_rate": 0.0005,
+      "loss_type": "huber",
+      "mixed_precision": false,
+      "num_workers": 0,
+      "pin_memory": false,
+      "scheduler": "cosine",
+      "seed": 42,
+      "task_type": "regression",
+      "use_class_weights": false,
+      "weight_decay": 0.01
+    }
+  },
+  "status": "ok"
+}
