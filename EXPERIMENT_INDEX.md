@@ -618,7 +618,7 @@ Best strategy `dno_top_15pct` (|depth_norm_ofi| >= P85): WR=66.9% (+5.9pp), Bonf
 | **Method** | BJZZ retail identification + midpoint signing on XNAS.BASIC CMBP-1 data. 11 off-exchange features computed at 60s bins: trf_volume_share, dark_share, retail_share, retail_signed_imbalance (Mroib), |Mroib|, trf_signed_imbalance, subpenny_intensity, odd_lot_ratio, trf_trade_intensity, retail_size_ratio, vpin_proxy. IC gate: Spearman rank correlation with H=10 point-to-point returns from E5 forward_prices. |
 | **Data** | 35 test days (20251114-20260106), 8,337 samples, XNAS.BASIC CMBP-1 (TRF + on-exchange prints). |
 | **Script** | `scripts/e9_offexchange_signal_validation.py` |
-| **Status** | **RESOLVED — `basic-quote-processor` implemented (412 tests, Phases 1-5). Cross-validation at optimal horizons: trf_signed_imbalance IC=+0.103 at H=1, subpenny_intensity IC=+0.104 at H=60. Phase 6 Python IC validation pending.** |
+| **Status** | **RESOLVED — `basic-quote-processor` implemented (412 tests, Phases 1-5). Cross-validation at optimal horizons: trf_signed_imbalance IC=+0.103 at H=1, subpenny_intensity IC=+0.104 at H=60. Phase 6 Python IC validation pending.** **[SUPERSEDED 2026-07-02 note: BOTH flagged horizons were subsequently KILLED — trf_signed_imbalance failed the E10 bootstrap-stability screen (10% stability → DISCARD) and E14's stride-60 CIs cross zero with subpenny sign-flipping val→test; wiki FINDING-028 is the durable record. Do NOT read this row's ICs as live leads; "Phase 6 pending" was overtaken by E14.]** |
 
 **Results — Off-Exchange Feature IC (H=10 point returns, 60s bins):**
 
