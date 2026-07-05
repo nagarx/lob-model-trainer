@@ -1,6 +1,6 @@
 # Experiment Index
 
-**Living ledger of all training experiments.** Updated after every experiment completes.
+**Training-experiment ledger.** ⚠️ **FROZEN at the Phase-1 / E–R-series boundary (last real entry E17 / R-20, ~2026-05-29).** It does NOT contain the ~60 probes of the 2026-06/07 discovery arc (P-A1..A7, the variance program, direction_close, auction/NOII, OOI, VRP confront, passive-fill/maker). **For the current research state, the authority is `hft-wiki/FINDINGS_MASTER_REGISTER.md` (106+ findings) + the discovery `results/*.json` + the root `INTRADAY_*.md`.** (Historically "updated after every experiment completes"; the discovery arc bifurcated record-keeping to the wiki register + verdict JSONs.)
 
 **Current best classification:** HMHP 128-feat XNAS (H10 test accuracy 59.62%, directional accuracy 93.88% at high conviction)
 **Current best regression:** TLOB 128-feat Regression H10 (test R²=0.464, IC=0.677, DA=74.9%)

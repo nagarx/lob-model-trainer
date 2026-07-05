@@ -586,6 +586,13 @@ class LossType(str, Enum):
     GMADL = "gmadl"
     """Generalized Mean Absolute Directional Loss (Michankov et al. 2024)."""
 
+    PINBALL = "pinball"
+    """Pinball / quantile loss (Koenker-Bassett 1978; Zhang-Zohren-Roberts 2019) — the distributional
+    (quantile) regression head.  Impl: ``lobmodels.losses.pinball.PinballLoss``.  Used by the VARIANCE-DL
+    conditional-density probe (a monotone-quantile head on forward realized variance; the model head must
+    emit [B, Q] quantiles).  Averaged over the quantile grid it is a discretised CRPS, so it is the
+    train-object == score-object loss for a CRPS/log-score density gate (never MSE-train / QLIKE-score)."""
+
 
 class ModelType(str, Enum):
     """Model architecture type."""
@@ -2021,6 +2028,7 @@ class TrainConfig(SafeBaseModel):
     })
     _REGRESSION_LOSSES: ClassVar[frozenset] = frozenset({
         LossType.MSE, LossType.HUBER, LossType.HETEROSCEDASTIC, LossType.GMADL,
+        LossType.PINBALL,   # distributional/quantile head (VARIANCE-DL); model head must emit [B, Q] quantiles
     })
 
     @field_validator("task_type", mode="before")

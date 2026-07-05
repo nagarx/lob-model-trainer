@@ -1,5 +1,7 @@
 # Consolidated Experiment Findings -- May 2026
 
+**⚠️ FRESHNESS (2026-07-05): this document is FROZEN at Phase-1 (through 2026-05-25) and PREDATES the entire 2026-06/07 discovery arc (FINDING-070…106: the five direction-closure legs, the variance INFO≠EDGE program, the Kish power wall, the maker/auction arcs). Its "no model statistically distinguishable" framing is superseded — direction is now theorem-closed (FINDING-047), making that model-selection tension moot. For the CURRENT authoritative state use `hft-wiki/FINDINGS_MASTER_REGISTER.md`.**
+
 **Purpose:** Single authoritative reference for all regression experiment results, validated findings, anti-patterns, architectural hardening shipped, and strategic lessons through 2026-05-25. This document is the starting point for any future experiment design and supersedes `CONSOLIDATED_FINDINGS_2026_03.md` (last updated 2026-04-08, did not reflect R9-R15 / Phase Y / Phase Z / Stage 8 / 4-agent post-compact audit).
 
 **Last updated:** 2026-05-25 (statistical rigor update: R16-R20 experiments added + first bootstrap CIs on 8 experiments). Previously: 2026-05-05 (post-compact 7-agent investigation).
