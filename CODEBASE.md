@@ -3,9 +3,9 @@
 > **Pipeline scope (2026-06-02).** This module is part of an **intraday trading research pipeline** — an experiment-first platform for discovering and validating *any* profitable **intraday** trading edge (no overnight positions), across approach classes (microstructure/HFT, scalping, intraday momentum, intraday statistical arbitrage, …) and instruments (equities, futures, same-day options). The pipeline *originated* as a high-frequency NVDA MBO/LOB microstructure system — that origin explains the "HFT" / "LOB" / "MBO" naming here — and that microstructure-direction program is now one (largely-closed) track among many. **Names are historical; the mission is general.** This module's role: the Python training engine — data loaders, training loops, purged-CV, train-only normalization, callbacks, signal export, and ExperimentSpec orchestration; trains single-asset models at any intraday horizon (cross-sectional / panel training + ranking losses are a build per register §9). For the full mission + approach taxonomy + capability-readiness boundary, see root `CLAUDE.md` §Research Scope & Charter (+ `CROSS_ASSET_OFI_FINDINGS_AND_ISSUES_2026_06_01.md` §9).
 
 > **Version**: 0.7.0 (Phase A.5 Scope D v2 Pydantic migration — 2026-04-25)  
-> **Schema**: 3.0 (Phase G G.6.A bump 2.2 → 3.0 MAJOR per CLAUDE.md root rule: any modification to stable features 0-97 = BREAKING; via `hft-contracts` package, v2.3.0 runtime dep)  
-> **Tests**: 1434 collected (1369 passed + 65 skipped) — Phase A.5 Scope D v2 adds 9 Pydantic-migration commits (A.5.3a-i) + 3 post-audit commits (A.5.7a-c): SafeBaseModel base class with `_canonical_form()` SSoT + `__pydantic_init_subclass__` auto-registry (`config/base.py`); parametric pickle/deepcopy/partial-base-rejection tests over auto-registry; full `Trainer.setup() + SignalExporter.export()` integration test in `tests/test_signal_exporter_integration.py` (`@pytest.mark.integration`); `LabelsConfig.validate_primary_horizon_idx_for()` bounds-validation method; `CalibrationContext` TypedDict.  
-> **Last Updated**: 2026-04-25 (Phase A.5 Scope D v2 — Pydantic v2 migration COMPLETE: all 9 config classes inherit from `SafeBaseModel(BaseModel)` with `ConfigDict(frozen=True, extra="forbid", strict=True, validate_assignment=True, arbitrary_types_allowed=True)`; `dacite>=1.8` DROPPED; `pydantic>=2.7,<3.0` pinned with explicit upper bound; `hatchling>=1.26` build-constraint. Four bug classes retired at TYPE layer: canonical-path-drift, silent mutation, extra-field acceptance, silent-None field access. 5-agent adversarial audit (A.5.7a-c) closed 4 ship-blockers (SB-1 canonical-form SSoT, SB-2 composite pickle/deepcopy, SB-3 full Trainer+export integration, SB-4 parametric partial-base rejection). See CHANGELOG.md v0.7.0 + `/contracts/pipeline_contract.toml` v2.26 + `/PIPELINE_ARCHITECTURE.md` §11 Configuration System Architecture.)  
+> **Schema**: 3.0 (Phase G G.6.A bump 2.2 → 3.0 MAJOR per CLAUDE.md root rule: any modification to stable features 0-97 = BREAKING; via `hft-contracts` package, `hft-contracts>=2.8.0` runtime dep per `pyproject.toml`)  
+> **Tests**: run `pytest --collect-only -q` for the live count (~2020 across 82 `tests/test_*.py` files, 0 errors — hand-typed counts are NOT maintained here per hft-rules §11) — Phase A.5 Scope D v2 adds 9 Pydantic-migration commits (A.5.3a-i) + 3 post-audit commits (A.5.7a-c): SafeBaseModel base class with `_canonical_form()` SSoT + `__pydantic_init_subclass__` auto-registry (`config/base.py`); parametric pickle/deepcopy/partial-base-rejection tests over auto-registry; full `Trainer.setup() + SignalExporter.export()` integration test in `tests/test_signal_exporter_integration.py` (`@pytest.mark.integration`); `LabelsConfig.validate_primary_horizon_idx_for()` bounds-validation method; `CalibrationContext` TypedDict.  
+> **Last Updated**: 2026-04-25 (Phase A.5 Scope D v2 — Pydantic v2 migration COMPLETE: all 9 config classes inherit from `SafeBaseModel(BaseModel)` with `ConfigDict(frozen=True, extra="forbid", strict=True)` (exactly 3 flags — `validate_assignment` and `arbitrary_types_allowed` are deliberately NOT set, per `config/base.py`); `dacite>=1.8` DROPPED; `pydantic>=2.7,<3.0` pinned with explicit upper bound; `hatchling>=1.26` build-constraint. Four bug classes retired at TYPE layer: canonical-path-drift, silent mutation, extra-field acceptance, silent-None field access. 5-agent adversarial audit (A.5.7a-c) closed 4 ship-blockers (SB-1 canonical-form SSoT, SB-2 composite pickle/deepcopy, SB-3 full Trainer+export integration, SB-4 parametric partial-base rejection). See CHANGELOG.md v0.7.0 + `/contracts/pipeline_contract.toml` v2.26 + `/PIPELINE_ARCHITECTURE.md` §11 Configuration System Architecture.)  
 > **Purpose**: Complete technical reference for LLMs and developers to understand, modify, and extend the codebase.
 >
 > **Scope**: This library focuses solely on **model training**. For dataset analysis, use `lob-dataset-analyzer`.
@@ -72,14 +72,14 @@ Python library for training and evaluating ML models on LOB (Limit Order Book) d
 |-----------|--------|-------|
 | **Strategy Pattern** | ✅ Complete | 4 strategies: Classification, Regression, HMHPClassification, HMHPRegression |
 | **Trainer Orchestrator** | ✅ Complete | 900L (was 1,657L), zero task-branching, delegates to strategy |
-| **All Models via lob-models** | ✅ Complete | 10 registered models (TLOB, DeepLOB, MLPLOB, HMHP, HMHP-R, LSTM, GRU, LogisticLOB, Ridge, GradBoost) |
+| **All Models via lob-models** | ✅ Complete | 11 registered models (TLOB, DeepLOB, MLPLOB, HMHP, HMHP-R, LSTM, GRU, LogisticLOB, XGBoostLOB, Ridge, GradBoost) — per `../lob-models/src/lobmodels/registry/_snapshot.json` `model_count: 11`. NOTE: `xgboost` is registered but NOT dispatched by `create_strategy` — train it via `scripts/analysis/train_xgboost_baseline.py`, not the standard trainer path |
 | **Strategy-Aware Metrics** | ✅ Complete | MetricsCalculator for TLOB/Triple Barrier/Opportunity |
 | **Focal Loss** | ✅ Complete | For class imbalance handling |
 | **Multi-Horizon Labels** | ✅ Complete | Support for multiple prediction horizons |
 | **HMHP Regression** | ✅ Complete | Regression training with precomputed labels |
-| **Experiment Tracking** | ✅ Complete | ExperimentRegistry, comparison tables |
+| **Experiment Tracking** | ✅ Complete | ExperimentRegistry, comparison tables (LEGACY local schema — canonical is `hft_contracts.ExperimentRecord`; see §15) |
 | **Monitoring Callbacks** | ✅ Complete | Gradient, LR, diagnostics tracking (uses public properties) |
-| **Tests** | ✅ Complete | 1149 collected (1084 passed + 65 skipped) — matches banner at line 5 |
+| **Tests** | ✅ Complete | run `pytest --collect-only -q` for the live count (~2020 across 82 `tests/test_*.py` files) — hand-typed counts not maintained (hft-rules §11) |
 
 ### Core Dependencies
 
@@ -106,14 +106,17 @@ src/lobtrainer/
 ├── constants/
 │   ├── __init__.py                # Module exports
 │   ├── feature_index.py           # FeatureIndex, SignalIndex (98 features)
-│   └── feature_presets.py         # Named feature subsets (8 presets)
+│   └── feature_presets.py         # Named feature subsets (13 presets — see §4)
 │
 ├── config/
 │   ├── __init__.py                # Module exports
-│   ├── schema.py                  # ExperimentConfig, DataConfig, ModelConfig, TrainConfig
+│   ├── base.py                    # SafeBaseModel (Pydantic v2 base: frozen/extra=forbid/strict + auto-registry)
+│   ├── schema.py                  # ExperimentConfig, DataConfig, ModelConfig, TrainConfig, LabelsConfig, ...
 │   ├── merge.py                   # deep_merge(), resolve_inheritance(), is_partial_base()
 │   │                              #   Supports _base: str | list[str] multi-base composition (v2, Phase 3).
 │   │                              #   Preserves all v1 invariants byte-identically.
+│   ├── experiment_spec.py         # ExperimentSpec (T14 — config + gate bundle)
+│   ├── paths.py                   # resolve_labels_config() — canonical config.data.labels router
 │   └── archive/merge-v1/          # Archived v1 merge.py (single-string _base: only, 127 LOC)
 │       ├── merge.py               #   Loaded via importlib from tests/test_merge_v1_parity.py
 │       └── ARCHIVE_README.md      #   Parity reference; mirrors feature-extractor archive/monolith-v1/
@@ -130,7 +133,13 @@ src/lobtrainer/
 │   │                              #   _compute_content_hash inlined (torch-free; cross-venv independent
 │   │                              #   from hft-ops); byte-parity LOCKED against hft_contracts.canonical_hash.
 │   ├── transforms.py              # FeatureStatistics, BinaryLabelTransform, ComposeTransform
-│   └── normalization.py           # HybridNormalizer, GlobalZScoreNormalizer (Welford/Chan streaming)
+│   ├── normalization.py           # T15 Python-side normalization (HybridNormalizer, GlobalZScoreNormalizer; Welford/Chan streaming)
+│   ├── sources.py                 # T12 DataSource multi-source abstraction
+│   ├── bundle.py                  # T12 DayBundle multi-source fusion (MBO + BASIC)
+│   ├── sample_weights.py          # T10 concurrent-label-overlap weights (de Prado AFML 4.5.1)
+│   ├── horizons_resolver.py       # resolve_horizons_from_export() (Phase C.1)
+│   └── preprocessing/
+│       └── temporal_config.py     # TemporalFeatureConfig factory
 │
 ├── models/
 │   ├── __init__.py                # create_model (45L, registry-based), LSTM/GRU re-exports from lobmodels
@@ -146,16 +155,34 @@ src/lobtrainer/
 │   │   ├── hmhp_classification.py # HMHPClassificationStrategy (per-horizon)
 │   │   └── hmhp_regression.py     # HMHPRegressionStrategy (per-horizon regression)
 │   ├── trainer.py                 # Trainer orchestrator (900L), delegates to strategy
+│   ├── cv_trainer.py              # T11 CVTrainer (purged k-fold + embargo), FoldResult, CVResults
+│   ├── base.py                    # TrainingState + shared training base surface
+│   ├── compatibility.py          # CompatibilityContract / fingerprint surface
+│   ├── gates.py                   # T14 run_signal_quality_gate + GateResult (pre-training IC gate, hft-rules §13)
+│   ├── exceptions.py              # TrainingDivergedError, MonitorMetricUndefined, DegenerateFeatureError (fail-loud, Phase X.3)
 │   ├── callbacks.py               # EarlyStopping, ModelCheckpoint, MetricLogger
 │   ├── metrics.py                 # MetricsCalculator, ClassificationMetrics
 │   ├── regression_metrics.py     # Thin adapter over hft-metrics (R², IC, MAE, RMSE, DA, PA)
 │   ├── regression_evaluation.py  # RegressionMetrics dataclass (from_arrays, summary, to_dict)
+│   ├── point_return_da.py         # compute_point_return_da_scalars (E8 point-return-DA tripwire producer)
+│   ├── label_warnings.py          # warn_if_smoothed_return (E8 run-entry nudge, FINDING-001/008)
 │   ├── simple_trainer.py          # SimpleModelTrainer for sklearn-style models (TemporalRidge, GradBoost)
-│   ├── loss.py                    # FocalLoss, BinaryFocalLoss, create_focal_loss
+│   ├── loss.py                    # FocalLoss, BinaryFocalLoss, create_focal_loss (classification only)
+│   ├── importance/                # Post-training permutation feature-importance (Phase 8C-α)
+│   │   ├── permutation.py         # compute_permutation_importance (framework-agnostic)
+│   │   ├── callback.py            # PermutationImportanceCallback (emits FeatureImportanceArtifact to hft-ops ledger)
+│   │   └── config.py              # ImportanceConfig
 │   ├── evaluation.py              # BaselineReport, evaluate_model, full_evaluation
 │   └── monitoring.py              # GradientMonitor, TrainingDiagnostics, LRTracker
 │
+├── analysis/
+│   └── stat_rigor/               # Statistical-rigor package (Phase 2 P2.A/P2.C; NPY-safe np.load)
+│       ├── ci.py                 # Block-bootstrap CI on 7 test metrics → hft_contracts.TestMetricsCIArtifact
+│       └── pairwise.py           # K-way paired moving-block compare + BH-FDR → PairwiseCompareArtifact
+│                                 #   CLI drivers: scripts/compute_test_metrics_ci.py + scripts/compare_experiments_pairwise.py
+│
 ├── cli.py                         # CLI entry point: train_command, evaluate_command, apply_overrides
+├── ledger_hook.py                 # write_minimal_ledger_record (#PY-223 — delegates to hft_contracts.experiment_recorder SSoT)
 │
 ├── experiments/
 │   ├── __init__.py                # Module exports
@@ -164,7 +191,8 @@ src/lobtrainer/
 │
 ├── calibration/
 │   ├── __init__.py              # Prediction calibration package
-│   └── variance.py              # VarianceCalibrator: post-hoc prediction rescaling (18 tests)
+│   └── variance.py              # calibrate_variance() + VarianceCalibrationConfig + CalibrationResult
+│                                #   + CalibrationContext TypedDict (post-hoc variance-match rescaling)
 │
 ├── export/
 │   ├── __init__.py              # Signal export public API
@@ -176,37 +204,45 @@ src/lobtrainer/
     ├── __init__.py                # Module exports
     └── reproducibility.py         # set_seed, SeedManager, worker_init_fn
 
-scripts/
-├── train.py                       # Training CLI
+scripts/                           # PRODUCTION INFRA (hft-rules §4)
+├── train.py                       # Training CLI (writes test_metrics.json)
 ├── export_signals.py              # Unified signal export CLI (replaces 3 deprecated scripts)
-├── run_simple_training.py         # SimpleModelTrainer CLI (TemporalRidge, GradBoost)
-├── run_simple_model_ablation.py   # Ablation experiments for simple models
-├── e4_baselines.py                # E4 time-based experiment baselines
-├── e5_baselines.py                # E5 60s-bin experiment baselines
 ├── precompute_norm_stats.py       # Pre-compute normalization statistics cache
 ├── validate_export.py             # Dataset validation
-└── analysis/                      # Analysis and evaluation scripts
-    ├── evaluate_model.py          # Model evaluation from checkpoint
-    └── run_baseline_evaluation.py # Baseline comparison
+├── compute_test_metrics_ci.py     # Block-bootstrap CI driver (→ analysis/stat_rigor/ci.py)
+├── compare_experiments_pairwise.py# K-way pairwise-compare driver (→ analysis/stat_rigor/pairwise.py)
+├── check_experiment_index_completeness.py  # wiki_consultation soft validator (see CONTRIBUTING.md)
+├── _hft_ops_compat.py             # HFT_OPS_ORCHESTRATED=1 deprecation-banner check
+├── analysis/                      # Analysis and evaluation scripts (11 files)
+│   ├── evaluate_model.py          # Model evaluation from checkpoint
+│   ├── run_baseline_evaluation.py # Baseline comparison
+│   ├── train_xgboost_baseline.py  # XGBoost training path (xgboost is NOT dispatched by the standard trainer)
+│   └── analyze_*/diagnose_*/relabel_*/validate_training_setup.py  # ad-hoc analysis scripts
+└── archive/                       # Phase 6 6D fossil archive (NOT templates — see archive/README.md)
+    ├── e4_baselines.py, e5_baselines.py, run_simple_training.py
+    └── run_simple_model_ablation.py, run_experiment_spec.py
 
 configs/
 ├── README_configs.md              # Complete config reference
-├── bases/                         # 21 axis-partitioned base configs (Phase 3)
+├── bases/                         # 24 axis-partitioned base configs (Phase 3)
 │   ├── README.md                  #   4-axis ownership rule + chained inheritance + _partial:
 │   ├── models/                    #   5: tlob_compact_bare, tlob_compact_regression,
 │   │                              #      tlob_paper_classification, hmhp_cascade_bare,
 │   │                              #      hmhp_cascade_regression
-│   ├── datasets/                  #   8: per-export normalisation/sampling bases
+│   ├── datasets/                  #   10: per-export normalisation/sampling bases (incl. 2 v3p0
+│   │                              #      regression fwd-prices bases: 128feat + 148feat)
 │   ├── labels/                    #   4: regression_huber, tlob_smoothed, opportunity,
 │   │                              #      triple_barrier_volscaled
-│   └── train/                     #   4: regression_default, classification_default,
-│                                  #      classification_triple_barrier, tlob_paper_classification_train
-├── experiments/                   # 42 in-scope YAML configs: 25 migrated to multi-base _base:,
-│                                  #   17 standalone by design (baselines, XGBoost, archive,
-│                                  #   niche HMHP, TLOB singletons). See MERGE_MIGRATION_PLAN.md.
+│   └── train/                     #   5: regression_default, classification_default,
+│                                  #      classification_triple_barrier, tlob_paper_classification_train,
+│                                  #      importance_default
+├── experiments/                   # 53 YAML configs (run `ls configs/experiments/*.yaml | wc -l`);
+│                                  #   ~25 migrated to multi-base _base:, the rest standalone
+│                                  #   (baselines, XGBoost, archive, niche HMHP, TLOB singletons).
+│                                  #   See MERGE_MIGRATION_PLAN.md.
 └── archive/                       # Legacy reference configs (6) — not in Phase 3 migration scope
 
-tests/                             # 43 test modules, 1052 tests pytest-collected (2026-04-15)
+tests/                             # run `pytest --collect-only -q` for the live count (~2020 across 82 files)
 ├── conftest.py                    # Shared fixtures (rng, day_data_factory, synthetic_export_dir)
 ├── test_baselines.py
 ├── test_calibration.py
@@ -340,7 +376,7 @@ class FeatureIndex:
     FRAGILITY_SCORE = 90
     DEPTH_ASYMMETRY = 91
     BOOK_VALID = 92          # Safety gate
-    TIME_REGIME = 93         # Categorical {0-4}
+    TIME_REGIME = 93         # Categorical {0-6} (7-regime TimeRegime taxonomy, hft_statistics SSoT)
     MBO_READY = 94           # Safety gate
     DT_SECONDS = 95
     INVALIDITY_DELTA = 96    # Safety gate
@@ -367,15 +403,21 @@ SHIFTED_LABEL_UP: Final[int] = 2      # Was 1
 Named feature subsets for easy configuration:
 
 ```python
+# 13 presets (values are Tuple[int, ...]; lengths noted):
 FEATURE_PRESETS = {
-    "lob_only": list(range(0, 40)),         # 40 raw LOB features
-    "lob_derived": list(range(0, 48)),      # LOB + derived (48)
-    "full": list(range(0, 98)),             # All 98 features
-    "signals_core": [84, 85, 86, 87, 88, 89, 90, 91],  # 8 core signals
-    "signals_full": list(range(84, 98)),    # 14 signal features
-    "lob_signals": list(range(0, 40)) + list(range(84, 92)),  # LOB + core signals
-    "no_meta": list(range(0, 92)),          # Exclude meta (92-97)
-    "deeplob_extended": list(range(0, 48)), # For extended DeepLOB mode
+    "lob_only": PRESET_LOB_ONLY,            # 40 raw LOB features
+    "lob_derived": PRESET_LOB_DERIVED,      # LOB + derived (48)
+    "full": PRESET_FULL,                    # All 98 features
+    "full_98": PRESET_FULL,                 # Alias for "full" (98)
+    "full_116": PRESET_FULL_116,            # 116 features
+    "full_128": PRESET_FULL_128,            # 128 features
+    "analysis_ready_128": PRESET_ANALYSIS_READY_128,  # 119 features
+    "signals_core": PRESET_SIGNALS_CORE,    # 8 core signals [84..91]
+    "signals_full": PRESET_SIGNALS_FULL,    # 14 signal features
+    "lob_signals": PRESET_LOB_SIGNALS,      # LOB + core signals (54)
+    "no_meta": PRESET_NO_META,              # Exclude meta 92-97 (92)
+    "deeplob_extended": PRESET_DEEPLOB_EXTENDED,  # 52 = 40 raw LOB + 4 derived + 8 core signals
+    "short_term_40": PRESET_SHORT_TERM_40,  # 40 (canonical short-term subset)
 }
 
 # Usage
@@ -399,10 +441,10 @@ describe_preset("signals_core")  # Prints description and indices
 >     frozen=True,              # Post-construction assignment raises ValidationError
 >     extra="forbid",           # Unknown fields raise ValidationError at model_validate
 >     strict=True,              # No loose coercion (e.g., "123" → 123)
->     validate_assignment=True, # Even allowed assignments re-fire validators
->     arbitrary_types_allowed=True,  # PrivateAttr, numpy types, etc.
 > )
 > ```
+>
+> **Exactly 3 flags** (`config/base.py:169-173`). `validate_assignment` and `arbitrary_types_allowed` are **deliberately NOT set** — `frozen=True` already blocks assignment, and `PrivateAttr`-typed runtime caches do not require `arbitrary_types_allowed`. (Do not re-add them.)
 >
 > The class code samples below show the dataclass-era shape for historical reference. In the current codebase every `@dataclass` decorator shown is REPLACED by `class X(SafeBaseModel):` inheritance. Functional semantics match (same field names, defaults, types) with these additions:
 >
@@ -412,7 +454,7 @@ describe_preset("signals_core")  # Prints description and indices
 > 4. **`PrivateAttr` for runtime caches** — `DataConfig._feature_indices_resolved` + `_feature_set_ref_resolved` use `PrivateAttr(default=None)` which permits mutation even under `frozen=True` AND is automatically stripped from `model_dump()` — preserving Phase 4 R3 invariant (YAML round-trip without private-cache leakage) at the type-system layer.
 > 5. **In-validator self-mutation pattern** — `@model_validator(mode="after")` that needs to rewrite fields returns `self.model_copy(update={"field": new_value})`. `model_copy(update=...)` documentedly SKIPS validators, which is SAFE here because state is already-validated. **External CLI / user-data paths MUST use `ExperimentConfig.model_validate({**base.model_dump(), **overrides})`** — re-fires every validator on the merged dict. Round-3 adversarial audit caught CLI mutation `config.train.lr = args.lr` (crashes under frozen=True) + `model_copy(update={"train.lr": -1.0})` (silently accepts invalid override) as CRITICAL.
 > 6. **Live-YAML corpus regression** — `tests/test_pydantic_migration.py` parametrizes `ExperimentConfig.from_yaml()` over every file under `configs/**/*.yaml` + `tests/fixtures/**/*.yaml`; fails-loud on any `ValidationError` (catches latent typos + unknown fields that pre-Pydantic dacite silently dropped).
-> 7. **`_partial: true` strip** — `configs/bases/` partial YAMLs carrying the `_partial: true` sentinel MUST have it stripped by `config/merge.py::resolve_inheritance()` BEFORE `ExperimentConfig.from_dict()` — otherwise `extra="forbid"` rejects. `test_all_partial_bases_rejected_on_direct_load` parametrized over all 22 partial bases locks the invariant.
+> 7. **`_partial: true` strip** — `configs/bases/` partial YAMLs carrying the `_partial: true` sentinel MUST have it stripped by `config/merge.py::resolve_inheritance()` BEFORE `ExperimentConfig.from_dict()` — otherwise `extra="forbid"` rejects. `test_all_partial_bases_rejected_on_direct_load` parametrized over every partial base (all 24 base YAMLs carry `_partial: true`) locks the invariant.
 >
 > **Dependencies**: `pydantic>=2.7,<3.0` (explicit upper bound); `hatchling>=1.26` (build); `dacite>=1.8` DROPPED. See `/PIPELINE_ARCHITECTURE.md` §11 Configuration System Architecture for the full migration narrative + bug-class-retirement table + CLI override pattern.
 
@@ -431,7 +473,9 @@ class ExperimentConfig:
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
-    
+    cv: Optional[CVConfig] = None            # T11 purged k-fold (opt-in)
+    importance: Optional[ImportanceConfig] = None  # permutation feature-importance (opt-in)
+
     output_dir: str = "outputs"
     log_level: str = "INFO"
 ```
@@ -441,16 +485,24 @@ class ExperimentConfig:
 ```python
 @dataclass
 class DataConfig:
-    data_dir: str = "../data/exports/nvda_11month_complete"
+    data_dir: str = "../data/exports/nvda_11month_complete"  # NOTE: this default export is
+                                                             # superseded — see §18 "Current Datasets"
     feature_count: int = 98
-    horizon_idx: Optional[int] = 0
+    horizon_idx: Optional[int] = 0  # LEGACY — `labels` (LabelsConfig) takes precedence when set
 
     sequence: SequenceConfig = field(default_factory=SequenceConfig)
     normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
 
+    label_encoding: LabelEncoding = LabelEncoding.CATEGORICAL
     labeling_strategy: LabelingStrategy = LabelingStrategy.TLOB
     num_classes: int = 3
     cache_in_memory: bool = True
+
+    # T9 unified label spec — the CANONICAL carrier of return_type + primary_horizon_idx.
+    # None = derive from the legacy labeling_strategy/horizon_idx fields above.
+    # Resolved everywhere via config/paths.py::resolve_labels_config(config) → config.data.labels.
+    labels: Optional[LabelsConfig] = None
+    sources: Optional[SourceConfig] = None       # T12 multi-source fusion (opt-in)
 
     # Phase 4 Batch 4c: FeatureSet-registry selection (mutually exclusive w/
     # feature_indices and feature_preset — at most one may be set).
@@ -469,14 +521,16 @@ class DataConfig:
 ### ModelConfig
 
 ```python
-class ModelType(str, Enum):
+class ModelType(str, Enum):        # 12 members
     LOGISTIC = "logistic"
-    XGBOOST = "xgboost"
+    XGBOOST = "xgboost"      # NOT in the ModelRegistry / NOT dispatched by create_strategy —
+                            #   train via scripts/analysis/train_xgboost_baseline.py, not the standard path
     LSTM = "lstm"
     GRU = "gru"
     TRANSFORMER = "transformer"  # NOT IMPLEMENTED — reserved for future use
     DEEPLOB = "deeplob"
     TLOB = "tlob"
+    MLPLOB = "mlplob"       # MLP-only LOB (Berti & Kasneci 2025); reachable via YAML since Phase X.1 v2
     HMHP = "hmhp"            # Multi-horizon classification (lob-models)
     HMHP_REGRESSION = "hmhp_regression"  # Multi-horizon regression (lob-models)
     TEMPORAL_RIDGE = "temporal_ridge"      # sklearn Ridge + temporal features
@@ -515,13 +569,16 @@ class ModelConfig:
 ### TrainConfig
 
 ```python
-class LossType(str, Enum):
+class LossType(str, Enum):        # 8 members
     CROSS_ENTROPY = "cross_entropy"
     FOCAL = "focal"
     WEIGHTED_CE = "weighted_ce"
     MSE = "mse"
     HUBER = "huber"
     HETEROSCEDASTIC = "heteroscedastic"
+    GMADL = "gmadl"            # Generalized Mean Absolute Directional Loss (regression)
+    PINBALL = "pinball"       # Quantile/distributional head (VARIANCE-DL); model must emit [B, Q];
+                             #   impl: lobmodels.losses.pinball.PinballLoss
 
 class TaskType(str, Enum):
     MULTICLASS = "multiclass"
@@ -542,10 +599,10 @@ class TrainConfig:
     num_workers: int = 4
     pin_memory: bool = True
     seed: int = 42
-    mixed_precision: bool = False
+    mixed_precision: bool = False  # NOT IMPLEMENTED — mixed_precision=True raises ValueError (fail-fast, hft-rules §5)
     
     # Loss configuration
-    loss_type: LossType = LossType.WEIGHTED_CE  # Also: CROSS_ENTROPY, FOCAL, MSE, HUBER, HETEROSCEDASTIC, GMADL
+    loss_type: LossType = LossType.WEIGHTED_CE  # Also: CROSS_ENTROPY, FOCAL, MSE, HUBER, HETEROSCEDASTIC, GMADL, PINBALL
     use_class_weights: bool = True
     task_type: TaskType = TaskType.MULTICLASS
     
@@ -614,7 +671,7 @@ Phase 3 (2026-04-15) promoted `_base:` to a first-class multi-base composition m
 
 **Ownership refinement (Batch 2, 2026-04-15)**: `train.loss_type` moved from `models/` → `labels/` because it is **task-coupled** (regression → huber, tlob → weighted_ce, triple_barrier → focal), not model-coupled. Before this move, HMHP — which shares one cascade model across all three loss types — would have required three near-duplicate HMHP model bases. All migrated configs' resolved dicts are byte-identical before and after the refinement.
 
-**Migration status (2026-04-15)**: 25 of 42 in-scope experiment configs migrated to axis-composed form across 3 batches (E4×1 + E5×5 + E6×1 + HMHP×11 + TLOB classif×7 = 25). 17 configs remain standalone by design (baselines×7, XGBoost×2, archive×6, niche HMHP×2). Monolith `bases/e5_tlob_regression.yaml` retired at end of Batch 1 after all 5 E5 consumers migrated with byte-identical resolved dicts.
+**Migration status (2026-04-15 snapshot)**: 25 of the 42 then-in-scope experiment configs migrated to axis-composed form across 3 batches (E4×1 + E5×5 + E6×1 + HMHP×11 + TLOB classif×7 = 25). 17 configs remained standalone by design (baselines×7, XGBoost×2, archive×6, niche HMHP×2). (`configs/experiments/` now holds **53** `*.yaml` total.) Monolith `bases/e5_tlob_regression.yaml` retired at end of Batch 1 after all 5 E5 consumers migrated with byte-identical resolved dicts.
 
 See `MERGE_MIGRATION_PLAN.md` for the per-batch migration ledger.
 
@@ -1232,33 +1289,44 @@ def create_standard_monitoring(
 
 ### ExperimentResult (src/lobtrainer/experiments/result.py)
 
+> **LEGACY tracking schema — dual-schema debt (#PY-384).** `ExperimentResult` / `ExperimentMetrics` / `ExperimentRegistry` are this module's local JSON registry. The **pipeline-canonical** experiment record consumed downstream by `hft-ops` is `hft_contracts.experiment_record.ExperimentRecord` (written via `ledger_hook.write_minimal_ledger_record` → `hft_contracts.experiment_recorder` SSoT). This local registry is slated for retirement (root CLAUDE.md: "Phase 7 6B.1b will retire `lobtrainer.experiments.ExperimentRegistry`"). Prefer `ExperimentRecord` for cross-module work.
+
 ```python
 @dataclass
 class ExperimentMetrics:
     accuracy: float = 0.0
     loss: float = 0.0
     macro_f1: float = 0.0
+    macro_precision: float = 0.0
+    macro_recall: float = 0.0
+    per_class_precision: Dict[str, float] = field(default_factory=dict)
+    per_class_recall: Dict[str, float] = field(default_factory=dict)
+    per_class_f1: Dict[str, float] = field(default_factory=dict)
     directional_accuracy: float = 0.0
     signal_rate: float = 0.0
-    per_class_f1: Dict[str, float] = field(default_factory=dict)
-    strategy_metrics: Dict[str, float] = field(default_factory=dict)
+    predicted_trade_win_rate: float = 0.0
+    decisive_prediction_rate: float = 0.0
+    extra_metrics: Dict[str, float] = field(default_factory=dict)
 
 @dataclass
 class ExperimentResult:
     experiment_id: str
     name: str
-    config: Dict[str, Any]
-    
+    description: str = ""
+    config: Dict[str, Any] = field(default_factory=dict)
+
     train_metrics: Optional[ExperimentMetrics] = None
     val_metrics: Optional[ExperimentMetrics] = None
     test_metrics: Optional[ExperimentMetrics] = None
-    
-    timestamp: str = ""
-    duration_seconds: float = 0.0
+
+    training_time_seconds: float = 0.0   # (serialized key; NOT "duration_seconds")
+    created_at: str = ""                 # ISO timestamp (serialized key; NOT "timestamp")
     checkpoint_path: Optional[str] = None
-    
+    # + best_epoch, total_epochs, output_dir, tags, model_type, model_params,
+    #   labeling_strategy, num_{train,val,test}_samples, training_history
+
     def save(self, path: Path) -> None: ...
-    
+
     @classmethod
     def load(cls, path: Path) -> 'ExperimentResult': ...
 ```
@@ -1297,7 +1365,12 @@ def create_comparison_table(
 ### set_seed (src/lobtrainer/utils/reproducibility.py)
 
 ```python
-def set_seed(seed: int = 42, deterministic_cudnn: bool = True) -> None:
+def set_seed(
+    seed: int = 42,
+    deterministic_cudnn: bool = True,
+    *,
+    strict_determinism: bool = False,  # DESIGN-1 (see block below)
+) -> None:
     """
     Set random seeds for all RNGs.
     
@@ -1458,10 +1531,14 @@ python scripts/train.py --config configs/experiments/nvda_tlob_h10_v1.yaml \
 | Script | Purpose |
 |--------|---------|
 | `scripts/export_signals.py` | Unified signal export CLI (replaces 3 deprecated scripts) |
-| `scripts/run_simple_training.py` | SimpleModelTrainer CLI for TemporalRidge/GradBoost |
 | `scripts/validate_export.py` | Validate exported dataset integrity |
+| `scripts/compute_test_metrics_ci.py` | Block-bootstrap CI driver (→ `analysis/stat_rigor/ci.py`) |
+| `scripts/compare_experiments_pairwise.py` | K-way pairwise compare + BH-FDR driver (→ `analysis/stat_rigor/pairwise.py`) |
+| `scripts/check_experiment_index_completeness.py` | `wiki_consultation:` soft validator (CONTRIBUTING.md) |
 | `scripts/analysis/evaluate_model.py` | Evaluate trained model checkpoint |
 | `scripts/analysis/run_baseline_evaluation.py` | Compare against naive baselines |
+| `scripts/analysis/train_xgboost_baseline.py` | XGBoost training path (not dispatched by the standard trainer) |
+| `scripts/archive/run_simple_training.py` (fossil) | Archived — SimpleModelTrainer CLI; NOT a template (Phase 6 6D) |
 
 ---
 
@@ -1469,8 +1546,8 @@ python scripts/train.py --config configs/experiments/nvda_tlob_h10_v1.yaml \
 
 See `configs/README_configs.md` for complete configuration reference including:
 
-- Active experiment configs (42 in-scope: 25 migrated to axis-composed `_base: [...]` form + 17 standalone by design — see `MERGE_MIGRATION_PLAN.md`)
-- Axis-partitioned bases (21 under `configs/bases/{models,datasets,labels,train}/` — see `configs/bases/README.md`)
+- Active experiment configs (**53** under `configs/experiments/*.yaml`; ~25 migrated to axis-composed `_base: [...]` form + the rest standalone — see `MERGE_MIGRATION_PLAN.md`)
+- Axis-partitioned bases (**24** under `configs/bases/{models=5,datasets=10,labels=4,train=5}/` — see `configs/bases/README.md`)
 - Archived reference configs (6 legacy, not in Phase 3 migration scope)
 - Horizon index mapping
 - Model type options
@@ -1479,10 +1556,12 @@ See `configs/README_configs.md` for complete configuration reference including:
 
 ### Current Datasets
 
+> **⚠️ STALE (2026-07):** `nvda_11month_complete` (the `DataConfig.data_dir` default) is **no longer on disk** — it was superseded by the `e5_timebased_{5s,30s,60s}_v3p0` + `nvda_xnas_128feat_regression_fwd_prices_v3p0` baselines (present under `../data/exports/`; see root `CLAUDE.md` §Dataset Specification). The rows below are retained as the historical label/horizon reference.
+
 | Dataset | Days | Labels | Horizons |
 |---------|------|--------|----------|
-| `nvda_11month_complete` | **234** | TLOB | [10, 20, 50, 100] |
-| `nvda_11month_triple_barrier` | **234** | Triple Barrier | [50, 100, 200] |
+| `nvda_11month_complete` (legacy) | **234** | TLOB | [10, 20, 50, 100] |
+| `nvda_11month_triple_barrier` (legacy) | **234** | Triple Barrier | [50, 100, 200] |
 
 ---
 
@@ -1508,7 +1587,7 @@ class TestTrainer:
         assert trainer.config.name == "test"
 ```
 
-### Test Modules (43; 1052 tests pytest-collected on 2026-04-15)
+### Test Modules (82 `tests/test_*.py` files; run `pytest --collect-only -q` for the live count, ~2020 tests — hft-rules §11)
 
 | Test File | Coverage |
 |-----------|----------|
@@ -1590,7 +1669,7 @@ from lobtrainer.models import create_model  # Will ImportError if lob-models mis
 
 ### TIME_REGIME Exclusion
 
-Index 93 (TIME_REGIME) should be excluded from normalization - it's categorical `{0, 1, 2, 3, 4}`.
+Index 93 (TIME_REGIME) should be excluded from normalization - it's categorical `{0..6}` (7-regime TimeRegime taxonomy; `hft_statistics::time::regime` SSoT). (Excluded from normalization regardless of cardinality.)
 
 ---
 

@@ -23,7 +23,7 @@ python scripts/train.py --config configs/experiments/nvda_tlob_triple_barrier_11
 ```
 configs/
 ├── README_configs.md                      # This file (complete reference)
-├── bases/                                 # 🏗️ 21 axis-partitioned BASE configs (Phase 3)
+├── bases/                                 # 🏗️ 24 axis-partitioned BASE configs (Phase 3): models=5, datasets=10, labels=4, train=5
 │   ├── README.md                          #   4-axis ownership rule + chained inheritance
 │   ├── models/                            #   5 files — model architecture bases
 │   │   ├── tlob_compact_bare.yaml
@@ -31,11 +31,13 @@ configs/
 │   │   ├── tlob_paper_classification.yaml
 │   │   ├── hmhp_cascade_bare.yaml
 │   │   └── hmhp_cascade_regression.yaml   #   chains from bare (regression head added)
-│   ├── datasets/                          #   8 files — per-export bases
+│   ├── datasets/                          #   10 files — per-export bases
 │   │   ├── nvda_e4_5s.yaml
 │   │   ├── nvda_e5_30s.yaml
 │   │   ├── nvda_e5_60s.yaml
 │   │   ├── nvda_xnas_128feat_full.yaml
+│   │   ├── nvda_xnas_128feat_regression_fwd_prices_v3p0.yaml
+│   │   ├── nvda_xnas_148feat_regression_fwd_prices_v3p0.yaml
 │   │   ├── nvda_40feat_short_term.yaml
 │   │   ├── nvda_98feat_triple_barrier.yaml
 │   │   ├── nvda_98feat_zscore_per_day.yaml
@@ -45,16 +47,17 @@ configs/
 │   │   ├── tlob_smoothed.yaml
 │   │   ├── opportunity.yaml
 │   │   └── triple_barrier_volscaled.yaml
-│   └── train/                             #   4 files — training hyperparam bases
+│   └── train/                             #   5 files — training hyperparam bases
 │       ├── regression_default.yaml
 │       ├── classification_default.yaml
 │       ├── classification_triple_barrier.yaml
-│       └── tlob_paper_classification_train.yaml
+│       ├── tlob_paper_classification_train.yaml
+│       └── importance_default.yaml
 │   # Monolith bases/e5_tlob_regression.yaml was RETIRED 2026-04-15 at end of Batch 1.
 │
-├── experiments/                           # ✅ 42 in-scope ACTIVE configs
-│   #   25 migrated to axis-composed _base: [...] form (E4×1, E5×5, E6×1, HMHP×11, TLOB classif×7)
-│   #   17 standalone by design (baselines, XGBoost, archive-of-configs, niche HMHP, TLOB singletons)
+├── experiments/                           # ✅ 53 ACTIVE configs (`ls configs/experiments/*.yaml | wc -l`)
+│   #   ~25 migrated to axis-composed _base: [...] form (E4×1, E5×5, E6×1, HMHP×11, TLOB classif×7)
+│   #   the rest standalone by design (baselines, XGBoost, archive-of-configs, niche HMHP, TLOB singletons)
 │   #   See MERGE_MIGRATION_PLAN.md for the per-batch migration ledger.
 │
 └── archive/                               # 📦 REFERENCE configs (6) — legacy datasets, not in Phase 3 migration scope
@@ -188,8 +191,10 @@ multi-registry workflows.
 **Byte-parity guarantee**: trainer inlines `_compute_content_hash`
 (~10 LOC, torch-free, cross-venv independent from hft-ops). Parity
 against the producer's canonical form is locked by
-`tests/test_feature_set_resolver_parity.py` via
-`hft_contracts.canonical_hash` (the single source of truth).
+`tests/test_feature_set_resolver.py::TestCanonicalHashGolden` via
+`hft_contracts.canonical_hash` (the single source of truth). (The
+former `test_feature_set_resolver_parity.py` was deleted and replaced
+by that golden-hash test.)
 
 **Producing a FeatureSet** (from `hft-feature-evaluator`):
 
@@ -206,12 +211,14 @@ hft-ops evaluate \
 
 ## Datasets
 
-### Current Datasets (Use These)
+### Datasets
+
+> **⚠️ STALE (2026-07):** `nvda_11month_complete` (still the `DataConfig.data_dir` default in `schema.py`) and `nvda_11month_triple_barrier` are **no longer on disk**. The current on-disk baselines are the `e5_timebased_{5s,30s,60s}_v3p0` + `nvda_xnas_128feat_regression_fwd_prices_v3p0` exports (see root `CLAUDE.md` §Dataset Specification). Point new experiments at those; the rows below are retained as the historical label/horizon reference (and the examples throughout this file still use the historical `nvda_11month_complete` path).
 
 | Dataset | Days | Labels | Horizons | Status |
 |---------|------|--------|----------|--------|
-| `nvda_11month_complete` | **234** | TLOB (Down/Stable/Up) | [10, 20, 50, 100] | ✅ **PRIMARY** |
-| `nvda_11month_triple_barrier` | **234** | Triple Barrier (StopLoss/Timeout/ProfitTarget) | [50, 100, 200] | ✅ **PRIMARY** |
+| `nvda_11month_complete` | **234** | TLOB (Down/Stable/Up) | [10, 20, 50, 100] | ⚠️ legacy (absent from disk; superseded by v3p0) |
+| `nvda_11month_triple_barrier` | **234** | Triple Barrier (StopLoss/Timeout/ProfitTarget) | [50, 100, 200] | ⚠️ legacy (absent from disk; superseded by v3p0) |
 
 ### Legacy Datasets (Archive Reference Only)
 
@@ -223,9 +230,9 @@ hft-ops evaluate \
 
 ---
 
-## Active Experiment Configs (42 in-scope — 25 migrated + 17 standalone by design)
+## Active Experiment Configs (53 on disk — ~25 migrated + the rest standalone by design)
 
-42 experiment configs are ready to run on the current 233/234-day datasets. Phase 3 (2026-04-15) migrated 25 to the axis-composed `_base: [models/x, datasets/y, labels/z, train/w]` form across three batches:
+`configs/experiments/` holds **53** `*.yaml` configs (`ls configs/experiments/*.yaml | wc -l`). Phase 3 (2026-04-15) migrated ~25 to the axis-composed `_base: [models/x, datasets/y, labels/z, train/w]` form across three batches:
 
 - **Batch 1** (E-family): E4×1 + E5×5 + E6×1 = 7 configs
 - **Batch 2** (HMHP): HMHP classification×6 + HMHP regression×2 + HMHP TB×3 = 11 configs
@@ -299,6 +306,7 @@ data:
 | `model_type` | Architecture | Features Used | Reference |
 |--------------|--------------|---------------|-----------|
 | `tlob` | Transformer with dual attention | All 98-148 | Berti & Kasneci (2025) |
+| `mlplob` | MLP-only dual-axis (TLOB-shaped, no attention) | All 98-148 | Berti & Kasneci (2025) |
 | `deeplob` | CNN + Inception + LSTM | First 40 (LOB only) or all | Zhang et al. (2019) |
 | `lstm` | Stacked LSTM | All 98-148 | Hochreiter & Schmidhuber (1997) |
 | `gru` | Stacked GRU | All 98-148 | Cho et al. (2014) |
@@ -307,6 +315,8 @@ data:
 | `logistic` | Logistic Regression | Single snapshot | sklearn |
 | `temporal_ridge` | Ridge + temporal features | 53 temporal features | sklearn |
 | `temporal_gradboost` | GradientBoosting + temporal features | 53 temporal features | sklearn |
+
+> `ModelType` also defines `xgboost` (NOT dispatched by the standard trainer — train via `scripts/analysis/train_xgboost_baseline.py`) and `transformer` (NOT IMPLEMENTED — raises at construction).
 
 ---
 
@@ -331,6 +341,8 @@ data:
 | `mse` | Regression | N/A |
 | `huber` | Regression (robust to outliers) | N/A (delta parameter) |
 | `heteroscedastic` | Regression with uncertainty | N/A (learns variance) |
+| `gmadl` | Regression (directional reward) | N/A (Generalized Mean Absolute Directional Loss) |
+| `pinball` | Regression (quantile/distributional) | N/A — model head must emit `[B, Q]` quantiles (VARIANCE-DL) |
 
 ```yaml
 # Focal loss example
@@ -390,7 +402,7 @@ data:
 # Model Configuration
 # =============================================================================
 model:
-  model_type: tlob  # Options: tlob, deeplob, lstm, gru, hmhp, hmhp_regression, temporal_ridge, temporal_gradboost, logistic
+  model_type: tlob  # Options: tlob, mlplob, deeplob, lstm, gru, hmhp, hmhp_regression, temporal_ridge, temporal_gradboost, logistic (xgboost via scripts/analysis/train_xgboost_baseline.py only)
   input_size: 98
   num_classes: 3
   dropout: 0.1
@@ -420,7 +432,7 @@ train:
   seed: 42
   
   # Loss configuration
-  loss_type: weighted_ce  # Options: cross_entropy, weighted_ce, focal, mse, huber, heteroscedastic
+  loss_type: weighted_ce  # Options: cross_entropy, weighted_ce, focal, mse, huber, heteroscedastic, gmadl, pinball
   use_class_weights: true
   task_type: multiclass   # Options: multiclass, binary_signal, regression
 
@@ -482,7 +494,7 @@ python scripts/train.py --config configs/experiments/nvda_tlob_h20_v1.yaml
 
 ---
 
-## Dataset Schema (v2.2)
+## Dataset Schema (v3.0)
 
 All datasets follow this contract:
 - **Features**: 98 per timestep
@@ -492,7 +504,7 @@ All datasets follow this contract:
   - 84-97: Trading signals (OFI, asymmetry, etc.)
 - **Sequences**: `[N_seq, 100, 98]`
 - **Labels**: `[N_seq]` or `[N_seq, n_horizons]`
-- **Normalization**: Market-structure preserving z-score
+- **Normalization**: per-day z-score (`NormalizationConfig.strategy` default = `zscore_per_day`; the legacy `market_structure_zscore` path is deprecated per root CLAUDE.md T15)
 
 See `plan/03-FEATURE-INDEX-MAP-v2.md` for complete feature index mapping.
 
@@ -501,7 +513,7 @@ See `plan/03-FEATURE-INDEX-MAP-v2.md` for complete feature index mapping.
 ## Related Documentation
 
 - **`configs/bases/README.md`** — Full 4-axis ownership matrix, per-base inventory, chained-inheritance pattern docs.
-- **`../MERGE_MIGRATION_PLAN.md`** — Phase 3 migration ledger: v1→v2 merge.py retirement, monolith decomposition, per-batch migration status (25/42 in-scope).
-- **`../CHANGELOG.md`** — Per-release change log (current 0.4.0, 2026-04-15 — Phase 3 config composition).
+- **`../MERGE_MIGRATION_PLAN.md`** — Phase 3 migration ledger: v1→v2 merge.py retirement, monolith decomposition, per-batch migration status (25 of the 42 then-in-scope configs; `configs/experiments/` now holds 53 total).
+- **`../CHANGELOG.md`** — Per-release change log (package `__version__` 0.7.0; latest documented cycle `[0.7.1]` Phase G schema 3.0 + `[Unreleased]` entries through 2026-07).
 - **`../src/lobtrainer/config/archive/merge-v1/ARCHIVE_README.md`** — Archived v1 `merge.py` (single-string `_base:` only). Loaded via `importlib` from parity tests only; mirrors `feature-extractor-MBO-LOB/archive/monolith-v1/` precedent.
 - **`../CODEBASE.md` §5 (Configuration System)** — Technical reference for `ExperimentConfig` / `DataConfig` / `ModelConfig` / `TrainConfig` dataclasses + `_base:` resolution internals.

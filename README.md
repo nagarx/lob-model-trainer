@@ -7,7 +7,7 @@ Machine learning experimentation for short-term price prediction — the trainin
 
 > **Pipeline scope (2026-06-02).** This module is part of an **intraday trading research pipeline** — an experiment-first platform for discovering and validating *any* profitable **intraday** trading edge (no overnight positions), across approach classes (microstructure/HFT, scalping, intraday momentum, intraday statistical arbitrage, …) and instruments (equities, futures, same-day options). The pipeline *originated* as a high-frequency NVDA MBO/LOB microstructure system — that origin explains the "HFT" / "LOB" / "MBO" naming here — and that microstructure-direction program is now one (largely-closed) track among many. **Names are historical; the mission is general.** This module's role: the Python training engine — data loaders, training loops, purged-CV, train-only normalization, callbacks, signal export, and ExperimentSpec orchestration; trains single-asset models at any intraday horizon (cross-sectional / panel training + ranking losses are a build per register §9). For the full mission + approach taxonomy + capability-readiness boundary, see root `CLAUDE.md` §Research Scope & Charter (+ `CROSS_ASSET_OFI_FINDINGS_AND_ISSUES_2026_06_01.md` §9).
 
-**Version**: 0.7.1 | **Schema**: 3.0 (Phase G G.6.A bump per CLAUDE.md root rule: any modification to stable features 0-97 = MAJOR) | **Tests**: 1432 (1367 passed + 65 skipped)
+**Version**: 0.7.0 (`pyproject.toml` + `__init__.__version__`; the Phase G G.6.A schema-3.0 work is logged under `[0.7.1]` in `CHANGELOG.md` but the `__version__` bump was never applied) | **Schema**: 3.0 (Phase G G.6.A bump per CLAUDE.md root rule: any modification to stable features 0-97 = MAJOR) | **Tests**: run `pytest --collect-only -q` for the live count (~2020 across 82 `tests/test_*.py` files; hand-typed counts not maintained per hft-rules §11)
 
 ---
 
@@ -17,7 +17,7 @@ This package trains neural-network and baseline models on LOB feature data expor
 
 ### Key Features
 
-- **Multiple architectures** — LSTM, GRU, DeepLOB, TLOB, HMHP, HMHP-R, LogisticLOB, XGBoostLOB, TemporalRidge, TemporalGradBoost (via `lob-models`)
+- **Multiple architectures** — LSTM, GRU, DeepLOB, TLOB, MLPLOB, HMHP, HMHP-R, LogisticLOB, XGBoostLOB, TemporalRidge, TemporalGradBoost (11 registered via `lob-models`; `xgboost` trains only via `scripts/analysis/train_xgboost_baseline.py`, not the standard trainer path)
 - **Dual task support** — classification (multiclass, binary) + regression (continuous bps returns)
 - **Strategy Pattern** — 4 concrete strategies (Classification, Regression, HMHPClassification, HMHPRegression); see `src/lobtrainer/training/strategies/`
 - **Phase 3 multi-base config composition** — `_base:` YAML inheritance with axis-ownership enforcement
@@ -27,7 +27,7 @@ This package trains neural-network and baseline models on LOB feature data expor
 - **Phase 2b T14 experiment gates** — mandatory pre-training IC gate (rule §13)
 - **Phase 7 Stage 7.4 Round 4** — `test_metrics.json` persistence for PyTorch Trainer (feeds `hft-ops` PostTrainingGateRunner)
 - **Advanced monitoring** — gradient tracking, learning rate monitoring, training diagnostics
-- **Multiple losses** — CrossEntropy, Focal, WeightedCE, MSE, Huber, Heteroscedastic, GMADL
+- **Multiple losses** — `LossType` has 8 members: CrossEntropy, Focal, WeightedCE, MSE, Huber, Heteroscedastic, GMADL, Pinball (the quantile/distributional head; regression losses beyond Focal are computed model-side via `lob-models`)
 
 ---
 
@@ -83,13 +83,16 @@ python scripts/export_signals.py --checkpoint outputs/.../best.pt --split test
 ```
 lob-model-trainer/
 ├── src/lobtrainer/
-│   ├── __init__.py                  # Public API (v0.4.0)
+│   ├── __init__.py                  # Public API (__version__ = "0.7.0")
 │   ├── config/                      # Configuration schema + composition
 │   │   ├── schema.py                # ExperimentConfig, DataConfig (3-field mutex:
 │   │   │                            #   feature_set / feature_preset / feature_indices),
 │   │   │                            #   ModelConfig, CVConfig, LabelsConfig
-│   │   └── merge.py                 # Phase 3 multi-base `_base:` composition +
-│   │                                # is_partial_base guard (6A.5 M6 dict-guard)
+│   │   ├── merge.py                 # Phase 3 multi-base `_base:` composition +
+│   │   │                            # is_partial_base guard (6A.5 M6 dict-guard)
+│   │   ├── base.py                  # SafeBaseModel (Pydantic v2 base — frozen/extra=forbid/strict)
+│   │   ├── experiment_spec.py       # T14 ExperimentSpec (config + gate bundle)
+│   │   └── paths.py                 # resolve_labels_config() — canonical config.data.labels router
 │   ├── constants/                   # Feature indices + presets (via hft-contracts SSoT)
 │   │   ├── feature_index.py         # Re-exports FeatureIndex, SignalIndex from hft_contracts
 │   │   └── feature_presets.py       # Named feature subsets; DEPRECATED 2026-04-15,
@@ -110,6 +113,9 @@ lob-model-trainer/
 │   │   ├── trainer.py               # Trainer class (PyTorch epoch loop)
 │   │   ├── simple_trainer.py        # SimpleModelTrainer (TemporalRidge, GradBoost)
 │   │   ├── cv_trainer.py            # T11 CVTrainer (purged k-fold + embargo)
+│   │   ├── gates.py                 # T14 run_signal_quality_gate + GateResult (pre-training IC gate)
+│   │   ├── exceptions.py            # TrainingDivergedError, MonitorMetricUndefined, DegenerateFeatureError
+│   │   ├── importance/              # PermutationImportanceCallback (emits FeatureImportanceArtifact)
 │   │   ├── strategy.py              # Strategy ABC + create_strategy dispatch
 │   │   ├── strategies/              # 4 concrete strategies (Phase 2 refactor)
 │   │   │   ├── classification.py
@@ -120,20 +126,21 @@ lob-model-trainer/
 │   │   ├── regression_evaluation.py # RegressionMetrics dataclass
 │   │   ├── metrics.py               # MetricsCalculator, ClassificationMetrics
 │   │   ├── callbacks.py             # EarlyStopping, ModelCheckpoint, MetricLogger, ProgressCallback
-│   │   ├── loss.py                  # FocalLoss, BinaryFocalLoss, Huber, GMADL, Pinball
+│   │   ├── loss.py                  # FocalLoss, BinaryFocalLoss, create_focal_loss (classification only;
+│   │   │                            #   Huber/GMADL/Pinball are regression losses provided by lob-models)
 │   │   ├── evaluation.py            # BaselineReport, evaluate_model
 │   │   └── monitoring.py            # GradientMonitor, LearningRateTracker, TrainingDiagnostics
 │   ├── export/                      # Signal export for backtester
 │   │   ├── exporter.py              # SignalExporter (predictions, calibration, feature_set_ref)
 │   │   └── metadata.py              # signal_metadata.json writer (Phase 4 4c.4 feature_set_ref)
-│   ├── experiments/                 # Experiment tracking (legacy; migrates to hft-ops ledger)
-│   │   ├── experiment_spec.py       # T14 ExperimentSpec (config + gates)
-│   │   ├── gates.py                 # T14 signal-quality gate library
+│   ├── experiments/                 # Experiment tracking (LEGACY local schema; canonical is
+│   │   │                            #   hft_contracts.ExperimentRecord — retires to hft-ops, #PY-384)
 │   │   ├── result.py                # ExperimentResult, ExperimentMetrics
 │   │   └── registry.py              # ExperimentRegistry (Phase 7 Stage 7.3 retires to hft-ops)
+│   ├── analysis/stat_rigor/         # Bootstrap-CI (ci.py) + K-way pairwise compare (pairwise.py)
 │   ├── calibration/                 # Signal calibration (variance-match, etc.)
 │   ├── cli.py                       # Legacy CLI (use hft-ops or scripts/ instead)
-│   ├── _hft_ops_compat.py           # HFT_OPS_ORCHESTRATED=1 env marker check
+│   ├── ledger_hook.py               # write_minimal_ledger_record (#PY-223; delegates to hft-contracts SSoT)
 │   └── utils/                       # Utilities
 │       └── reproducibility.py       # set_seed, SeedManager
 ├── scripts/                         # PRODUCTION INFRA (hft-rules §4)
@@ -149,15 +156,16 @@ lob-model-trainer/
 │       ├── run_simple_training.py
 │       └── run_experiment_spec.py
 ├── configs/
-│   ├── bases/                       # 21 axis-partitioned base configs (Phase 3)
+│   ├── bases/                       # 24 axis-partitioned base configs (Phase 3): models=5,
+│   │   │                            #   datasets=10, labels=4, train=5
 │   │   ├── README.md                # Axis-ownership rules (datasets / models / labels / train)
 │   │   ├── models/*.yaml
 │   │   ├── datasets/*.yaml
 │   │   ├── labels/*.yaml
 │   │   └── train/*.yaml
-│   ├── experiments/                 # 40 experiment configs (25 multi-base + 15 standalone)
+│   ├── experiments/                 # 53 experiment configs (`ls configs/experiments/*.yaml | wc -l`)
 │   └── archive/                     # Legacy reference configs
-├── tests/                           # 1149 tests collected (1084 passed + 65 skipped)
+├── tests/                           # run `pytest --collect-only -q` for the live count (~2020, 82 files)
 ├── EXPERIMENT_INDEX.md              # Living experiment ledger
 ├── CODEBASE.md                      # Detailed module reference
 └── pyproject.toml
@@ -366,8 +374,9 @@ if features[i, FeatureIndex.MBO_READY] < 0.5:
 cd lob-model-trainer
 pytest tests/ -v
 
-# Expected: 1149 collected (1084 passed + 65 skipped)
-# Skips: 15 real-data integration tests + 14 v1-archive parity tests (retired) + misc
+# For the live collected/passed/skipped count, run: pytest --collect-only -q
+# (~2020 tests across 82 tests/test_*.py files; hand-typed counts not maintained per hft-rules §11)
+# Skips: real-data integration tests + retired v1-archive parity tests + misc
 ```
 
 ---
@@ -416,7 +425,7 @@ pytest tests/ -v
 
 | Version | Schema | Changes |
 |---------|--------|---------|
-| **0.7.1** | 3.0 | REV 3.1 Phase G G.6.A bump 2.2 → 3.0 (MAJOR per CLAUDE.md root rule: any modification to stable features 0-97 = BREAKING). Phase G.1 dropped in-NPY schema_version emission (RESERVED 0.0 at idx 97); JSON metadata is canonical SSoT. Phase G.6.D regenerated 3 production FeatureSet content_hashes + trainer golden hash rotation. Phase G.6.F + G.7 fixture cascade (analyzer 358 / hft-contracts 518 / trainer 1367 / hft-ops 633 / Rust 800 = 3,676 tests passing post-cascade). +2 xfailed for legacy-corpus xfail markers per Phase G+1 deferral. |
+| **0.7.1** *(changeset logged in CHANGELOG; package `__version__` is still 0.7.0 — the bump was never applied)* | 3.0 | REV 3.1 Phase G G.6.A bump 2.2 → 3.0 (MAJOR per CLAUDE.md root rule: any modification to stable features 0-97 = BREAKING). Phase G.1 dropped in-NPY schema_version emission (RESERVED 0.0 at idx 97); JSON metadata is canonical SSoT. Phase G.6.D regenerated 3 production FeatureSet content_hashes + trainer golden hash rotation. Phase G.6.F + G.7 fixture cascade (analyzer 358 / hft-contracts 518 / trainer 1367 / hft-ops 633 / Rust 800 = 3,676 tests passing post-cascade). +2 xfailed for legacy-corpus xfail markers per Phase G+1 deferral. |
 | **0.7.0** | 2.2 | Phase A.5 Scope D (Pydantic v2 migration). All 9 config classes migrated from dataclass+dacite to Pydantic v2 SafeBaseModel. 4 bug classes retired at TYPE layer. |
 | **0.4.0** | 2.2 | Strategy Pattern refactoring (4 concrete strategies), Model Registry integration, Phase 3 multi-base `_base:` composition (21 axis-partitioned bases, monolith retired 2026-04-15), Phase 4 Batch 4c FeatureSet registry consumer (`DataConfig.feature_set` + `feature_set_resolver.py` + canonical_hash parity lock via hft_contracts SSoT), Phase 4 4c.4 `signal_metadata.json` feature_set_ref propagation, Phase 6 6B.2 trainer inline `_compute_content_hash` retired (delegates to hft_contracts), Phase 6 6D 5 experimental fossils archived, Phase 7 Stage 7.1 5 config migrations from `feature_preset:` → `feature_set:` (+ 14 parity tests), Phase 7 Stage 7.4 Round 4 `scripts/train.py::_dump_test_metrics` (`test_metrics.json` persistence for PyTorch Trainer), 1149 tests |
 | 0.3.0 | 2.1 | Strategy-aware metrics, Focal Loss, TLOB support |

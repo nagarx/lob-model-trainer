@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Phase-1 ledger freeze + `LossType.PINBALL` (2026-07-05, commit `7185b51`)
+
+**Added — `LossType.PINBALL = "pinball"`** (`src/lobtrainer/config/schema.py`)
+- New public enum variant: the pinball / quantile (distributional) regression head (Koenker-Bassett 1978; Zhang-Zohren-Roberts 2019). Impl lives in `lobmodels.losses.pinball.PinballLoss`; the model head must emit `[B, Q]` quantiles. Added for the VARIANCE-DL probe.
+- Registered in `TrainConfig._REGRESSION_LOSSES` (now `{MSE, HUBER, HETEROSCEDASTIC, GMADL, PINBALL}`), so `task_type: regression` accepts it. `LossType` now has **8** members. (`GMADL` was already present; both are documented in `CODEBASE.md` §5 + `configs/README_configs.md`.)
+
+**Changed — Phase-1 ledgers frozen, point to the wiki** (`EXPERIMENT_INDEX.md`, `reports/CONSOLIDATED_FINDINGS_2026_05.md`)
+- Both docs are FROZEN at the Phase-1 / E–R-series boundary (~2026-05) and now carry banners redirecting to `hft-wiki/FINDINGS_MASTER_REGISTER.md` as the current authoritative research register (the 2026-06/07 discovery arc is recorded there + in the discovery `results/*.json`, not in these ledgers).
+
 ### Option B Path B' TIER 1 Hygiene Bundle (2026-05-16 LATE) — #PY-291 RCE-via-NPY closure
 
 **Shipped — closes #PY-291 (RCE-via-malicious-NPY class still open in trainer post-FIND-110)** via Wave 2-C hidden findings hunt of 2026-05-16 Cross-Pipeline Validation cycle. Sister of `lob-backtester` FIND-110 closure (commit `20dbc8f` 2026-05-14).
