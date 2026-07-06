@@ -58,7 +58,7 @@ If a researcher accidentally runs `ExperimentConfig.from_yaml("bases/models/tlob
 
 ## Current Inventory (2026-04-15, post-Batch-3 + monolith retirement)
 
-**21 axis-partitioned bases.** Monolith `e5_tlob_regression.yaml` RETIRED.
+**24 axis-partitioned bases.** Monolith `e5_tlob_regression.yaml` RETIRED.
 
 ### models/ (5)
 | File | Used by |
@@ -69,7 +69,7 @@ If a researcher accidentally runs `ExperimentConfig.from_yaml("bases/models/tlob
 | `models/hmhp_cascade_bare.yaml` | HMHP classification (6), HMHP TB (3), HMHP hybrid (1) — 10 of 11 HMHP configs |
 | `models/hmhp_cascade_regression.yaml` | HMHP regression (2) — chains from `hmhp_cascade_bare.yaml`, adds `model_type: hmhp_regression` + `hmhp_regression_loss_type: huber` |
 
-### datasets/ (8)
+### datasets/ (10)
 | File | Used by |
 |---|---|
 | `datasets/nvda_e4_5s.yaml` | E4 TLOB (1) |
@@ -80,6 +80,8 @@ If a researcher accidentally runs `ExperimentConfig.from_yaml("bases/models/tlob
 | `datasets/nvda_98feat_triple_barrier.yaml` | HMHP TB (3) |
 | `datasets/nvda_98feat_zscore_per_day.yaml` | TLOB classif h10_v1, h100_v1 (2) — zscore_per_day normalization with exclude=[93] |
 | `datasets/nvda_40feat_tlob_repo.yaml` | TLOB classif repo_match_h50, v2_h100 (2) — matches official TLOB repo preprocessing (global_zscore, clip=null) |
+| `datasets/nvda_xnas_128feat_regression_fwd_prices_v3p0.yaml` | TemporalRidge H10 v3p0 (`nvda_temporal_ridge_h10_v3p0`) — 128-feat regression v3p0 baseline export |
+| `datasets/nvda_xnas_148feat_regression_fwd_prices_v3p0.yaml` | FeatureSet-integration 148feat Ridge (`featureset_integration_148feat_ridge`) — 148-feat regression v3p0 export |
 
 ### labels/ (4)
 | File | Used by |
@@ -89,13 +91,14 @@ If a researcher accidentally runs `ExperimentConfig.from_yaml("bases/models/tlob
 | `labels/opportunity.yaml` | HMHP opportunity (1) |
 | `labels/triple_barrier_volscaled.yaml` | HMHP TB (3) — intentionally OMITS `horizon_idx` |
 
-### train/ (4)
+### train/ (5)
 | File | Used by |
 |---|---|
 | `train/regression_default.yaml` | All regression (E-family + HMHP reg) |
 | `train/classification_default.yaml` | HMHP classification (6) |
 | `train/classification_triple_barrier.yaml` | HMHP TB (3) — focal loss regime (focal_gamma, longer training, smaller batch) |
 | `train/tlob_paper_classification_train.yaml` | TLOB paper classif (7) — distinct recipe (batch=64, lr=1e-4, epochs=50) vs HMHP classification |
+| `train/importance_default.yaml` | Any experiment adding a post-training permutation-importance audit — owns the top-level `importance:` block (orthogonal to `train.*`) |
 
 ### Chained-inheritance patterns
 
@@ -136,7 +139,7 @@ A future maintainer who mistakenly violates the split will fail CI immediately w
 **Batch 4 (Baselines, 7 configs):**
 - `models/logistic_baseline.yaml`, `models/temporal_ridge.yaml`, `models/temporal_gradboost.yaml`
 
-Migration progress (post-Batch-3 + monolith retirement): **25 of 42** in-scope configs migrated. **21 axis-partitioned bases** covering 3 model families (TLOB compact regression, TLOB paper classification, HMHP cascade). 17 configs stay standalone by design (baselines, XGBoost, archive, 2 niche HMHP). See `MERGE_MIGRATION_PLAN.md` for per-batch status and retirement record.
+Migration progress (post-Batch-3 + monolith retirement): **25 of 42** in-scope configs migrated. **24 axis-partitioned bases** covering 3 model families (TLOB compact regression, TLOB paper classification, HMHP cascade). 17 configs stay standalone by design (baselines, XGBoost, archive, 2 niche HMHP). See `MERGE_MIGRATION_PLAN.md` for per-batch status and retirement record.
 
 ## Related Docs
 

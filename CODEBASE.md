@@ -21,7 +21,7 @@
 > **New in 0.4.0 (cumulative through Phase 7 Stage 7.4 Round 4)**:
 > - Phase 2 Strategy Pattern refactoring — Trainer decomposed from 1,657L; 4 concrete strategies (Classification, Regression, HMHPClassification, HMHPRegression) under `src/lobtrainer/training/strategies/`. Model Registry integration via lob-models.
 > - Phase 2b — `CVTrainer` (purged k-fold + embargo, T11), `sample_weights` (T10 de Prado AFML 4.5.1), data sources abstraction + bundle (T12 multi-source), experiment_spec + gates (T14 pre-training IC gate).
-> - Phase 3 — multi-base config composition via `_base:` YAML inheritance (21 axis-partitioned bases, monolith retired 2026-04-15); 6A.5 M6 `yaml.safe_load` dict-guard; 6A.7 `data.feature_set` + `data.feature_sets_dir` axis ownership.
+> - Phase 3 — multi-base config composition via `_base:` YAML inheritance (24 axis-partitioned bases, monolith retired 2026-04-15); 6A.5 M6 `yaml.safe_load` dict-guard; 6A.7 `data.feature_set` + `data.feature_sets_dir` axis ownership.
 > - Phase 4 Batch 4c — FeatureSet registry consumer: `DataConfig.feature_set` field (3-field mutual exclusion with `feature_preset` + `feature_indices`), `feature_set_resolver.py` walks up to `contracts/feature_sets/`, verifies `content_hash` via hft_contracts canonical_hash SSoT. Batch 4c.4: `signal_metadata.json::feature_set_ref` propagation to backtester.
 > - Phase 6 6B.2 — trainer inline `_compute_content_hash` retired; delegates to `hft_contracts.canonical_hash`. Golden-fixture drift detector at `tests/test_feature_set_resolver.py::TestCanonicalHashGolden`.
 > - Phase 6 6D — 5 experimental fossils archived under `scripts/archive/` with fossil headers + migration map per hft-rules §4.
@@ -71,7 +71,7 @@ Python library for training and evaluating ML models on LOB (Limit Order Book) d
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Strategy Pattern** | ✅ Complete | 4 strategies: Classification, Regression, HMHPClassification, HMHPRegression |
-| **Trainer Orchestrator** | ✅ Complete | 900L (was 1,657L), zero task-branching, delegates to strategy |
+| **Trainer Orchestrator** | ✅ Complete | ~1.9K L — run `wc -l`, zero task-branching, delegates to strategy |
 | **All Models via lob-models** | ✅ Complete | 11 registered models (TLOB, DeepLOB, MLPLOB, HMHP, HMHP-R, LSTM, GRU, LogisticLOB, XGBoostLOB, Ridge, GradBoost) — per `../lob-models/src/lobmodels/registry/_snapshot.json` `model_count: 11`. NOTE: `xgboost` is registered but NOT dispatched by `create_strategy` — train it via `scripts/analysis/train_xgboost_baseline.py`, not the standard trainer path |
 | **Strategy-Aware Metrics** | ✅ Complete | MetricsCalculator for TLOB/Triple Barrier/Opportunity |
 | **Focal Loss** | ✅ Complete | For class imbalance handling |
@@ -154,7 +154,7 @@ src/lobtrainer/
 │   │   ├── regression.py          # RegressionStrategy (model.compute_loss)
 │   │   ├── hmhp_classification.py # HMHPClassificationStrategy (per-horizon)
 │   │   └── hmhp_regression.py     # HMHPRegressionStrategy (per-horizon regression)
-│   ├── trainer.py                 # Trainer orchestrator (900L), delegates to strategy
+│   ├── trainer.py                 # Trainer orchestrator (~1.9K L — run `wc -l`), delegates to strategy
 │   ├── cv_trainer.py              # T11 CVTrainer (purged k-fold + embargo), FoldResult, CVResults
 │   ├── base.py                    # TrainingState + shared training base surface
 │   ├── compatibility.py          # CompatibilityContract / fingerprint surface
@@ -523,8 +523,10 @@ class DataConfig:
 ```python
 class ModelType(str, Enum):        # 12 members
     LOGISTIC = "logistic"
-    XGBOOST = "xgboost"      # NOT in the ModelRegistry / NOT dispatched by create_strategy —
-                            #   train via scripts/analysis/train_xgboost_baseline.py, not the standard path
+    XGBOOST = "xgboost"      # Registered in lob-models ModelRegistry as 'xgboost_lob', but
+                            #   ModelType.XGBOOST → config.name 'xgboost' ≠ the registry key 'xgboost_lob',
+                            #   so create_strategy's ModelRegistry.get('xgboost') KeyErrors → NOT reachable
+                            #   via the standard create_strategy path — train via scripts/analysis/train_xgboost_baseline.py
     LSTM = "lstm"
     GRU = "gru"
     TRANSFORMER = "transformer"  # NOT IMPLEMENTED — reserved for future use
@@ -652,14 +654,14 @@ Phase 3 (2026-04-15) promoted `_base:` to a first-class multi-base composition m
 
 ### Axis-Partitioned Bases (`configs/bases/`) — Phase 3
 
-21 orthogonal base configs across 4 axes (see `configs/bases/README.md` for the complete ownership matrix and rule):
+24 orthogonal base configs across 4 axes (see `configs/bases/README.md` for the complete ownership matrix and rule):
 
 | Axis | Count | Owns (high-level) | Must NOT set |
 |------|-------|---|---|
 | `models/` | 5 | `model.model_type`, `model.dropout`, `model.tlob_*`, `model.hmhp_*`, `model.regression_loss_type` | `model.num_classes`, `model.input_size`, `train.task_type`, `train.loss_type`, `train.batch_size` |
-| `datasets/` | 8 | `data.data_dir`, `data.feature_count`, `data.normalization`, `data.sequence`, `model.input_size` (T13 auto-derivation) | `data.labeling_strategy`, `data.horizon_idx`, `model.num_classes` |
+| `datasets/` | 10 | `data.data_dir`, `data.feature_count`, `data.normalization`, `data.sequence`, `model.input_size` (T13 auto-derivation) | `data.labeling_strategy`, `data.horizon_idx`, `model.num_classes` |
 | `labels/` | 4 | `data.labeling_strategy`, `data.horizon_idx`, `data.num_classes`, `model.num_classes`, `train.task_type`, `train.loss_type` (task-coupled) | `model.*` (other than num_classes), `data.feature_count` |
-| `train/` | 4 | `train.batch_size`, `train.epochs`, `train.optimizer`, `train.scheduler`, `train.learning_rate`, `train.weight_decay`, `train.seed`, `train.gradient_clip_norm`, `train.use_class_weights`, `train.focal_gamma` | `train.task_type`, `train.loss_type`, `model.*`, `data.*` |
+| `train/` | 5 | `train.batch_size`, `train.epochs`, `train.optimizer`, `train.scheduler`, `train.learning_rate`, `train.weight_decay`, `train.seed`, `train.gradient_clip_norm`, `train.use_class_weights`, `train.focal_gamma` | `train.task_type`, `train.loss_type`, `model.*`, `data.*` |
 
 **Per-child (NOT in any base)**: `name`, `description`, `tags`, `output_dir`, `log_level`.
 
@@ -938,7 +940,7 @@ The Trainer delegates all task-specific logic to a `TrainingStrategy` subclass, 
 
 Each strategy implements: `process_batch()`, `aggregate_epoch_metrics()`, `validate()`, `evaluate()`, `predict()`.
 
-The Trainer (900L) handles the outer loop: epochs, callbacks, scheduling, checkpointing. Zero task-branching remains in the Trainer itself.
+The Trainer (~1.9K L — run `wc -l`) handles the outer loop: epochs, callbacks, scheduling, checkpointing. Zero task-branching remains in the Trainer itself.
 
 ### ModelConfig (Phase 3)
 
