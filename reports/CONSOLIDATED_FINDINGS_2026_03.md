@@ -382,7 +382,7 @@ The ReadabilityHybridStrategy (HMHP direction + Ridge magnitude) at best config 
 - **subpenny_intensity IC=+0.104 at H=60 (1 hr)** — INCREASES with horizon (slow-moving state variable, NOT contemporaneous). Remarkably stable across lags.
 - **dark_share IC=+0.051 at H=1** — short-term regime signal, sign-flips at H=60 (mean-reverts).
 
-The original E9 conclusion evaluated only H=10. The signals exist but at different timescales than initially tested. Architecture plan created: `off-exchange-approach/` (7 design docs, 6,982 lines). `basic-quote-processor` Rust crate designed with 34 features. See `off-exchange-approach/04_FEATURE_SPECIFICATION.md` Section 10 for full cross-validation results.
+The original E9 conclusion evaluated only H=10. The signals exist but at different timescales than initially tested. Architecture plan created: `.archive/2026-07-07-curation/off-exchange-approach/` (7 design docs, 6,982 lines; the maintained canonical is `basic-quote-processor/docs/design/`). `basic-quote-processor` Rust crate designed with 34 features. See `basic-quote-processor/docs/design/04_FEATURE_SPECIFICATION.md` Section 10 for full cross-validation results.
 
 ---
 

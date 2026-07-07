@@ -518,7 +518,7 @@ The calibration successfully corrected prediction magnitudes (std 7.35 → 27.41
 
 | Field | Value |
 |---|---|
-| **Hypothesis** | Simple rule-based regime gating (using depth_norm_ofi, spread_bps, volume_imbalance, order_flow_volatility quartiles) improves simplified model win rate by >= 3pp, validating the regime detection architecture (final_plan/) before Rust implementation. |
+| **Hypothesis** | Simple rule-based regime gating (using depth_norm_ofi, spread_bps, volume_imbalance, order_flow_volatility quartiles) improves simplified model win rate by >= 3pp, validating the regime detection architecture (.archive/2026-07-07-curation/final_plan/) before Rust implementation. |
 | **Method** | Simplified trade PnL: `trade_pnl = sign(calibrated_returns) * regression_labels - 1.4 bps`. 17 gating strategies evaluated (4 single-feature, 3 two-feature combos, 3 multi-feature combos, 7 percentile sweeps). Decision gate: WR improvement >= 3pp + Wilson 95% CI non-overlapping + 60% days improved. |
 | **Data** | E6 calibrated signals (8,337 test, 35 days) + E5 test features (98 feat, unnormalized) + E5 train features (163 days, 39,749 samples for quartile boundaries). |
 | **Model** | E5 best: TLOB 92K params, IC=0.380, DA=0.640 (same as E6, no retraining). |

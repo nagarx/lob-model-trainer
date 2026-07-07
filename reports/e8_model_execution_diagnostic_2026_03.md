@@ -158,7 +158,7 @@ The closest is active_order_count Q1 at 51.2% — within sampling noise of 50%.
 
 ### For the Regime Detection Project
 
-The regime architecture (CUSUM, BOCPD, HMM, Hawkes, BPV in final_plan/) is **architecturally sound** for a model that can predict point-return direction:
+The regime architecture (CUSUM, BOCPD, HMM, Hawkes, BPV in .archive/2026-07-07-curation/final_plan/) is **architecturally sound** for a model that can predict point-return direction:
 - OFI ACF validates 60s-bin cadence
 - Student-t validates probabilistic likelihood choice
 - EWMA whitening works (though may be unnecessary)
