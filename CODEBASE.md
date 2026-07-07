@@ -5,7 +5,7 @@
 > **Version**: 0.7.0 (Phase A.5 Scope D v2 Pydantic migration — 2026-04-25)  
 > **Schema**: 3.0 (Phase G G.6.A bump 2.2 → 3.0 MAJOR per CLAUDE.md root rule: any modification to stable features 0-97 = BREAKING; via `hft-contracts` package, `hft-contracts>=2.8.0` runtime dep per `pyproject.toml`)  
 > **Tests**: run `pytest --collect-only -q` for the live count (~2020 across 82 `tests/test_*.py` files, 0 errors — hand-typed counts are NOT maintained here per hft-rules §11) — Phase A.5 Scope D v2 adds 9 Pydantic-migration commits (A.5.3a-i) + 3 post-audit commits (A.5.7a-c): SafeBaseModel base class with `_canonical_form()` SSoT + `__pydantic_init_subclass__` auto-registry (`config/base.py`); parametric pickle/deepcopy/partial-base-rejection tests over auto-registry; full `Trainer.setup() + SignalExporter.export()` integration test in `tests/test_signal_exporter_integration.py` (`@pytest.mark.integration`); `LabelsConfig.validate_primary_horizon_idx_for()` bounds-validation method; `CalibrationContext` TypedDict.  
-> **Last Updated**: 2026-04-25 (Phase A.5 Scope D v2 — Pydantic v2 migration COMPLETE: all 9 config classes inherit from `SafeBaseModel(BaseModel)` with `ConfigDict(frozen=True, extra="forbid", strict=True)` (exactly 3 flags — `validate_assignment` and `arbitrary_types_allowed` are deliberately NOT set, per `config/base.py`); `dacite>=1.8` DROPPED; `pydantic>=2.7,<3.0` pinned with explicit upper bound; `hatchling>=1.26` build-constraint. Four bug classes retired at TYPE layer: canonical-path-drift, silent mutation, extra-field acceptance, silent-None field access. 5-agent adversarial audit (A.5.7a-c) closed 4 ship-blockers (SB-1 canonical-form SSoT, SB-2 composite pickle/deepcopy, SB-3 full Trainer+export integration, SB-4 parametric partial-base rejection). See CHANGELOG.md v0.7.0 + `/contracts/pipeline_contract.toml` v2.26 + `/PIPELINE_ARCHITECTURE.md` §11 Configuration System Architecture.)  
+> **Last Updated**: 2026-07-07 (Phase-2 TRUTH doc-drift pass — module-tree `_compute_content_hash` note corrected to the delegating SSoT reality + stale stamps refreshed; content current through the 2026-07 ledger-freeze / T12-fusion-hazard notes. Prior major revision 2026-04-25, Phase A.5 Scope D v2 — Pydantic v2 migration COMPLETE: all 9 config classes inherit from `SafeBaseModel(BaseModel)` with `ConfigDict(frozen=True, extra="forbid", strict=True)` (exactly 3 flags — `validate_assignment` and `arbitrary_types_allowed` are deliberately NOT set, per `config/base.py`); `dacite>=1.8` DROPPED; `pydantic>=2.7,<3.0` pinned with explicit upper bound; `hatchling>=1.26` build-constraint. Four bug classes retired at TYPE layer: canonical-path-drift, silent mutation, extra-field acceptance, silent-None field access. 5-agent adversarial audit (A.5.7a-c) closed 4 ship-blockers (SB-1 canonical-form SSoT, SB-2 composite pickle/deepcopy, SB-3 full Trainer+export integration, SB-4 parametric partial-base rejection). See CHANGELOG.md v0.7.0 + `/contracts/pipeline_contract.toml` v2.26 + `/PIPELINE_ARCHITECTURE.md` §11 Configuration System Architecture.)  
 > **Purpose**: Complete technical reference for LLMs and developers to understand, modify, and extend the codebase.
 >
 > **Scope**: This library focuses solely on **model training**. For dataset analysis, use `lob-dataset-analyzer`.
@@ -130,8 +130,9 @@ src/lobtrainer/
 │   │                              #   hash (integrity), contract_version + source_feature_count match.
 │   │                              #   Error hierarchy: FeatureSetResolverError → FeatureSetNotFound/
 │   │                              #   FeatureSetMalformed/FeatureSetIntegrityError/FeatureSetContractMismatch.
-│   │                              #   _compute_content_hash inlined (torch-free; cross-venv independent
-│   │                              #   from hft-ops); byte-parity LOCKED against hft_contracts.canonical_hash.
+│   │                              #   _compute_content_hash DELEGATES to hft_contracts.canonical_hash
+│   │                              #   SSoT (Phase 6 6B.2 — the inline copy was retired; drift detector:
+│   │                              #   tests/test_feature_set_resolver.py::TestCanonicalHashGolden).
 │   ├── transforms.py              # FeatureStatistics, BinaryLabelTransform, ComposeTransform
 │   ├── normalization.py           # T15 Python-side normalization (HybridNormalizer, GlobalZScoreNormalizer; Welford/Chan streaming)
 │   ├── sources.py                 # T12 DataSource multi-source abstraction
@@ -1746,5 +1747,5 @@ from lobtrainer.constants import FeatureIndex, get_feature_preset
 
 ---
 
-*Last updated: April 25, 2026 (Phase A.5 Scope D v2 — Pydantic v2 migration)*
+*Last updated: 2026-07-07 (Phase-2 TRUTH doc-drift pass; prior major revision: April 25, 2026 — Phase A.5 Scope D v2 Pydantic v2 migration)*
 *Version: 0.7.0*

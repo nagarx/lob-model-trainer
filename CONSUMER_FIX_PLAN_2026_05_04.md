@@ -2,7 +2,7 @@
 
 **Created**: post Phase O Cycle 1 close + producer-readiness investigation
 **Read first** when starting a new session focused on this repo
-**Cross-references**: monorepo-root `NEW_SESSION_HANDOFF_2026_05_04.md` + `PHASE_P_BACKLOG.md` + sibling `lob-models/CONSUMER_FIX_PLAN_2026_05_04.md`
+**Cross-references**: monorepo-root `NEW_SESSION_HANDOFF_2026_05_04.md` (since archived → root `.archive/2026-05-08-pre-cycle-4-hygiene/`) + `PHASE_P_BACKLOG.md` + sibling `lob-models/CONSUMER_FIX_PLAN_2026_05_04.md`
 
 ---
 

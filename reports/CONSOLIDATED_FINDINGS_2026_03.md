@@ -1,5 +1,7 @@
 # Consolidated Experiment Findings -- March 2026
 
+**⚠️ FROZEN / SUPERSEDED (banner added 2026-07-07): this document is FROZEN at its 2026-04-05 state and is SUPERSEDED by [`CONSOLIDATED_FINDINGS_2026_05.md`](CONSOLIDATED_FINDINGS_2026_05.md) (same directory — itself frozen at Phase-1, through 2026-05-25). It does NOT reflect R9-R15 / Phase Y / Phase Z / Stage 8 / the v3p0 baseline, nor any of the 2026-06/07 discovery arc. For the CURRENT authoritative research state use `hft-wiki/FINDINGS_MASTER_REGISTER.md` (query via the `hft-wiki` CLI for live counts). Preserved as a historical artifact for E1-E16 reference only — do NOT use it as the starting point for new experiment design; the "Purpose" line below predates the supersession.**
+
 **Purpose:** Single authoritative reference for all regression experiment results, validated findings, and strategic lessons. This document is the starting point for any future experiment design.
 
 **Last updated:** 2026-04-05

@@ -166,7 +166,7 @@ lob-model-trainer/
 │   ├── experiments/                 # 53 experiment configs (`ls configs/experiments/*.yaml | wc -l`)
 │   └── archive/                     # Legacy reference configs
 ├── tests/                           # run `pytest --collect-only -q` for the live count (~2020, 82 files)
-├── EXPERIMENT_INDEX.md              # Living experiment ledger
+├── EXPERIMENT_INDEX.md              # Phase-1 experiment ledger (⚠️ FROZEN 2026-07-05 → hft-wiki register)
 ├── CODEBASE.md                      # Detailed module reference
 └── pyproject.toml
 ```
@@ -264,7 +264,7 @@ data:
   feature_preset: short_term_40
 ```
 
-`DataConfig.__post_init__` raises `ValueError` if >1 is set.
+`DataConfig`'s `@model_validator(mode="after")` hook `_validate_all` (`config/schema.py` — the Pydantic v2 equivalent of the legacy `__post_init__`) raises `ValueError` if >1 is set.
 
 ---
 
@@ -413,11 +413,11 @@ pytest tests/ -v
 ## Documentation
 
 - `CODEBASE.md` — detailed module reference
-- `EXPERIMENT_INDEX.md` — living experiment ledger
+- `EXPERIMENT_INDEX.md` — Phase-1 experiment ledger, ⚠️ **FROZEN at the E–R-series boundary (~2026-05-29; banner added 2026-07-05)**. It does NOT contain the 2026-06/07 discovery-arc probes — the current research authority is `hft-wiki/FINDINGS_MASTER_REGISTER.md` (+ the discovery `results/*.json`)
 - `configs/bases/README.md` — Phase 3 axis-ownership rules
 - `configs/README_configs.md` — config reference
 - `scripts/archive/README.md` — fossil migration map
-- Pipeline-wide ground truth (monorepo root): `CLAUDE.md`, `PIPELINE_ARCHITECTURE.md`, `DOCUMENTATION_INDEX.md`, `PHASE7_ROADMAP.md`
+- Pipeline-wide ground truth (monorepo root): `CLAUDE.md`, `PIPELINE_ARCHITECTURE.md`, `DOCUMENTATION_INDEX.md`, `PHASE_P_BACKLOG.md` (`PHASE7_ROADMAP.md` was archived to root `.archive/` — its open items folded into `PHASE_P_BACKLOG.md`)
 
 ---
 
@@ -434,4 +434,4 @@ pytest tests/ -v
 
 ---
 
-*Last updated: 2026-04-27 (REV 3.1 Phase G G.6.A→G.6.F — SchemaVersion 2.2 → 3.0 MAJOR bump)*
+*Last updated: 2026-07-07 (Phase-2 TRUTH doc-drift pass — frozen-ledger pointers, `_validate_all` attribution, dangling-doc pointers; prior major revision: 2026-04-27 REV 3.1 Phase G G.6.A→G.6.F — SchemaVersion 2.2 → 3.0 MAJOR bump)*

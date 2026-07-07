@@ -2,7 +2,7 @@
 
 > **Purpose**: Step-by-step plan for retiring the v1 `merge.py` (single-string `_base:` only) and landing the v2 implementation (`_base: str | list[str]`, plus downstream base-decomposition + fingerprint-fix).
 >
-> **Status**: EXECUTING
+> **Status**: COMPLETE (status corrected 2026-07-07 — the stale "EXECUTING" predated the finish). The primary v1→v2 migration shipped 2026-04-15: v2 `merge.py` is live at `src/lobtrainer/config/merge.py`, v1 is archived at `src/lobtrainer/config/archive/merge-v1/` (parity-locked by `tests/test_merge_v1_parity.py`), the monolith base `configs/bases/e5_tlob_regression.yaml` is deleted, and the axis-partitioned bases live under `configs/bases/{models,datasets,labels,train}/`. The Phase 3.5 config sub-migration closed by design at partial coverage (remaining configs standalone by design; Batch 4 baselines CANCELLED per §Scope Revision below). This document is preserved as the migration record.
 >
 > **Created**: 2026-04-15 (Phase 3 of training-pipeline-architecture refactor)
 >

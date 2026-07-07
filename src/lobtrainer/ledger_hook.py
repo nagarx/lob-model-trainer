@@ -284,6 +284,7 @@ def write_minimal_ledger_record(
 
         # Lazy imports to keep module-load surface small (matches
         # SimpleModelTrainer pattern at simple_trainer.py:773).
+        from hft_contracts import SCHEMA_VERSION
         from hft_contracts.canonical_hash import canonical_json_blob, sha256_hex
         from hft_contracts.experiment_recorder import record_from_artifacts
 
@@ -341,7 +342,9 @@ def write_minimal_ledger_record(
         # ledger_path: ABSOLUTE path that record_from_artifacts uses as the
         # parent of "records/" subdir. _resolve_ledger_dir returns the
         # records/ dir directly; pass its parent.
-        contract_version = getattr(config, "contract_version", "3.0")
+        # Fallback sources the hft_contracts SSoT (never a hardcoded
+        # literal — a schema bump must not silently tag stale versions).
+        contract_version = getattr(config, "contract_version", SCHEMA_VERSION)
         now = timestamp or datetime.now(timezone.utc)
 
         # The trainer-side data_dir is config.data.data_dir (when accessible).

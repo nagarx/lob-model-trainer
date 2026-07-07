@@ -6,11 +6,11 @@ This document captures contribution discipline specific to `lob-model-trainer` t
 
 ## Authoritative References
 
-- **Architecture + contracts**: `CODEBASE.md` (this repo, 81-section reference, 1,636 lines)
+- **Architecture + contracts**: `CODEBASE.md` (this repo — the primary technical reference; run `wc -l CODEBASE.md` / `grep -cE '^#{2,3} ' CODEBASE.md` for live size, hand-typed counts not maintained per hft-rules §11)
 - **Experiment cycle reference**: `EXPERIMENT_INDEX.md` (this repo, R-NN ledger)
 - **Cross-pipeline findings**: `reports/CONSOLIDATED_FINDINGS_2026_05.md` (this repo)
 - **Pipeline architecture deep-dive**: `../PIPELINE_ARCHITECTURE.md` §11 (~400 LOC trainer section)
-- **Theoretical backbone**: `../hft-wiki/research/theory/` (18 entries as of 2026-05-27)
+- **Theoretical backbone**: `../hft-wiki/research/theory/` (run `ls ../hft-wiki/research/theory | wc -l` for the live entry count; was 18 at Cycle-11 creation, 2026-05-27)
 - **Wiki consultation playbook**: `../hft-wiki/playbooks/record-experiment-result.md`
 
 ## `wiki_consultation:` Discipline (REQUIRED post-Cycle-11)
