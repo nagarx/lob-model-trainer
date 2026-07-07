@@ -772,6 +772,16 @@ boundaries using `hft_contracts.validation`:
 3. **Expected feature count**: Passes `n_features` from metadata to `DayData.validate()`
 4. **Label shift**: Uses `hft_contracts.get_contract(strategy).shift_for_crossentropy` instead of heuristic detection
 
+### T12 Multi-Source Fusion (`data/sources.py`, `data/bundle.py`)
+
+An alternate load path that fuses features from **multiple exports** (e.g. MBO order book + BASIC off-exchange) into one `DayData`. Activated by `data.sources` (a list of `SourceConfig`) in the config; when `data.sources is None` the standard single-source `load_split_data` path above is used. It is **trainer-wired** — `Trainer.setup()` branches to `load_split_bundles` when `data.sources` is set — but the sections above (`DayData`, single-source loading) cover the default path.
+
+Contract:
+
+- **`DataSource`** (`data/sources.py`): one export dir + a `role`. Exactly one source is `primary` (supplies labels, forward_prices, and the label-computation contract — T9/T10); the rest are `auxiliary` (features only). `DataConfig` validation over the `data.sources` list enforces exactly-one-primary + unique names (`SourceConfig` itself only validates the `role` enum + `feature_count >= 0`).
+- **`DayBundle`** (`data/bundle.py`): holds one `SourceDay` per source for a **common date** (dates are intersected across all sources) plus the shared primary labels. `to_fused_day_data(source_order, feature_indices)` concatenates each source's sequences along the **feature axis** → a standard `DayData` `[N, T, F_total]` the Trainer/dataset consume unchanged. Fusion **guards matching window size** (T) and raises `ValueError` on a mismatch; per-source feature selection replaces (and is mutually exclusive with) the single-source `feature_preset` / `feature_indices`.
+- **Alignment method** (`_align_sources`): every source is trimmed to the **first `min(N)` sequences** (positional first-N). This is only correct under the **load-bearing assumption that every source shares the same time grid / bin cadence** (60s bins anchored 09:30 ET, `stride=1`), so index *i* is the same wall-clock bin in every source and the N difference sits at the tail (differing label-truncation horizons). See §20 "Multi-source cadence alignment" for the trap. Cross-ref: hft-rules §14 (explicit, tested fusion contract).
+
 ---
 
 ## 7. PyTorch Dataset Classes
@@ -899,6 +909,23 @@ model = create_model(ModelConfig(
 ---
 
 ## 10. Training Infrastructure
+
+### Trainer Dispatch: `create_trainer` + `BaseTrainer` Protocol (Phase Q)
+
+Training is **not** a single class. `create_trainer(config)` (`training/trainer.py`) is a **framework-aware factory**: it resolves the model's registered `framework` field (`lobmodels.ModelRegistry.get(name).framework`) and returns one of two concrete trainers —
+
+- `Trainer` (documented below) for `framework="pytorch"` — the strategy-pattern PyTorch path; also the default/fallback when the model name or registry is unresolvable.
+- `SimpleModelTrainer` (`training/simple_trainer.py`) for `framework="sklearn"` — the live baseline path for `TemporalRidge` / `TemporalGradBoost`.
+
+On the sklearn branch a `callbacks` kwarg is dropped with an INFO log (sklearn runs a one-shot `fit`; PyTorch callbacks like early-stopping / checkpoint don't apply).
+
+Both concrete trainers satisfy the **`BaseTrainer` Protocol** (`training/base.py`) — a `@runtime_checkable` `typing.Protocol` (structural typing, no forced inheritance; future backends conform without touching `base.py`). Its contract is the lifecycle methods the entry points call polymorphically: `train()`, `evaluate(split)`, `save_checkpoint()`, `load_checkpoint()`, and `export_signals(split, *, output_dir, calibration)` (the last added Phase Q.6.5.B). `create_trainer` returns a `BaseTrainer`-satisfying trainer (per its documented `Returns:` contract), so `scripts/train.py` and the `hft-ops` orchestrator drive one polymorphic surface regardless of framework. (`runtime_checkable` verifies method-name presence only; signature equivalence is the static checker's job.)
+
+`SimpleModelTrainer` is a **full parallel pipeline, not a thin wrapper**: `from_config(config)` bridges the canonical `ExperimentConfig` entry point to its constructor; `setup()` does its own per-day NPY split loading (`_load_split`) and temporal feature engineering (`hft_metrics.TemporalFeatureConfig` / `engineer_features`); it fits the sklearn estimator, evaluates, and emits the **same signal-export format** as `Trainer` so the backtester is unchanged. Checkpoints differ by framework — `Trainer` writes `best.pt` (torch), `SimpleModelTrainer` writes `best.pkl` (pickle + `.config.json` sidecar). It materializes only `temporal_ridge` / `temporal_gradboost`; any other `model_type` raises `ValueError`.
+
+> **XGBoost note:** `XGBoostLOB` is also registered `framework="sklearn"`, so `create_trainer` would route it to `SimpleModelTrainer` — but `SimpleModelTrainer` does not construct it (unknown `model_type` → `ValueError`). The XGBoost baseline is trained via its own driver, `scripts/analysis/train_xgboost_baseline.py`, not through `create_trainer`.
+
+The authoritative docstrings live in `training/base.py`, `training/simple_trainer.py`, and `create_trainer` in `training/trainer.py`.
 
 ### Trainer Class (src/lobtrainer/training/trainer.py)
 
@@ -1672,6 +1699,10 @@ from lobtrainer.models import create_model  # Will ImportError if lob-models mis
 ### TIME_REGIME Exclusion
 
 Index 93 (TIME_REGIME) should be excluded from normalization - it's categorical `{0..6}` (7-regime TimeRegime taxonomy; `hft_statistics::time::regime` SSoT). (Excluded from normalization regardless of cardinality.)
+
+### Multi-source cadence alignment (T12 — silent-misalignment hazard)
+
+The T12 fusion path (§6) aligns sources by **positional first-N** (`_align_sources` trims to the first `min(N)` sequences). It **guards matching window size (T) but has no bin-cadence guard**: two sources at different bin cadences (e.g. a 60s export fused with a 30s one) that happen to share the same T concatenate **silently wrong** — index *i* no longer maps to the same wall-clock bin, and no error is raised. The alignment correctness rests entirely on the undocumented-in-data assumption that all sources use the same 60s/09:30-ET/`stride=1` grid. This path is trainer-wired but **not exercised in production** (root `CLAUDE.md`: A7c alignment audit open). Before activating fusion across heterogeneous exports, verify equal cadence out-of-band. Cross-ref: hft-rules §14 (a fusion contract must make its alignment method explicit and tested).
 
 ---
 
