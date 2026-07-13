@@ -21,6 +21,10 @@
 # Pre-migration: top-level `experiment:`/`output:` blocks were silently dropped
 # by dacite. `model:` flat xgboost hyperparameters also silently dropped
 # (ModelConfig has `params:` for opaque passthrough).
+# #PY-389 (2026-07-13): this file NO LONGER loads via ExperimentConfig.from_yaml
+# — `model_type: xgboost` fail-fasts at ModelConfig construction (no canonical-
+# trainer route; registry key is 'xgboost_lob'). The Usage route above
+# (train_xgboost_baseline.py, raw-dict loader) is unaffected.
 name: "NVDA XGBoost Baseline H60 — XNAS"
 description: "First model experiment: XGBoost on 119 features at 1-minute horizon (XNAS)"
 

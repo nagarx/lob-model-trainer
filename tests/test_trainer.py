@@ -638,6 +638,23 @@ class TestModelFactory:
         with pytest.raises(ValueError, match="TRANSFORMER is reserved"):
             ModelConfig(model_type=ModelType.TRANSFORMER)
 
+    def test_create_model_xgboost_fails_fast_at_config(self):
+        """#PY-389 (2026-07-13): ModelType.XGBOOST has no canonical-trainer
+        route (registry key is 'xgboost_lob'; no strategy supports it) —
+        it must fail at ModelConfig construction with the working route
+        named, not fall through toward the PyTorch path.
+        """
+        from lobtrainer.config import ModelConfig, ModelType
+
+        with pytest.raises(ValueError, match="xgboost_lob") as exc_info:
+            ModelConfig(model_type=ModelType.XGBOOST)
+        # The error must point at the documented working route.
+        assert "train_xgboost_baseline" in str(exc_info.value), (
+            f"XGBOOST fail-fast must name the working route "
+            f"(scripts/analysis/train_xgboost_baseline.py). "
+            f"Got: {exc_info.value}"
+        )
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

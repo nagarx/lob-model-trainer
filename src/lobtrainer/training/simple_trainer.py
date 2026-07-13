@@ -475,16 +475,27 @@ class SimpleModelTrainer:
             )
             if feature_set_name is not None and not already_resolved:
                 # T12 multi-source guard (mid-impl audit fix LOW-5): match
-                # PyTorch trainer.py:464-469 — feature_set + sources is an
-                # unsupported combination; fail-loud per hft-rules §5.
+                # the PyTorch Trainer's identical guard — feature_set +
+                # sources is an unsupported combination; fail-loud per
+                # hft-rules §5. #PY-389 message fix (2026-07-13): the
+                # previous advice named a SourceConfig.feature_indices
+                # field that does not exist (see the trainer.py twin).
                 if (
                     getattr(cfg_data, "sources", None) is not None
                 ):
                     raise ValueError(
-                        "feature_set is not supported with multi-source mode "
-                        "(data.sources). Use per-source feature_indices on "
-                        "each SourceConfig instead. (T12 + Phase 4 boundary; "
-                        "sklearn parity with trainer.py:464-469)"
+                        "feature_set is not supported with multi-source "
+                        "mode (data.sources). Per-source feature "
+                        "selection is NOT configurable today: "
+                        "SourceConfig has no feature_indices field and "
+                        "the trainer does not pass per-source indices to "
+                        "load_split_bundles (pending #PY-390 multi-source "
+                        "contract work). Either drop data.sources or drop "
+                        "feature_set. Programmatic callers can use "
+                        "lobtrainer.data.bundle.load_split_bundles("
+                        "feature_indices={source_name: [...]}) directly. "
+                        "(T12 + Phase 4 boundary; sklearn parity with the "
+                        "PyTorch Trainer guard in _create_dataloaders)"
                     )
                 from lobtrainer.data.feature_set_resolver import (
                     find_feature_sets_dir,

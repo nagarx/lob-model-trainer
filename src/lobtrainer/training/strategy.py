@@ -253,11 +253,39 @@ def create_strategy(
 
     Returns:
         Concrete TrainingStrategy instance.
+
+    Raises:
+        ValueError: ``train.loss_type='pinball'`` — schema-registered but
+            not wired through any strategy (see below).
     """
-    from lobtrainer.config import ModelType, TaskType
+    from lobtrainer.config import LossType, ModelType, TaskType
 
     model_type = config.model.model_type
     task_type = config.train.task_type
+
+    # #PY-389 fail-fast (2026-07-13, hft-rules §5): LossType.PINBALL is
+    # schema-registered (hft-rules §14 contract-before-producer — the
+    # variance_dl promotion-spec config must VALIDATE) but is NOT wired
+    # through any strategy: the regression strategies train via
+    # model.compute_loss(), driven by model.regression_loss_type
+    # (Literal['huber','mse','gmadl'] — no pinball) — train.loss_type
+    # would be silently ignored and the model would train a DIFFERENT
+    # loss. The [B, Q] quantile head is a pending lob-models feature.
+    loss_type = getattr(config.train, "loss_type", None)
+    if loss_type == LossType.PINBALL:
+        raise ValueError(
+            "train.loss_type='pinball' is registered in the schema but "
+            "NOT wired through the canonical training path — the "
+            "regression strategies train via model.compute_loss() using "
+            "model.regression_loss_type ('huber'/'mse'/'gmadl'), so a "
+            "pinball selection would silently train a different loss. "
+            "The [B, Q] quantile head is a pending lob-models feature: "
+            "see the PROMOTION SPEC at "
+            "nvda_discovery/variance_dl/trainer_config.yaml (STATUS "
+            "header) + its PRE_REGISTRATION.md §6; the runnable pinball "
+            "reference is the harness model "
+            "nvda_discovery/variance_dl/model.py."
+        )
 
     if model_type == ModelType.HMHP:
         from lobtrainer.training.strategies.hmhp_classification import (

@@ -281,6 +281,38 @@ class TestCreateStrategy:
             f"Expected ClassificationStrategy, got {type(strategy).__name__}"
         )
 
+    def test_pinball_loss_fails_fast(self):
+        """#PY-389 (2026-07-13): LossType.PINBALL is schema-registered but
+        NOT wired through any strategy (the regression strategies train
+        via model.compute_loss / model.regression_loss_type, which has no
+        pinball variant) — selecting it must raise at strategy creation,
+        not silently train a different loss (hft-rules §5).
+        """
+        config = _make_config(
+            task_type=TaskType.REGRESSION, loss_type=LossType.PINBALL
+        )
+        with pytest.raises(ValueError, match="pinball") as exc_info:
+            create_strategy(config, DEVICE)
+        # The error must point at the promotion spec for the [B, Q] head.
+        assert "variance_dl" in str(exc_info.value), (
+            f"Pinball fail-fast must reference the promotion spec "
+            f"(nvda_discovery/variance_dl/trainer_config.yaml). "
+            f"Got: {exc_info.value}"
+        )
+
+    def test_pinball_loss_fails_fast_for_hmhp_regression(self):
+        """The pinball guard sits BEFORE model_type dispatch — it must
+        also cover the HMHP_REGRESSION branch (which ignores
+        train.loss_type in favor of hmhp_regression_loss_type)."""
+        config = _make_config(
+            model_type=ModelType.HMHP_REGRESSION,
+            task_type=TaskType.REGRESSION,
+            loss_type=LossType.PINBALL,
+            hmhp_horizons=HORIZONS,
+        )
+        with pytest.raises(ValueError, match="pinball"):
+            create_strategy(config, DEVICE)
+
 
 # =============================================================================
 # TestClassificationStrategy

@@ -478,10 +478,24 @@ class Trainer:
         # below handles validation + FeatureSelector construction.
         if feature_set_name is not None:
             if cfg_data.sources is not None:
+                # #PY-389 message fix (2026-07-13): the previous advice
+                # ("Use per-source feature_indices on each SourceConfig")
+                # was unactionable — SourceConfig has no feature_indices
+                # field and this trainer never passes feature_indices to
+                # load_split_bundles. Config-driven per-source selection
+                # is pending the #PY-390 multi-source contract work.
                 raise ValueError(
                     "feature_set is not supported with multi-source mode "
-                    "(data.sources). Use per-source feature_indices on "
-                    "each SourceConfig instead. (T12 + Phase 4 boundary)"
+                    "(data.sources). Per-source feature selection is NOT "
+                    "configurable today: SourceConfig has no "
+                    "feature_indices field and the trainer does not pass "
+                    "per-source indices to load_split_bundles (pending "
+                    "#PY-390 multi-source contract work). Either drop "
+                    "data.sources (single-source mode supports "
+                    "feature_set) or drop feature_set. Programmatic "
+                    "callers can use lobtrainer.data.bundle."
+                    "load_split_bundles(feature_indices={source_name: "
+                    "[...]}) directly. (T12 + Phase 4 boundary)"
                 )
             from lobtrainer.data.feature_set_resolver import (
                 find_feature_sets_dir,

@@ -51,6 +51,16 @@ from lobtrainer.training.importance.permutation import (
     compute_permutation_importance,
 )
 
+# #PY-389 (2026-07-13): every registry PyTorch model returns the unified
+# ``lobmodels.registry.output.ModelOutput`` dataclass — predict_fn must
+# unwrap it (a dataclass has no ``.detach``). Guarded import: lob-models
+# is a declared dependency, but this callback module must stay importable
+# in torch-only test environments where lobmodels is absent.
+try:
+    from lobmodels.registry.output import ModelOutput as _ModelOutput
+except ImportError:  # pragma: no cover — lob-models is a declared dep
+    _ModelOutput = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,8 +86,10 @@ def make_pytorch_predict_fn(
       - Sets model to eval mode (no dropout / BN update).
       - Transfers input numpy → torch on ``device``.
       - Runs forward pass under ``torch.no_grad()`` (no autograd).
-      - Handles tuple-output (HMHP: first element is primary) + dict-
-        output (fallback: first value).
+      - Handles tuple-output (legacy HMHP contract; first element is
+        primary — possibly itself a ModelOutput, e.g.
+        ``TLOB.forward_with_attention``), the unified ``ModelOutput``
+        dataclass (all registry PyTorch models), and dict-output.
       - Returns detached CPU numpy.
 
     Args:
@@ -94,18 +106,38 @@ def make_pytorch_predict_fn(
             X_tensor = torch.from_numpy(X).float().to(device)
             out = model(X_tensor)
             if isinstance(out, tuple):
-                # HMHP and variants return (primary, aux, confirmation).
-                # Use primary for importance — other outputs are secondary
-                # heads that don't drive feature importance ranking.
+                # Legacy tuple contract (pre-ModelOutput HMHP) and
+                # wrapper methods (TLOB.forward_with_attention returns
+                # ``(ModelOutput, attention)``): first element is the
+                # primary output. It may itself be a ModelOutput —
+                # handled by the branch below, so tuple-unwrap FIRST.
                 out = out[0]
+            if _ModelOutput is not None and isinstance(out, _ModelOutput):
+                # #PY-389 fix (2026-07-13): unified ModelOutput dataclass
+                # (lobmodels/registry/output.py) — primary fields are
+                # ``predictions`` ([B]/[B,H] regression) and ``logits``
+                # ([B,C] classification); at least one is non-None by
+                # ``__post_init__`` contract. Prefer predictions (matches
+                # the dict-branch precedent). Pre-fix, ModelOutput fell
+                # through to ``out.detach()`` → AttributeError → the
+                # outer swallow → NO artifact for EVERY canonical-path
+                # PyTorch importance run (the 2026-05-08/09 failures).
+                out = (
+                    out.predictions
+                    if out.predictions is not None
+                    else out.logits
+                )
             elif isinstance(out, dict):
                 # Dict outputs: pick predictions/logits, fall back to
-                # first value. Rare in this pipeline.
-                out = (
-                    out.get("predictions")
-                    or out.get("logits")
-                    or next(iter(out.values()))
-                )
+                # first value. Explicit ``is not None`` checks — the
+                # previous ``or``-chaining invoked Tensor.__bool__,
+                # which raises on multi-element tensors.
+                for _key in ("predictions", "logits"):
+                    if out.get(_key) is not None:
+                        out = out[_key]
+                        break
+                else:
+                    out = next(iter(out.values()))
             return out.detach().cpu().numpy()
 
     return predict_fn
@@ -280,11 +312,18 @@ class PermutationImportanceCallback(Callback):
       8. Save via ``artifact.save(output_dir / 'feature_importance_v1.json')``
          — atomic write via hft_contracts.atomic_io SSoT.
 
-    Failure mode: all exceptions are logged + swallowed. Importance is a
-    non-critical observation; a failure should NOT kill the training run
-    (loss would be irrecoverable — the trained model is valuable even
-    without the importance audit). hft-rules §8 compliance: the failure
-    is tracked via log.warning + no partial artifact is written.
+    Failure mode (#PY-389 hardening, 2026-07-13): all exceptions are
+    swallowed — importance is a non-critical observation and a failure
+    must NOT kill the training run (loss would be irrecoverable — the
+    trained model is valuable even without the importance audit). But the
+    swallow is LOUD: the failure is logged at ERROR with full traceback
+    (``logger.exception``) AND a ``feature_importance_v1.failed.json``
+    marker is written next to where the artifact would have gone, so a
+    missing artifact is distinguishable from an importance-disabled run.
+    hft-rules §8 compliance: no partial artifact is ever written; the
+    marker is a diagnostic sidecar with a distinct filename that hft-ops
+    artifact routing (exact-filename match on ``feature_importance_v1.json``)
+    never picks up.
     """
 
     def __init__(self, config: ImportanceConfig) -> None:
@@ -303,12 +342,63 @@ class PermutationImportanceCallback(Callback):
 
         try:
             self._compute_and_save()
-        except Exception:
+        except Exception as exc:
+            # ERROR + traceback (logger.exception logs at ERROR level).
             logger.exception(
                 "PermutationImportanceCallback: artifact generation "
                 "failed. Training run is NOT affected; the artifact "
                 "will be missing from this run's output. See traceback "
                 "above for root cause."
+            )
+            # #PY-389 (2026-07-13): record an importance_failed marker so
+            # the failure is observable from the run's output directory,
+            # not only from log scrollback.
+            self._write_failure_marker(exc)
+
+    def _write_failure_marker(self, exc: BaseException) -> None:
+        """Best-effort ``feature_importance_v1.failed.json`` marker.
+
+        Written to the trainer's output_dir when artifact generation
+        fails, so downstream consumers (operators, hft-ops harvesting)
+        can distinguish "importance failed" from "importance disabled".
+        Never raises — a marker-write failure must not violate the
+        never-kill-training contract; it is itself logged at ERROR.
+        """
+        try:
+            from datetime import datetime, timezone
+
+            from hft_contracts.atomic_io import atomic_write_json
+
+            output_dir = getattr(self.trainer, "output_dir", None)
+            if output_dir is None:
+                logger.error(
+                    "PermutationImportanceCallback: cannot write "
+                    "importance_failed marker — trainer has no "
+                    "output_dir. The failure is only visible in logs."
+                )
+                return
+            target = Path(output_dir) / "feature_importance_v1.failed.json"
+            atomic_write_json(
+                target,
+                {
+                    "status": "importance_failed",
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                    "eval_split": self.config.eval_split,
+                    "method": self.config.method,
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            logger.error(
+                "PermutationImportanceCallback: wrote importance_failed "
+                "marker to %s (error_type=%s).",
+                target, type(exc).__name__,
+            )
+        except Exception:
+            logger.exception(
+                "PermutationImportanceCallback: importance_failed marker "
+                "write itself failed; swallowed per never-kill-training "
+                "contract."
             )
 
     # -----------------------------------------------------------------

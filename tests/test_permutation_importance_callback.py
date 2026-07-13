@@ -70,6 +70,63 @@ class _TinyTupleModel(torch.nn.Module):
         return (self.primary(x_flat), self.aux(x_flat), x_flat.mean(dim=1, keepdim=True))
 
 
+class _TinyModelOutputModel(torch.nn.Module):
+    """Model returning the unified ``ModelOutput`` dataclass (#PY-389).
+
+    Mirrors every registry PyTorch model post-ModelOutput-unification
+    (TLOB / MLPLOB / DeepLOB / LogisticLOB / HMHP / HMHP-R). Pre-fix,
+    ``make_pytorch_predict_fn`` had no ModelOutput branch → the dataclass
+    fell through to ``.detach()`` → AttributeError → callback swallow →
+    silently NO artifact.
+    """
+
+    def __init__(self, n_features: int, seq_len: int, field: str = "predictions"):
+        super().__init__()
+        out_dim = 1 if field == "predictions" else 3
+        self.fc = torch.nn.Linear(seq_len * n_features, out_dim)
+        self.field = field
+
+    def forward(self, x: torch.Tensor):
+        from lobmodels.registry.output import ModelOutput
+
+        out = self.fc(x.reshape(x.shape[0], -1))
+        if self.field == "predictions":
+            return ModelOutput(predictions=out.squeeze(-1))  # [B]
+        return ModelOutput(logits=out)  # [B, C]
+
+
+class _TinyTupleWrappedModelOutputModel(torch.nn.Module):
+    """Tuple whose element[0] is a ModelOutput (the
+    ``TLOB.forward_with_attention`` return shape: ``(ModelOutput, aux)``).
+    """
+
+    def __init__(self, n_features: int, seq_len: int):
+        super().__init__()
+        self.fc = torch.nn.Linear(seq_len * n_features, 1)
+
+    def forward(self, x: torch.Tensor):
+        from lobmodels.registry.output import ModelOutput
+
+        x_flat = x.reshape(x.shape[0], -1)
+        return (ModelOutput(predictions=self.fc(x_flat).squeeze(-1)), [x_flat])
+
+
+class _TinyDictModel(torch.nn.Module):
+    """Model returning a dict of REAL multi-element tensors.
+
+    Regression guard for the ``or``-chaining bug: ``out.get("predictions")
+    or ...`` invoked ``Tensor.__bool__`` which raises on multi-element
+    tensors — the dict branch could never have worked on real outputs.
+    """
+
+    def __init__(self, n_features: int, seq_len: int):
+        super().__init__()
+        self.fc = torch.nn.Linear(seq_len * n_features, 1)
+
+    def forward(self, x: torch.Tensor):
+        return {"predictions": self.fc(x.reshape(x.shape[0], -1))}
+
+
 def _make_tiny_loader(N: int = 20, T: int = 5, F: int = 3, seed: int = 0):
     """Produce a single-batch DataLoader-like iterator yielding (X, y)."""
     rng = np.random.RandomState(seed)
@@ -143,6 +200,65 @@ class TestMakePytorchPredictFn:
         p1 = predict(X)
         p2 = predict(X)
         np.testing.assert_array_equal(p1, p2)
+
+    # --- #PY-389 ModelOutput regression tests (2026-07-13) ---------------
+
+    def test_model_output_predictions_field(self):
+        """ModelOutput(predictions=...) → predict_fn extracts + detaches.
+
+        Pre-fix this raised AttributeError (ModelOutput has no .detach),
+        which the callback swallowed → NO artifact for every canonical-
+        path PyTorch importance run.
+        """
+        m = _TinyModelOutputModel(n_features=3, seq_len=5, field="predictions")
+        predict = make_pytorch_predict_fn(m, torch.device("cpu"))
+        X = np.random.RandomState(0).randn(9, 5, 3).astype(np.float32)
+        preds = predict(X)
+        assert isinstance(preds, np.ndarray), (
+            f"predict_fn must return ndarray, got {type(preds)}"
+        )
+        assert preds.shape == (9,), (
+            f"ModelOutput.predictions [B] must pass through; got {preds.shape}"
+        )
+
+    def test_model_output_logits_field(self):
+        """ModelOutput(logits=...) (classification models) → extracts logits."""
+        m = _TinyModelOutputModel(n_features=3, seq_len=5, field="logits")
+        predict = make_pytorch_predict_fn(m, torch.device("cpu"))
+        X = np.random.RandomState(0).randn(9, 5, 3).astype(np.float32)
+        preds = predict(X)
+        assert preds.shape == (9, 3), (
+            f"ModelOutput.logits [B, C] must pass through; got {preds.shape}"
+        )
+
+    def test_tuple_wrapped_model_output(self):
+        """(ModelOutput, aux) tuple → tuple-unwrap THEN ModelOutput branch.
+
+        Matches the ``TLOB.forward_with_attention`` return shape.
+        """
+        m = _TinyTupleWrappedModelOutputModel(n_features=3, seq_len=5)
+        predict = make_pytorch_predict_fn(m, torch.device("cpu"))
+        X = np.random.RandomState(0).randn(6, 5, 3).astype(np.float32)
+        preds = predict(X)
+        assert preds.shape == (6,), (
+            f"Tuple-wrapped ModelOutput must unwrap to predictions [B]; "
+            f"got {preds.shape}"
+        )
+
+    def test_dict_output_with_real_tensors(self):
+        """Dict of REAL multi-element tensors must not hit Tensor.__bool__.
+
+        Regression guard: the pre-fix ``or``-chaining raised
+        ``RuntimeError: Boolean value of Tensor ... is ambiguous`` for any
+        real batch (N > 1), so the dict branch never worked on live models.
+        """
+        m = _TinyDictModel(n_features=3, seq_len=5)
+        predict = make_pytorch_predict_fn(m, torch.device("cpu"))
+        X = np.random.RandomState(0).randn(8, 5, 3).astype(np.float32)
+        preds = predict(X)
+        assert preds.shape == (8, 1), (
+            f"Dict output 'predictions' must be selected; got {preds.shape}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +462,114 @@ class TestPermutationImportanceCallback:
         assert any("loader is" in m.lower() or "none" in m.lower()
                    for m in warn_messages), (
             f"Expected warning about missing eval loader. Got: {warn_messages}"
+        )
+
+    def test_happy_path_with_model_output_model(self, tmp_path: Path):
+        """#PY-389 end-to-end regression: a ModelOutput-returning model
+        (the shape of EVERY registry PyTorch model) produces an artifact.
+
+        This is the exact historical 2026-05-08/09 failure: pre-fix, the
+        forward output had no ``.detach`` → AttributeError → the swallow
+        → silently NO artifact.
+        """
+        cfg_imp = ImportanceConfig(
+            enabled=True,
+            n_permutations=5,
+            n_seeds=1,
+            subsample=-1,
+            seed=42,
+            eval_split="test",
+        )
+        callback = PermutationImportanceCallback(cfg_imp)
+        config = ExperimentConfig(
+            name="test_model_output", output_dir=str(tmp_path),
+        )
+        config = config.model_copy(update={
+            "model": config.model.model_copy(
+                update={"model_type": "hmhp_regression"}
+            ),
+        })
+        trainer = _MockTrainer(
+            model=_TinyModelOutputModel(
+                n_features=3, seq_len=5, field="predictions"
+            ),
+            device=torch.device("cpu"),
+            output_dir=tmp_path,
+            test_loader=_make_tiny_loader(N=20, T=5, F=3, seed=0),
+            config=config,
+        )
+        CallbackList([callback]).set_trainer(trainer)
+
+        callback.on_train_end()
+
+        artifact_path = tmp_path / "feature_importance_v1.json"
+        assert artifact_path.exists(), (
+            f"ModelOutput-returning model must produce an artifact "
+            f"(pre-#PY-389-fix this silently failed). Contents of "
+            f"{tmp_path}: {list(tmp_path.iterdir())}"
+        )
+        assert not (tmp_path / "feature_importance_v1.failed.json").exists(), (
+            "Happy path must NOT leave an importance_failed marker"
+        )
+        reloaded = FeatureImportanceArtifact.load(artifact_path)
+        assert len(reloaded.features) == 3
+
+    def test_failure_logs_error_and_writes_marker(self, tmp_path: Path, caplog):
+        """#PY-389 loud-swallow contract: a _compute_and_save exception is
+        (a) swallowed (never kills training), (b) logged at ERROR with
+        traceback, (c) recorded as feature_importance_v1.failed.json.
+        """
+        import logging as _logging
+        from unittest.mock import patch
+
+        cfg_imp = ImportanceConfig(
+            enabled=True, n_permutations=5, n_seeds=1, subsample=-1, seed=42,
+        )
+        callback = PermutationImportanceCallback(cfg_imp)
+        config = ExperimentConfig(name="test_marker", output_dir=str(tmp_path))
+        trainer = _MockTrainer(
+            model=_TinyLinearModel(3, 5),
+            device=torch.device("cpu"),
+            output_dir=tmp_path,
+            test_loader=_make_tiny_loader(),
+            config=config,
+        )
+        CallbackList([callback]).set_trainer(trainer)
+
+        with caplog.at_level(_logging.ERROR):
+            with patch.object(
+                callback, "_compute_and_save",
+                side_effect=RuntimeError("synthetic importance failure"),
+            ):
+                # Must NOT raise (never-kill-training contract).
+                callback.on_train_end()
+
+        # (b) ERROR-level record WITH traceback attached.
+        error_records = [
+            r for r in caplog.records
+            if r.levelno >= _logging.ERROR
+            and "artifact generation" in r.message
+        ]
+        assert error_records, (
+            f"Expected an ERROR-level 'artifact generation failed' record. "
+            f"Got: {[(r.levelname, r.message) for r in caplog.records]}"
+        )
+        assert any(r.exc_info for r in error_records), (
+            "The ERROR record must carry the traceback (logger.exception)"
+        )
+
+        # (c) importance_failed marker written, artifact absent.
+        marker_path = tmp_path / "feature_importance_v1.failed.json"
+        assert marker_path.exists(), (
+            f"Expected importance_failed marker at {marker_path}; "
+            f"contents of {tmp_path}: {list(tmp_path.iterdir())}"
+        )
+        marker = json.loads(marker_path.read_text())
+        assert marker["status"] == "importance_failed"
+        assert marker["error_type"] == "RuntimeError"
+        assert "synthetic importance failure" in marker["error_message"]
+        assert not (tmp_path / "feature_importance_v1.json").exists(), (
+            "No partial artifact may be written on failure (hft-rules §8)"
         )
 
 

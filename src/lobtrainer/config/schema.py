@@ -601,8 +601,10 @@ class ModelType(str, Enum):
     """Logistic regression baseline."""
     
     XGBOOST = "xgboost"
-    """XGBoost classifier baseline. NOT in the ModelRegistry and NOT dispatched by
-    create_strategy — selecting it via the normal trainer path will fail; train it
+    """XGBoost classifier baseline. The lob-models registry key is 'xgboost_lob'
+    (ModelConfig.name has no 'xgboost' mapping) and NO trainer strategy dispatches
+    it — selecting it raises ValueError at ModelConfig construction (#PY-389
+    fail-fast, 2026-07-13; was a late generic create_model failure). Train it
     via scripts/analysis/train_xgboost_baseline.py directly (C8, hft-rules §5/§11)."""
 
     LSTM = "lstm"
@@ -1618,12 +1620,34 @@ class ModelConfig(SafeBaseModel):
         frozen=True. Uses ``object.__setattr__(self, "params", ...)`` —
         same pattern as DataConfig's T9 labels auto-derivation.
         """
-        # Fail-fast on reserved-but-unimplemented model types.
+        # Fail-fast on non-dispatchable model types (hft-rules §5: an
+        # unsupported config option must fail fast with a precise error,
+        # never silently degrade). TRANSFORMER is reserved; XGBOOST has
+        # no canonical-trainer route (#PY-389, 2026-07-13).
+        _non_dispatchable = {ModelType.TRANSFORMER, ModelType.XGBOOST}
+        _dispatchable = sorted(
+            mt.value for mt in ModelType if mt not in _non_dispatchable
+        )
         if self.model_type == ModelType.TRANSFORMER:
             raise ValueError(
                 f"ModelType.TRANSFORMER is reserved for future use and "
-                f"cannot be dispatched. Available types: "
-                f"{sorted(mt.value for mt in ModelType if mt != ModelType.TRANSFORMER)}"
+                f"cannot be dispatched. Available types: {_dispatchable}"
+            )
+        if self.model_type == ModelType.XGBOOST:
+            # Pre-fix, 'xgboost' fell through toward the PyTorch path and
+            # only died deep inside create_model with a generic
+            # "Unknown model 'xgboost'" — the lob-models registry key is
+            # 'xgboost_lob', which ModelConfig.name never maps to, and
+            # neither create_strategy nor SimpleModelTrainer supports it
+            # (XGBoostLOB is classification-only; SimpleModelTrainer
+            # handles temporal_ridge / temporal_gradboost regression only).
+            raise ValueError(
+                f"ModelType.XGBOOST cannot be dispatched through the "
+                f"canonical trainer path: the lob-models registry key is "
+                f"'xgboost_lob' and no trainer strategy supports it. "
+                f"Working route: scripts/analysis/train_xgboost_baseline.py "
+                f"(drives the 'xgboost_lob' registry model directly; "
+                f"C8 / #PY-389). Available types: {_dispatchable}"
             )
 
         # T13: allow input_size=0 as sentinel for auto-derivation

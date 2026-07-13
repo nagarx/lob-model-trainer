@@ -1777,6 +1777,16 @@ class TestExperimentConfigPydantic:
             This file has been broken since before Phase A.5; needs a
             full rewrite (descriptive comments → YAML # comments) in a
             separate follow-up. Unrelated to A.5.3i migration.
+
+        Expected-to-raise (#PY-389, 2026-07-13): the two XGBoost baseline
+        YAMLs use ``model_type: xgboost``, which now fail-fasts at
+        ModelConfig construction (no canonical-trainer route; the
+        registry key is 'xgboost_lob'). Their documented working route —
+        ``scripts/analysis/train_xgboost_baseline.py`` — reads the raw
+        dict and never constructs ExperimentConfig, so it is unaffected.
+        They are asserted to raise PRECISELY (message names
+        'xgboost_lob') rather than skipped, so this entry goes stale
+        LOUDLY if xgboost is ever wired through the canonical path.
         """
         import glob
         from pathlib import Path
@@ -1793,6 +1803,14 @@ class TestExperimentConfigPydantic:
             "nvda_tlob_triple_barrier_11mo_v1.yaml",
         }
 
+        # #PY-389 (2026-07-13): non-dispatchable model type — these MUST
+        # raise the ModelConfig fail-fast (see docstring). Mirrors the
+        # test_merge_v1_parity._EXCLUDED pair.
+        _EXPECTED_NON_DISPATCHABLE = {
+            "nvda_xgboost_baseline_h60.yaml",
+            "nvda_xgboost_baseline_arcx_h60.yaml",
+        }
+
         errors = []
         for path in yaml_paths:
             if is_partial_base(path):
@@ -1801,6 +1819,28 @@ class TestExperimentConfigPydantic:
             if "archive" in path.parts:
                 continue
             if path.name in _KNOWN_YAML_SYNTAX_BROKEN:
+                continue
+            if path.name in _EXPECTED_NON_DISPATCHABLE:
+                # Inverted expectation: must raise the precise #PY-389
+                # fail-fast. Any OTHER exception (latent typo) or a clean
+                # load (xgboost got wired — remove the entry) is an error.
+                try:
+                    _ = ExperimentConfig.from_yaml(str(path))
+                except Exception as e:
+                    if "xgboost_lob" not in str(e):
+                        errors.append(
+                            f"{path.relative_to(configs_dir)}: expected the "
+                            f"#PY-389 XGBOOST fail-fast (message naming "
+                            f"'xgboost_lob'), got {type(e).__name__}: "
+                            f"{str(e)[:200]}"
+                        )
+                else:
+                    errors.append(
+                        f"{path.relative_to(configs_dir)}: loaded WITHOUT "
+                        f"error but is registered #PY-389 non-dispatchable "
+                        f"— if xgboost is now wired through the canonical "
+                        f"path, remove it from _EXPECTED_NON_DISPATCHABLE."
+                    )
                 continue
             try:
                 _ = ExperimentConfig.from_yaml(str(path))

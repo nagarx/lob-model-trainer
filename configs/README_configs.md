@@ -240,7 +240,7 @@ hft-ops evaluate \
 
 **17 configs remain standalone by design** (out of Phase 3 migration scope):
 - **Baselines** (7): logistic×4, temporal_ridge×2, temporal_gradboost×1 — planned for Batch 4 (cancelled as diminishing returns)
-- **XGBoost** (2): `nvda_xgboost_baseline_h60.yaml`, `nvda_xgboost_baseline_arcx_h60.yaml` — different schema, bypasses `ExperimentConfig.from_yaml()`
+- **XGBoost** (2): `nvda_xgboost_baseline_h60.yaml`, `nvda_xgboost_baseline_arcx_h60.yaml` — bypasses `ExperimentConfig.from_yaml()` (run via `scripts/analysis/train_xgboost_baseline.py` raw-dict loader; since #PY-389 2026-07-13, `model_type: xgboost` fail-fasts at ModelConfig construction, so these deliberately do NOT load through the canonical config path)
 - **Archive** (6): legacy datasets no longer supported
 - **Niche HMHP** (2): `nvda_short_term_hmhp_v1.yaml`, `nvda_hmhp_multihorizon_v1.yaml` — too few peers to benefit from shared bases
 
@@ -316,7 +316,7 @@ data:
 | `temporal_ridge` | Ridge + temporal features | 53 temporal features | sklearn |
 | `temporal_gradboost` | GradientBoosting + temporal features | 53 temporal features | sklearn |
 
-> `ModelType` also defines `xgboost` (NOT dispatched by the standard trainer — train via `scripts/analysis/train_xgboost_baseline.py`) and `transformer` (NOT IMPLEMENTED — raises at construction).
+> `ModelType` also defines `xgboost` and `transformer` — BOTH raise at `ModelConfig` construction (#PY-389 fail-fast, 2026-07-13): `transformer` is NOT IMPLEMENTED (reserved); `xgboost` has no canonical-trainer route (the lob-models registry key is `xgboost_lob`) — train it via `scripts/analysis/train_xgboost_baseline.py` (raw-dict loader, unaffected by the fail-fast).
 
 ---
 
